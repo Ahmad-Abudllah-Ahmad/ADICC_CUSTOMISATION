@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildRasterMask, toGray, interiorMean, adaptiveThreshold, closeMask, RASTER_RDP_EPS, INVERT_MEAN } from "../src/lib/rastermask.ts";
-import { floodRegion, traceRegion, ringArea } from "../src/lib/oneclick.ts";
+import { floodRegion, floodRegionSealed, traceRegion, ringArea } from "../src/lib/oneclick.ts";
 
 // deterministic PRNG (mulberry32) — noise tests never flake
 function rng(seed: number) {
@@ -124,6 +124,18 @@ test("a real doorway gap leaks (closing can't bridge 12px)", () => {
   const mo = buildRasterMask(img, W, H, 1);
   const f = floodRegion(mo, 150, 150);
   assert.equal(f.status, "leak");
+});
+
+test("doorway gap recovers when floodRegionSealed bridges it", () => {
+  const img = room(undefined, (x, y) => y <= 103 && x >= 144 && x <= 156);  // 13px door
+  const mo = buildRasterMask(img, W, H, 1);
+  assert.equal(floodRegion(mo, 150, 150).status, "leak");
+  const f = floodRegionSealed(mo, 150, 150, undefined, 16);
+  assert.equal(f.status, "ok");
+  if (f.status !== "ok") return;
+  assert.equal(f.openingsSealed, true);
+  const area = ringArea(traceRegion(f as any, RASTER_RDP_EPS));
+  assert.ok(area > 8000 && area < 9800, `sealed scan room area ${area}`);
 });
 
 test("a tiny enclosed speck reports tiny", () => {

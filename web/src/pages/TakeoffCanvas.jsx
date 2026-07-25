@@ -35,8 +35,12 @@ import { isCanvasBusy } from "../lib/canvasBusy";
 import { parseSchedule, rowToSeed } from "../lib/scheduleParse";
 import { normalizeScanRows, postScanWithRetry, SCAN_ENDPOINT, scanRasterScale } from "../lib/scheduleScan";
 import { normalizeTag } from "../lib/scheduleEdit";
+import {
+  extractPlanSymbols, buildPlanSymbolIndex, enrichSymbolsWithSchedule,
+  resolveSymbolFields, hitPlanSymbol, symbolNoteKey, SYMBOL_KIND_LABEL,
+} from "../lib/planSymbols";
 import { isGoogleConfigured, isSignedIn, isAllowedDomain, getAccessToken, orgDomainHint } from "../lib/google/auth.js";
-import { extractVectorGeometry, buildMask, floodRegion, traceRegion, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE } from "../lib/oneclick";
+import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons } from "../lib/oneclick";
 import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS } from "../lib/rastermask";
 import { conditionTotals, verticalWallSf } from "../lib/totals.js";
 import { shapesInZone } from "../lib/zone.js";
@@ -176,6 +180,20 @@ export default function TakeoffCanvas() {
   const [pageLabels, setPageLabels] = useState({}); // { pageNum: "A003" } from the title block
   const [sheetGroup, setSheetGroup] = useState([]);   // sheetKeys shown side-by-side; [] = single-sheet mode
   const [sheetLevels, setSheetLevels] = useState({}); // sheetKey → level label ("L1") — persisted (additive `sheet_levels` key); groups the gallery for multi-floor sets
+  // sheet PDF name → relative folder path from a Folder upload (webkitRelativePath).
+  // Persisted as additive `file_folders` so the Files sidebar can nest plans under
+  // expandable folders after reload. Loose single-file opens stay at the root.
+  const [fileFolders, setFileFolders] = useState({});
+  // Plan-symbol index (door/window/type/finish marks from the PDF text layer).
+  // Raw extract lives in a ref (per-sheet); planSymbols is the enriched view
+  // (cross-sheet matches + schedule fields). symbolNotes holds manual fills.
+  const planSymbolsRawRef = useRef({});
+  const [symbolEpoch, setSymbolEpoch] = useState(0);
+  const [planSymbols, setPlanSymbols] = useState([]);
+  const [symbolNotes, setSymbolNotes] = useState({});
+  const [symbolHover, setSymbolHover] = useState(null);   // { id, cx, cy } screen-local
+  const [symbolFocus, setSymbolFocus] = useState(null);   // pinned PlanSymbol id for editing
+  const [openFolderPaths, setOpenFolderPaths] = useState({}); // folder path → false to collapse (default expanded)
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   const [zoneCheck, setZoneCheck] = useState(null);   // ephemeral zone-check region {key, pts (norm)} — never persisted (buildPayload doesn't read it)
@@ -188,10 +206,11 @@ export default function TakeoffCanvas() {
   const resetZone = () => { setZoneCheck(null); setZoneExpand(null); };
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
-  // Docked LEFT panel — one at a time, never overlapping: null | "markup" | "stamp" | "rfi".
+  // Docked LEFT panel — one at a time, never overlapping: null | "files" | "markup" | "stamp" | "rfi".
+  // Defaults to "files" so the project plan set is always visible in the sidebar.
   // The right-rail buttons switch tabs; the dock reflows the canvas (mirrors the
   // docked Takeoffs panel on the right).
-  const [leftTab, setLeftTab] = useState(null);
+  const [leftTab, setLeftTab] = useState("files");
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
   const [panelEditId, setPanelEditId] = useState(null);       // markup id whose text is being edited inline in the markup panel (off-screen fallback for the ✎ button)
@@ -434,6 +453,7 @@ export default function TakeoffCanvas() {
   const [projectName, setProjectName] = useState("");   // optional label for the report header
   const [clientInfo, setClientInfo] = useState({});      // per-project client/job fields for branded output; additive payload field
   const fileInputRef = useRef(null);                    // hidden <input type=file> for "Open PDF"
+  const folderInputRef = useRef(null);                  // hidden folder picker — whole project tree upload
 
   const containerRef = useRef(null);
   const stageRef = useRef(null);
@@ -748,6 +768,10 @@ export default function TakeoffCanvas() {
   // Shapes on the closed sheets persist in annotations and restore on re-add.
   const closePdf = useCallback(async (name) => {
     await store.removePdf(name);
+    setFileFolders((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
   // Remove-from-project (cloud only): the DESTRUCTIVE variant — delete the Drive
@@ -755,13 +779,30 @@ export default function TakeoffCanvas() {
   const removeFromProject = useCallback(async (name) => {
     if (typeof store.removeFromProject !== "function") return;
     await store.removeFromProject(name);
+    setFileFolders((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
   // open dropped/picked files of any kind: PDFs, images, and .zip plan sets all
-  // get turned into PDF sheets (in-browser) by ingestFiles, then stashed locally
+  // get turned into PDF sheets (in-browser) by ingestFiles, then stashed locally.
+  // Folder picks (webkitRelativePath) keep their relative folders so the Files
+  // sidebar can nest them under expandable directory rows.
   async function handleFiles(fileList) {
     const incoming = Array.from(fileList || []);
     if (!incoming.length) return;
+    const pathHints = [];
+    for (const f of incoming) {
+      const rel = (f.webkitRelativePath || "").replace(/\\/g, "/");
+      if (!rel.includes("/")) continue;
+      const parts = rel.split("/").filter(Boolean);
+      if (parts.length < 2) continue;
+      const base = parts[parts.length - 1];
+      const folder = parts.slice(0, -1).join("/");
+      const stem = base.replace(/\.[^.]+$/, "");
+      pathHints.push({ folder, base: base.toLowerCase(), stem: stem.toLowerCase() });
+    }
     setCommitMsg("Reading files…");
     let pdfs = [], skipped = [];
     try { ({ pdfs, skipped } = await ingestFiles(incoming, { onProgress: setCommitMsg })); }
@@ -773,6 +814,32 @@ export default function TakeoffCanvas() {
       return;
     }
     for (const f of pdfs) { try { await store.addPdf(f); } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); } }
+    if (pathHints.length) {
+      setFileFolders((prev) => {
+        const next = { ...prev };
+        for (const pdf of pdfs) {
+          const bn = pdf.name.toLowerCase();
+          const stem = pdf.name.replace(/\.pdf$/i, "").replace(/ \(\d+\)$/i, "").toLowerCase();
+          const hint = pathHints.find((h) => h.base === bn || h.stem === stem
+            || h.base.replace(/\.[^.]+$/, "") === stem);
+          if (hint?.folder) next[pdf.name] = hint.folder;
+        }
+        return next;
+      });
+      // expand newly seen folder paths (and parents) by default
+      setOpenFolderPaths((prev) => {
+        const next = { ...prev };
+        for (const h of pathHints) {
+          const segs = h.folder.split("/");
+          for (let i = 1; i <= segs.length; i++) {
+            const p = segs.slice(0, i).join("/");
+            if (next[p] === false) continue; // user collapsed — leave it
+            next[p] = true;
+          }
+        }
+        return next;
+      });
+    }
     await refreshSheets();
     const names = pdfs.map((f) => f.name);
     const tail = skipped.length ? ` · ${skipped.length} skipped` : "";
@@ -879,6 +946,39 @@ export default function TakeoffCanvas() {
     // Extracted to sanitizeSheetLevels (lib/sheetLevels.js) so this gate has
     // its own unit tests independent of the reducer.
     setSheetLevels(sanitizeSheetLevels(a.sheet_levels));
+    // additive file_folders — sheet name → relative folder path from Folder upload
+    {
+      const raw = a.file_folders;
+      const next = {};
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [k, v] of Object.entries(raw)) {
+          if (typeof k === "string" && typeof v === "string" && v.trim()) next[k] = v.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+        }
+      }
+      setFileFolders(next);
+      const open = {};
+      for (const folder of Object.values(next)) {
+        const segs = folder.split("/").filter(Boolean);
+        for (let i = 1; i <= segs.length; i++) open[segs.slice(0, i).join("/")] = true;
+      }
+      setOpenFolderPaths(open);
+    }
+    // additive symbol_notes — manual fills for plan marks with no schedule data
+    {
+      const raw = a.symbol_notes;
+      const next = {};
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [k, v] of Object.entries(raw)) {
+          if (typeof k !== "string" || !v || typeof v !== "object" || Array.isArray(v)) continue;
+          const note = {};
+          for (const f of ["room_name", "description", "manufacturer", "style", "color", "size", "remarks", "type"]) {
+            if (typeof v[f] === "string" && v[f].trim()) note[f] = v[f].trim();
+          }
+          if (Object.keys(note).length) next[k] = note;
+        }
+      }
+      setSymbolNotes(next);
+    }
     // else-clear matters at runtime (snapshot load): a payload without groups/
     // tabs must not inherit the pre-load ones — autosave would persist a hybrid.
     // In group mode sheetGroup + lastGroup share ONE instance so the lastGroup-sync
@@ -1192,6 +1292,12 @@ export default function TakeoffCanvas() {
           if (stale()) return;
           const det = detectScale(tc, m.viewport);
           if (det) setDetectedScales((d) => (d[m.key]?.label === det.label ? d : { ...d, [m.key]: det }));
+          // Plan symbols (door/window/type/finish marks) from the same text layer
+          try {
+            const tokens = extractRegionText(tc, m.viewport, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
+            planSymbolsRawRef.current = { ...planSymbolsRawRef.current, [m.key]: extractPlanSymbols(tokens) };
+            setSymbolEpoch((n) => n + 1);
+          } catch { /* best-effort */ }
         }).catch(() => {});
       }
       setStatus("ready");
@@ -1224,6 +1330,13 @@ export default function TakeoffCanvas() {
                 const key = n > 1 ? `${active}#${n}` : active;
                 setDetectedScales((d) => (d[key]?.label === det.label ? d : { ...d, [key]: det }));
               }
+              // Cross-sheet symbol match: index marks on pages not currently open
+              try {
+                const key = n > 1 ? `${active}#${n}` : active;
+                const tokens = extractRegionText(tc, vp2, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
+                planSymbolsRawRef.current = { ...planSymbolsRawRef.current, [key]: extractPlanSymbols(tokens) };
+                setSymbolEpoch((e) => e + 1);
+              } catch { /* best-effort */ }
             } catch { /* skip */ }
           }
           if (!stale() && Object.keys(found).length) setPageLabels((m) => ({ ...found, ...m }));
@@ -1238,6 +1351,11 @@ export default function TakeoffCanvas() {
     return () => { renderSeqRef.current++; for (const [, rt] of renderTasksRef.current) { try { rt.cancel(); } catch { /* done */ } } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupSig, hiResKeys.join(" ")]);
+
+  // Rebuild the enriched plan-symbol index whenever extracts or conditions change.
+  useEffect(() => {
+    setPlanSymbols(enrichSymbolsWithSchedule(buildPlanSymbolIndex(planSymbolsRawRef.current), { conditions }));
+  }, [conditions, symbolEpoch]);
 
   // ── detail view: re-render the visible region at the current zoom ───────────
   // The base panel bitmap is the fast first paint and the zoomed-out view. Once
@@ -1392,7 +1510,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -1445,13 +1563,13 @@ export default function TakeoffCanvas() {
         if (isStaleTabError(e)) setCommitMsg(STALE_TAB_MESSAGE);
         setSaveState("idle");
       });
-    }, 700);
+    }, 250);   // near real-time — short debounce so every edit lands quickly without thrashing IDB/Drive
     return () => clearTimeout(t);
     // buildPayload is intentionally omitted: this dep list IS the exact set of
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, lastGroup, openTabs, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, lastGroup, openTabs, projectName, clientInfo, units]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -1753,7 +1871,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -2042,6 +2160,26 @@ export default function TakeoffCanvas() {
     });
     selectShape(hit ? hit.id : null);
     if (hit) { dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return; }
+    // 4b. plan symbol (door/type mark) — pin the detail card for review / manual fill
+    {
+      const panel = panelAt(p[0]);
+      if (panel?.img?.w) {
+        const sym = hitPlanSymbol(planSymbols, panel.key, p[0] - panel.xOffset, p[1], 6 / tfRef.current.scale);
+        if (sym) {
+          const r = containerRef.current?.getBoundingClientRect();
+          if (r) {
+            setSymbolHover({
+              id: sym.id,
+              cx: Math.min(Math.max(12, e.clientX - r.left + 14), r.width - 280),
+              cy: Math.min(Math.max(12, e.clientY - r.top + 16), r.height - 320),
+            });
+          }
+          setSymbolFocus(sym.id);
+          return;
+        }
+      }
+      setSymbolFocus(null);
+    }
     // 5. open canvas — drag the paper to PAN (the instinct everyone brings from
     // desktop takeoff tools; no need to reach for the Pan tool). The plain
     // click (no drag) already cleared the selection above, so a stationary
@@ -2278,23 +2416,38 @@ export default function TakeoffCanvas() {
     if (s.measure_role === "linear") return `${tag} · ${fl(lf)}${a > 0 ? ` · ${fa(a)} border` : ""}`;
     return `${tag} · ${faSY(a)}`;
   }
-  // STACK-style hover readout: small, follows the cursor, gone on hover-off
+  // STACK-style hover readout: small, follows the cursor, gone on hover-off.
+  // Prefer a takeoff shape; otherwise a plan symbol (door/type mark) shows its card.
   function updateHover(e) {
     const el = hoverRef.current;
     if (!el) return;
-    if (panRef.current || dragRef.current || pendingClickRef.current || status !== "ready") { el.style.display = "none"; hoverIdRef.current = ""; return; }
+    if (panRef.current || dragRef.current || pendingClickRef.current || status !== "ready" || symbolFocus) {
+      el.style.display = "none"; hoverIdRef.current = "";
+      if (!symbolFocus) setSymbolHover(null);
+      return;
+    }
     const pt = toImage(e.clientX, e.clientY);
     const thr = 8 / tfRef.current.scale;
     const hit = [...visibleShapes].reverse().find((s) => {
       const sp = panelByKey(s.sheet_id);
       return hitShapeC(s, pt[0] - sp.xOffset, pt[1], sp.img.w, sp.img.h, thr);
     });
-    if (!hit) { el.style.display = "none"; hoverIdRef.current = ""; return; }
-    if (hoverIdRef.current !== hit.id) { el.textContent = describeShape(hit); hoverIdRef.current = hit.id; }
+    if (hit) {
+      setSymbolHover(null);
+      if (hoverIdRef.current !== hit.id) { el.textContent = describeShape(hit); hoverIdRef.current = hit.id; }
+      const r = containerRef.current.getBoundingClientRect();
+      el.style.left = `${e.clientX - r.left + 14}px`;
+      el.style.top = `${e.clientY - r.top + 16}px`;
+      el.style.display = "block";
+      return;
+    }
+    el.style.display = "none"; hoverIdRef.current = "";
+    const panel = panelAt(pt[0]);
+    if (!panel?.img?.w) { setSymbolHover(null); return; }
+    const sym = hitPlanSymbol(planSymbols, panel.key, pt[0] - panel.xOffset, pt[1], 4 / tfRef.current.scale);
+    if (!sym) { setSymbolHover(null); return; }
     const r = containerRef.current.getBoundingClientRect();
-    el.style.left = `${e.clientX - r.left + 14}px`;
-    el.style.top = `${e.clientY - r.top + 16}px`;
-    el.style.display = "block";
+    setSymbolHover({ id: sym.id, cx: e.clientX - r.left + 14, cy: e.clientY - r.top + 16 });
   }
   function onPointerMove(e) {
     lastPtrRef.current = [e.clientX, e.clientY];   // paste targets the sheet under the cursor
@@ -2437,7 +2590,28 @@ export default function TakeoffCanvas() {
       try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
       return;
     }
-    if (ocDragRef.current) { ocDragRef.current = null; bumpIdle(); try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ } return; }
+    if (ocDragRef.current) {
+      ocDragRef.current = null;
+      bumpIdle();
+      // Drag may have pulled one proposal region into another — coalesce now
+      // (not mid-drag) so the preview stays fluid and the merge is one step.
+      let didMerge = false;
+      flushSync(() => {
+        setProposal((pr) => {
+          if (!pr) return pr;
+          const { regions, changed } = coalesceOverlappingProposalRegions(pr.regions, pr.key);
+          if (!changed) return pr;
+          didMerge = true;
+          return { ...pr, regions };
+        });
+      });
+      if (didMerge) {
+        setOcSel(null);
+        setCommitMsg("Merged overlapping selection into one — review, then ⏎ creates.");
+      }
+      try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+      return;
+    }
     if (dragRef.current) {
       const d = dragRef.current;
       dragRef.current = null;
@@ -2452,12 +2626,44 @@ export default function TakeoffCanvas() {
       // orphaned preview state.)
       if ((d.kind === "vertex" || d.kind === "edge" || d.kind === "move")
           && d.lastVerts && !vertsEqual(d.lastVerts, d.prev.verts_norm)) {
-        dispatchShape({
+        const res = dispatchShape({
           type: "geom", id: d.shapeId, editKind: d.kind,
           verts_norm: d.lastVerts,
           ...(d.lastComputed !== undefined ? { computed: d.lastComputed } : {}),
           prev: d.prev,
         });
+        // If the edited polygon now overlaps another same-condition takeoff on
+        // this sheet, absorb those into one shape (keep this id, drop the rest).
+        const edited = res.shapes.find((s) => s.id === d.shapeId);
+        if (edited && (edited.measure_role === "floor_area" || edited.measure_role === "deduct")) {
+          const tp = panelByKey(edited.sheet_id);
+          const w = tp?.img?.w, h = tp?.img?.h;
+          if (w > 0 && h > 0) {
+            const polyOf = (s) => s.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
+            const editedPoly = polyOf(edited);
+            const victims = res.shapes.filter((s) =>
+              s.id !== edited.id
+              && s.sheet_id === edited.sheet_id
+              && s.condition_id === edited.condition_id
+              && s.measure_role === edited.measure_role
+              && polygonsOverlap(editedPoly, polyOf(s)));
+            if (victims.length) {
+              const uni = unionPolygons([editedPoly, ...victims.map(polyOf)]);
+              if (uni && uni.length >= 3) {
+                dispatchShape({ type: "delete", ids: victims.map((v) => v.id) });
+                const vn = uni.map(([x, y]) => [x / w, y / h]);
+                dispatchShape({
+                  type: "geom", id: edited.id, editKind: d.kind,
+                  verts_norm: vn,
+                  computed: recomputeShape({ ...edited, verts_norm: vn }),
+                  prev: geomSnapshot(edited),
+                });
+                selectShape(edited.id);
+                setCommitMsg("Merged overlapping takeoffs into one.");
+              }
+            }
+          }
+        }
       }
       try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
       return;
@@ -2724,45 +2930,66 @@ export default function TakeoffCanvas() {
     }
     return pr;
   }
-  // Build one one-click region from a flood result — the trace/snap/metrics
+  // Build one-click region(s) from a flood result — the trace/snap/metrics
   // core shared VERBATIM by the stage path (proposeRegion) and the voice-deixis
   // direct-commit path (settleRegion), so an aimed utterance and an aimed click
   // can never trace differently. Raster differences: a looser RDP eps (scan
   // contours wobble) and NO vertex snapping — there are no true endpoints on a
   // scan, and pulling room corners onto the title-block's vector corners would
-  // corrupt the ring. null = no scale, or the ring collapsed (too tiny/thin).
-  function buildOneClickRegion(f, tp, local, negative, raster) {
+  // corrupt the ring. Positive clicks also auto-carve enclosed islands
+  // (vanity/toilet/column) as neg cutouts. null = no scale, or ring collapsed.
+  function buildOneClickRegions(f, tp, local, negative, raster) {
     const upp = uppFor(tp.key);
     if (!upp) return null;
-    let ring;
-    if (raster) ring = traceRegion(f, RASTER_RDP_EPS);
-    else {
+    const eps = raster ? RASTER_RDP_EPS : 1.5;
+    const snapRing = (ring) => {
+      if (raster) return ring;
       const grid = snapGridsRef.current.get(tp.key);
-      ring = snapVertices(traceRegion(f), (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null), 7);
-    }
-    if (ring.length < 3) return null;
-    // poly0 freezes the MACHINE trace (post-snap, pre-handle-edit) so a
-    // corrected region can still report what the fill proposed; sens rides
-    // only when the estimator moved the knob off Balanced (vector path
-    // only — the raster mask is single-tier, sensitivity is inert there).
-    return {
-      kind: negative ? "neg" : "pos",
-      seed: local,
-      poly: ring,
-      poly0: ring.map(([x, y]) => [x, y]),
-      ...(!raster && fillSens !== SENS_BALANCED ? { sens: fillSens } : {}),
-      area_sf: +(ringArea(ring) * upp * upp).toFixed(2),
-      perim_lf: +(closedMetrics(ring).perim * upp).toFixed(2),
-      hf: !!f.hatchFiltered,
-      rt: !!raster,
+      return snapVertices(ring, (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null), 7);
     };
+    const mk = (kind, ring, seed, autoCutout) => {
+      if (ring.length < 3) return null;
+      const poly = snapRing(ring);
+      if (poly.length < 3) return null;
+      return {
+        kind,
+        seed,
+        poly,
+        poly0: poly.map(([x, y]) => [x, y]),
+        ...(!raster && fillSens !== SENS_BALANCED ? { sens: fillSens } : {}),
+        area_sf: +(ringArea(poly) * upp * upp).toFixed(2),
+        perim_lf: +(closedMetrics(poly).perim * upp).toFixed(2),
+        hf: !!f.hatchFiltered,
+        rt: !!raster,
+        os: !!f.openingsSealed,
+        ...(autoCutout ? { autoCutout: true } : {}),
+      };
+    };
+    if (negative) {
+      const ring = snapRing(traceRegion(f, eps));
+      const region = mk("neg", ring, local, false);
+      return region ? [region] : null;
+    }
+    const { outer, holes } = traceRegionWithHoles(f, { upp, epsMaskPx: eps });
+    const pos = mk("pos", outer, local, false);
+    if (!pos) return null;
+    const out = [pos];
+    for (const hole of holes) {
+      // seed = hole centroid (panel-local) so provenance / dedup have a point inside
+      let sx = 0, sy = 0;
+      for (const [x, y] of hole) { sx += x; sy += y; }
+      const seed = [sx / hole.length, sy / hole.length];
+      const neg = mk("neg", hole, seed, true);
+      if (neg) out.push(neg);
+    }
+    return out;
   }
-  // The propose tail (physical clicks): stage the region for the Create (⏎)
+  // The propose tail (physical clicks): stage the region(s) for the Create (⏎)
   // gate. Duplicate/carve checks run inside a FUNCTIONAL setProposal so a
   // click racing the first raster render can't clobber state.
   function proposeRegion(f, tp, local, negative, raster) {
-    const region = buildOneClickRegion(f, tp, local, negative, raster);
-    if (!region) {
+    const regions = buildOneClickRegions(f, tp, local, negative, raster);
+    if (!regions || !regions.length) {
       if (uppFor(tp.key)) setCommitMsg("Couldn't trace that space — trace it with Area (A).");
       return;
     }
@@ -2798,11 +3025,13 @@ export default function TakeoffCanvas() {
     // single-click case AND for two clicks racing the same shared promise
     // (the second call's setProposal, and its read of `outcome`, still runs
     // strictly after the first call's flushSync has fully committed).
+    const primary = regions[0];
+    const autoCutouts = regions.filter((r) => r.autoCutout).length;
     let outcome;
     flushSync(() => {
       setProposal((prev) => {
         const rs = prev && prev.key === tp.key ? prev.regions : [];
-        if (rs.some((r) => r.kind === region.kind && pointInPoly(local[0], local[1], r.poly))) {
+        if (rs.some((r) => r.kind === primary.kind && pointInPoly(local[0], local[1], r.poly))) {
           outcome = "dup";
           return prev;
         }
@@ -2810,12 +3039,73 @@ export default function TakeoffCanvas() {
           outcome = "needsPos";
           return prev;
         }
-        outcome = "added";
-        return { key: tp.key, regions: [...rs, region] };
+        // Skip auto-cutouts that already sit inside an existing neg, or whose
+        // seed isn't inside any pos we're keeping (including the new primary).
+        // Overlapping same-kind regions coalesce into one ring (multi-click
+        // partial fills → a single space / cutout), not a stack of duplicates.
+        const merged = [...rs];
+        const uppNow = uppFor(tp.key) || 0;
+        const absorb = (region) => {
+          const parts = [region.poly];
+          let wasAuto = !!region.autoCutout;
+          let any = false;
+          // Fold every same-kind region that overlaps the growing union (transitive).
+          for (;;) {
+            const hit = [];
+            for (let i = 0; i < merged.length; i++) {
+              if (merged[i].kind !== region.kind) continue;
+              if (parts.some((p) => polygonsOverlap(merged[i].poly, p))) hit.push(i);
+            }
+            if (!hit.length) break;
+            any = true;
+            for (const i of hit) {
+              parts.push(merged[i].poly);
+              if (merged[i].autoCutout) wasAuto = true;
+            }
+            for (let k = hit.length - 1; k >= 0; k--) merged.splice(hit[k], 1);
+          }
+          if (!any) { merged.push(region); return false; }
+          const uni = unionPolygons(parts);
+          if (!uni || uni.length < 3) { merged.push(region); return false; }
+          const area_sf = +(ringArea(uni) * uppNow * uppNow).toFixed(2);
+          const perim_lf = +(closedMetrics(uni).perim * uppNow).toFixed(2);
+          merged.push({
+            ...region,
+            poly: uni,
+            poly0: uni.map(([x, y]) => [x, y]),
+            area_sf,
+            perim_lf,
+            seed: region.seed,
+            ...(wasAuto ? { autoCutout: true } : {}),
+          });
+          return true;
+        };
+        const posPolys = () => merged.filter((r) => r.kind === "pos").map((r) => r.poly);
+        let didMerge = false;
+        for (const region of regions) {
+          if (region.kind === "pos") {
+            if (absorb(region)) didMerge = true;
+            continue;
+          }
+          if (merged.some((r) => r.kind === "neg" && pointInPoly(region.seed[0], region.seed[1], r.poly))) continue;
+          if (!posPolys().some((poly) => pointInPoly(region.seed[0], region.seed[1], poly))) continue;
+          if (absorb(region)) didMerge = true;
+        }
+        // Drop cutouts whose seed no longer sits in any remaining pos (e.g. a
+        // merged pos no longer covers an old auto-carve).
+        for (let i = merged.length - 1; i >= 0; i--) {
+          const r = merged[i];
+          if (r.kind !== "neg") continue;
+          if (!posPolys().some((poly) => pointInPoly(r.seed[0], r.seed[1], poly))) merged.splice(i, 1);
+        }
+        outcome = didMerge ? "merged" : "added";
+        return { key: tp.key, regions: merged };
       });
     });
     if (outcome === "dup") setCommitMsg(negative ? "That cutout is already carved." : "Already selected — ⌥-click carves an enclosed cutout; ⏎ creates.");
     else if (outcome === "needsPos") setCommitMsg("⌥-click carves an enclosed area INSIDE the selection (a column or shaft) — click its room first.");
+    else if (outcome === "merged") setCommitMsg("Merged overlapping selection into one — review, then ⏎ creates.");
+    else if (!negative && autoCutouts > 0) setCommitMsg(`Auto-carved ${autoCutouts} cutout${autoCutouts === 1 ? "" : "s"} (fixture/column) — review, then ⏎ creates.`);
     else setCommitMsg("");
   }
   // `direct` (voice deixis, RFC #59): { conditionId, label } — the human aimed
@@ -2854,11 +3144,12 @@ export default function TakeoffCanvas() {
       const mo = ensureMask(tp.key);
       if (!mo && !rasterEligible) return say("Still reading this sheet's linework — try again in a second.");
       if (mo) {
-        const f = floodRegion(mo, local[0], local[1], fillSens);
+        const gap = openingGapPx(upp, mo.ws);
+        const f = floodRegionSealed(mo, local[0], local[1], fillSens, gap);
         if (f.status === "ok") return settleRegion(f, tp, local, negative, false, direct);
         if (!rasterEligible) {
           return say(f.status === "leak"
-            ? "That space isn't enclosed on the plan linework — the fill spilled. Click a more enclosed spot, or trace it with Area (A)."
+            ? "That space isn't enclosed on the plan linework — the fill spilled past a gap wider than a door/window. Click a more enclosed spot, or trace it with Area (A)."
             : "Landed in dense linework (hatching/text). Zoom in and click an open spot, or trace it with Area (A).");
         }
       }
@@ -2889,13 +3180,14 @@ export default function TakeoffCanvas() {
         : { ok: false, message: "" };
     }
     if (!rmo) return say("Couldn't read this scan — trace it with Area (A).");
-    // The raster mask is single-tier (softCount 0), so floodRegion's hatch
-    // escalation — and with it the Fill sensitivity knob — is structurally
-    // inert on scans; no sensitivity is passed.
-    const f = floodRegion(rmo, local[0], local[1]);
+    // The raster mask is single-tier (softCount 0), so hatch escalation — and
+    // with it the Fill sensitivity knob — is structurally inert on scans.
+    // Opening seal still applies: same door/window gap policy as the vector path.
+    const gap = openingGapPx(upp, rmo.ws);
+    const f = floodRegionSealed(rmo, local[0], local[1], SENS_BALANCED, gap);
     if (f.status !== "ok") {
       return say(f.status === "leak"
-        ? "That space isn't enclosed on the scan — the fill escaped through a gap (faded line or open doorway). Click a more enclosed spot, or trace it with Area (A)."
+        ? "That space isn't enclosed on the scan — the fill escaped through a gap wider than a door/window (faded line or open doorway). Click a more enclosed spot, or trace it with Area (A)."
         : "Landed on dense scan ink (text or hatching). Zoom in and click an open spot, or trace it with Area (A).");
     }
     return settleRegion(f, tp, local, negative, true, direct);
@@ -2906,9 +3198,9 @@ export default function TakeoffCanvas() {
   // imperative IS the confirmation (RFC #59 who-aimed-it rule).
   function settleRegion(f, tp, local, negative, raster, direct) {
     if (!direct) { proposeRegion(f, tp, local, negative, raster); return { ok: true, message: "" }; }
-    const region = buildOneClickRegion(f, tp, local, negative, raster);
-    if (!region) return { ok: false, message: "Couldn't trace that space — trace it with Area (A)." };
-    return commitOneClickRegions({ key: tp.key, regions: [region] }, direct);
+    const regions = buildOneClickRegions(f, tp, local, negative, raster);
+    if (!regions || !regions.length) return { ok: false, message: "Couldn't trace that space — trace it with Area (A)." };
+    return commitOneClickRegions({ key: tp.key, regions }, direct);
   }
   // The ONE commit gate for one-click regions — the ⏎/dblclick Create AND a
   // voice-deixis trace both land here, so human-aimed work gets exactly one
@@ -2933,14 +3225,16 @@ export default function TakeoffCanvas() {
       // region's verts ARE the proposal, so nothing extra rides. Post-Create
       // edits are stamped by stampEdit, which freezes the same field from the
       // pre-edit ring only when Create didn't already.
-      origin: { method: "one_click_v1", seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h], reviewed: true, ...(r.hf ? { hatch_filtered: true } : {}), ...(r.rt ? { raster_traced: true } : {}), ...(r.sens != null ? { fill_sensitivity: r.sens } : {}), ...(r.touched ? { edited_before_create: true, proposed_verts_norm: r.poly0.map(([x, y]) => [x / tp.img.w, y / tp.img.h]) } : {}) },
+      origin: { method: "one_click_v1", seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h], reviewed: true, ...(r.hf ? { hatch_filtered: true } : {}), ...(r.rt ? { raster_traced: true } : {}), ...(r.os ? { openings_sealed: true } : {}), ...(r.autoCutout ? { auto_cutout: true } : {}), ...(r.sens != null ? { fill_sensitivity: r.sens } : {}), ...(r.touched ? { edited_before_create: true, proposed_verts_norm: r.poly0.map(([x, y]) => [x / tp.img.w, y / tp.img.h]) } : {}) },
     }));
     dispatchShape({ type: "add", shapes: made });   // the creation gate — id/created_at minted by the command
     const sf = prop.regions.reduce((n, r) => n + (r.kind === "neg" ? -r.area_sf : r.area_sf), 0);
     // condById is a render closure — a condition minted THIS utterance is only
     // in the live mirror, so fall through to it for the tag
     const tag = (condById[condId] || agentStateRef.current.conditions.find((c) => c.id === condId))?.finish_tag || "";
-    const message = `Created ${made.length} takeoff${made.length === 1 ? "" : "s"} — ${fa(sf)} ${tag}. Click the next room.`;
+    const autoN = prop.regions.filter((r) => r.autoCutout).length;
+    const cutMsg = autoN ? ` (${autoN} auto-cutout${autoN === 1 ? "" : "s"})` : "";
+    const message = `Created ${made.length} takeoff${made.length === 1 ? "" : "s"} — ${fa(sf)} ${tag}${cutMsg}. Click the next room.`;
     setCommitMsg(message);
     return { ok: true, message };
   }
@@ -2960,6 +3254,51 @@ export default function TakeoffCanvas() {
     const upp = uppFor(key) || 0;
     return { area_sf: +(ringArea(poly) * upp * upp).toFixed(2), perim_lf: +(closedMetrics(poly).perim * upp).toFixed(2) };
   };
+  // After a handle drag (or any edit), fold same-kind proposal regions that
+  // now share interior into one ring — mirrors the click-time absorb path.
+  function coalesceOverlappingProposalRegions(regions, key) {
+    let list = regions.slice();
+    let changed = false;
+    for (;;) {
+      let pair = null;
+      for (let i = 0; i < list.length && !pair; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          if (list[i].kind !== list[j].kind) continue;
+          if (!polygonsOverlap(list[i].poly, list[j].poly)) continue;
+          pair = [i, j];
+          break;
+        }
+      }
+      if (!pair) break;
+      const [i, j] = pair;
+      const a = list[i], b = list[j];
+      const uni = unionPolygons([a.poly, b.poly]);
+      if (!uni || uni.length < 3) break;
+      const wasAuto = !!(a.autoCutout || b.autoCutout);
+      const next = {
+        ...a,
+        poly: uni,
+        poly0: uni.map(([x, y]) => [x, y]),
+        ...ocMetrics(uni, key),
+        seed: a.seed,
+        touched: true,
+        ...(wasAuto ? { autoCutout: true } : {}),
+      };
+      list = list.filter((_, k) => k !== i && k !== j);
+      list.push(next);
+      changed = true;
+    }
+    const posPolys = list.filter((r) => r.kind === "pos").map((r) => r.poly);
+    const pruned = [];
+    for (const r of list) {
+      if (r.kind === "neg" && !posPolys.some((poly) => pointInPoly(r.seed[0], r.seed[1], poly))) {
+        changed = true;
+        continue;
+      }
+      pruned.push(r);
+    }
+    return { regions: pruned, changed };
+  }
   // `bypass` (true for a raster region/shape) skips nearestSnap entirely — on a
   // scan wrapper the snap grid holds only the placed-image/clip-rect corners
   // and title-block linework (extractVectorGeometry's few real points, not the
@@ -3653,11 +3992,12 @@ export default function TakeoffCanvas() {
       const mo = ensureMask(key);
       if (!mo && !rasterEligible) return { error: "Still reading this sheet's linework — try again in a second." };
       if (mo) {
-        const r = floodRegion(mo, local[0], local[1], fillSens);
+        const gap = openingGapPx(upp, mo.ws);
+        const r = floodRegionSealed(mo, local[0], local[1], fillSens, gap);
         if (r.status === "ok") f = r;
         else if (!rasterEligible) {
           return { error: r.status === "leak"
-            ? "That space isn't enclosed on the plan linework — the fill spilled. Seed a more enclosed spot."
+            ? "That space isn't enclosed on the plan linework — the fill spilled past a gap wider than a door/window. Seed a more enclosed spot."
             : "Landed in dense linework (hatching/text). Seed an open spot inside the room." };
         }
       }
@@ -3665,28 +4005,44 @@ export default function TakeoffCanvas() {
     if (!f) {
       const rmo = await ensureRasterMask(key);
       if (!rmo) return { error: "Couldn't read this scan — the estimator will have to trace it by hand." };
-      const r = floodRegion(rmo, local[0], local[1]);
+      const gap = openingGapPx(upp, rmo.ws);
+      const r = floodRegionSealed(rmo, local[0], local[1], SENS_BALANCED, gap);
       if (r.status !== "ok") {
         return { error: r.status === "leak"
-          ? "That space isn't enclosed on the scan — the fill escaped through a gap (faded line or open doorway). Seed a more enclosed spot."
+          ? "That space isn't enclosed on the scan — the fill escaped through a gap wider than a door/window (faded line or open doorway). Seed a more enclosed spot."
           : "Landed on dense scan ink (text or hatching). Seed an open spot inside the room." };
       }
       f = r; raster = true;
     }
-    let ring;
-    if (raster) ring = traceRegion(f, RASTER_RDP_EPS);
-    else {
+    const eps = raster ? RASTER_RDP_EPS : 1.5;
+    const snapRing = (ring) => {
+      if (raster) return ring;
       const grid = snapGridsRef.current.get(key);
-      ring = snapVertices(traceRegion(f), (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null), 7);
-    }
+      return snapVertices(ring, (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null), 7);
+    };
+    const { outer, holes } = traceRegionWithHoles(f, { upp, epsMaskPx: eps });
+    const ring = snapRing(outer);
     if (ring.length < 3) return { error: "Couldn't trace that space into a polygon." };
+    const cutouts = [];
+    for (const hole of holes) {
+      const hr = snapRing(hole);
+      if (hr.length < 3) continue;
+      cutouts.push({
+        verts_norm: hr.map(([x, y]) => [+(x / p.img.w).toFixed(5), +(y / p.img.h).toFixed(5)]),
+        area_sf: +(ringArea(hr) * upp * upp).toFixed(2),
+        perimeter_lf: +(closedMetrics(hr).perim * upp).toFixed(2),
+        auto_cutout: true,
+      });
+    }
     return {
       verts_norm: ring.map(([x, y]) => [+(x / p.img.w).toFixed(5), +(y / p.img.h).toFixed(5)]),
       area_sf: +(ringArea(ring) * upp * upp).toFixed(2),
       perimeter_lf: +(closedMetrics(ring).perim * upp).toFixed(2),
       seed_norm: [+xn.toFixed(5), +yn.toFixed(5)],
       ...(f.hatchFiltered ? { hatch_filtered: true } : {}),
+      ...(f.openingsSealed ? { openings_sealed: true } : {}),
       ...(raster ? { raster_traced: true } : {}),
+      ...(cutouts.length ? { cutouts } : {}),
     };
   }
 
@@ -4863,9 +5219,14 @@ export default function TakeoffCanvas() {
         )}
         <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed" multiple style={{ display: "none" }}
           onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+        <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
+          onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <button type="button" onClick={() => fileInputRef.current?.click()} title="Open plans — PDF, image, or a .zip plan set (or just drag them onto the canvas)"
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
           <Icon name="plus" size={14} />Open</button>
+        <button type="button" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder — every PDF, image, and .zip inside is added to this project"
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
+          <Icon name="sheets" size={14} />Folder</button>
         <button type="button" onClick={() => setView("gallery")}
           title={`Plan set — the visual gallery; open one or several sheets (G)${sheetGroup.length ? ` · ${sheetGroup.length} side-by-side now` : ""}`}
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${sheetGroup.length ? "var(--cobalt)" : "var(--ink-faint)"}`, background: sheetGroup.length ? "var(--cobalt)" : "transparent", color: sheetGroup.length ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
@@ -5284,15 +5645,15 @@ export default function TakeoffCanvas() {
 
       {/* canvas + issue desk */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
-       {/* docked LEFT panel — one of Markups/Stamps/RFIs at a time. Reflows the
+       {/* docked LEFT panel — one of Files/Markups/Stamps/RFIs at a time. Reflows the
            canvas (a flex sibling), mirroring the docked Takeoffs panel on the right. */}
        {leftTab && (
          <div style={{ width: 360, flexShrink: 0, display: "flex", flexDirection: "column", borderRight: "1px solid var(--ink-faint)", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
            {/* tab strip */}
            <div style={{ display: "flex", alignItems: "stretch", background: "var(--cobalt)", color: "var(--accent-contrast)" }}>
-             {[{ id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
+             {[{ id: "files", label: "Files", n: sheets.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
                <button key={t.id} onClick={() => setLeftTab(t.id)} title={t.label}
-                 style={{ flex: 1, padding: "9px 6px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 12 }}>
+                 style={{ flex: 1, padding: "9px 4px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5 }}>
                  {t.label}{t.n ? ` · ${t.n}` : ""}
                </button>
              ))}
@@ -5300,6 +5661,97 @@ export default function TakeoffCanvas() {
            </div>
            {/* body of the active tab */}
            <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+             {leftTab === "files" && (
+               <div>
+                 <div style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
+                   <button type="button" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set"
+                     style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
+                     <Icon name="plus" size={13} />Add files
+                   </button>
+                   <button type="button" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder"
+                     style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
+                     <Icon name="sheets" size={13} />Folder
+                   </button>
+                   <button type="button" onClick={() => setView("gallery")} title="Open the visual plan-set gallery"
+                     style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12 }}>
+                     Gallery
+                   </button>
+                 </div>
+                 <div style={{ padding: "8px 12px", fontSize: 11.5, color: "var(--ink-muted)", borderBottom: "1px solid var(--ink-faint)" }}>
+                   Upload a <b>Folder</b> to keep the directory tree — click a folder row to expand or collapse its contents.
+                 </div>
+                 {sheets.length === 0 ? (
+                   <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
+                     No project files yet. Use <b>Add files</b> or <b>Folder</b> to upload the whole plan set.
+                   </div>
+                 ) : (() => {
+                   // Nest sheets under Folder-upload paths; loose files stay at the root.
+                   const root = { folders: {}, files: [] };
+                   for (const s of sheets) {
+                     const parts = (fileFolders[s.name] || "").split("/").filter(Boolean);
+                     let node = root;
+                     for (const part of parts) {
+                       if (!node.folders[part]) node.folders[part] = { name: part, folders: {}, files: [] };
+                       node = node.folders[part];
+                     }
+                     node.files.push(s);
+                   }
+                   const isOpen = (path) => openFolderPaths[path] !== false;
+                   const toggle = (path) => setOpenFolderPaths((m) => ({ ...m, [path]: !isOpen(path) }));
+                   const fileRow = (s, depth) => {
+                     const on = active === s.name;
+                     const open = openTabs.some((k) => parseSheetKey(k).file === s.name);
+                     return (
+                       <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: `7px 10px 7px ${12 + depth * 14}px`, borderBottom: "1px solid var(--ink-faint)", background: on ? "var(--paper-cream)" : "transparent" }}>
+                         <button type="button" onClick={() => { openSheets([s.name]); setLeftTab("files"); }}
+                           title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}
+                           style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
+                           <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{s.name}</span>
+                           <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{open ? "open" : "in project"}{on ? " · viewing" : ""}</span>
+                         </button>
+                         <button type="button" onClick={() => closePdf(s.name)} title={`Remove ${s.name} from this project`}
+                           style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 4, display: "inline-flex" }}>
+                           <Icon name="close" size={11} />
+                         </button>
+                       </div>
+                     );
+                   };
+                   const renderNode = (node, path, depth) => {
+                     const folderNames = Object.keys(node.folders).sort((a, b) => a.localeCompare(b));
+                     return (
+                       <>
+                         {folderNames.map((name) => {
+                           const child = node.folders[name];
+                           const childPath = path ? `${path}/${name}` : name;
+                           const open = isOpen(childPath);
+                           const nFiles = (() => {
+                             let c = child.files.length;
+                             const walk = (n) => { for (const f of Object.values(n.folders)) { c += f.files.length; walk(f); } };
+                             walk(child);
+                             return c;
+                           })();
+                           return (
+                             <div key={childPath}>
+                               <button type="button" onClick={() => toggle(childPath)}
+                                 title={open ? `Collapse ${name}` : `Expand ${name}`}
+                                 style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: `8px 10px 8px ${12 + depth * 14}px`, border: "none", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 12.5 }}>
+                                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, width: 12, color: "var(--cobalt)" }}>{open ? "▾" : "▸"}</span>
+                                 <Icon name="sheets" size={13} />
+                                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                                 <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{nFiles}</span>
+                               </button>
+                               {open && renderNode(child, childPath, depth + 1)}
+                             </div>
+                           );
+                         })}
+                         {node.files.map((s) => fileRow(s, depth))}
+                       </>
+                     );
+                   };
+                   return <div>{renderNode(root, "", 0)}</div>;
+                 })()}
+               </div>
+             )}
              {leftTab === "markup" && (
                <div>
                  {/* layer show/hide — hides the on-canvas markup layer AND its hit-testing
@@ -5439,6 +5891,110 @@ export default function TakeoffCanvas() {
           <div ref={aimChipRef} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", display: "none", zIndex: 6, padding: "2px 8px", background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-1)", fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", willChange: "transform" }} />
           {/* hover readout — what takeoff is under the cursor (DOM-direct) */}
           <div ref={hoverRef} style={{ position: "absolute", display: "none", pointerEvents: "none", zIndex: 8, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-1)", padding: "4px 8px", fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--ink)", whiteSpace: "nowrap" }} />
+          {/* Plan-symbol detail card — hover preview, or pinned (Select-click) for manual fill */}
+          {(() => {
+            const focusSym = symbolFocus ? planSymbols.find((s) => s.id === symbolFocus) : null;
+            const hoverSym = !focusSym && symbolHover ? planSymbols.find((s) => s.id === symbolHover.id) : null;
+            const sym = focusSym || hoverSym;
+            if (!sym) return null;
+            const pinned = !!focusSym;
+            const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+            const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
+            const left = pinned ? Math.min((symbolHover?.cx ?? 24), (containerRef.current?.clientWidth || 400) - 280) : (symbolHover?.cx ?? 24);
+            const top = pinned ? Math.min((symbolHover?.cy ?? 24), (containerRef.current?.clientHeight || 400) - 320) : (symbolHover?.cy ?? 24);
+            const fieldRows = [
+              ["room_name", "Room name", fields.room_name],
+              ["type", "Type", SYMBOL_KIND_LABEL[sym.kind]],
+              ["description", "Description", fields.description],
+              ["manufacturer", "Manufacturer", fields.manufacturer],
+              ["style", "Style", fields.style],
+              ["color", "Color", fields.color],
+              ["size", "Size", fields.size],
+              ["remarks", "Remarks", fields.remarks],
+            ];
+            const setNote = (field, value) => {
+              setSymbolNotes((prev) => {
+                const cur = { ...(prev[noteKey] || {}) };
+                const v = (value || "").trim();
+                if (v) cur[field] = v; else delete cur[field];
+                const next = { ...prev };
+                if (Object.keys(cur).length) next[noteKey] = cur; else delete next[noteKey];
+                return next;
+              });
+            };
+            return (
+              <div style={{ position: "absolute", left, top, zIndex: 12, width: 260, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", pointerEvents: pinned ? "auto" : "none", fontFamily: "var(--f-body)", fontSize: 12, color: "var(--ink)" }}
+                onPointerDown={(e) => e.stopPropagation()}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "10px 12px 6px", borderBottom: "1px solid var(--ink-faint)" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    {fields.room_name ? (
+                      <div style={{ fontFamily: "var(--f-display)", fontWeight: 700, fontSize: 14, color: "var(--ink)", lineHeight: 1.25, marginBottom: 2 }}>{fields.room_name}</div>
+                    ) : null}
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 13, letterSpacing: "0.04em" }}>{sym.tag}</span>
+                      <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>{SYMBOL_KIND_LABEL[sym.kind]}</span>
+                    </div>
+                  </div>
+                  {pinned ? (
+                    <button type="button" onClick={() => setSymbolFocus(null)} title="Close"
+                      style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--ink-muted)", fontSize: 14, lineHeight: 1, padding: 2 }}>×</button>
+                  ) : (
+                    <span style={{ fontSize: 10, color: "var(--ink-muted)", whiteSpace: "nowrap" }}>click to edit</span>
+                  )}
+                </div>
+                <div style={{ padding: "8px 12px", display: "grid", gap: 6 }}>
+                  {fieldRows.map(([key, label, value]) => {
+                    const empty = !value;
+                    if (!pinned) {
+                      return (
+                        <div key={key} style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 6, alignItems: "baseline" }}>
+                          <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+                          <span style={{ color: empty ? "var(--ink-faint)" : "var(--ink)" }}>{empty ? "—" : value}</span>
+                        </div>
+                      );
+                    }
+                    if (key === "type" && value) {
+                      return (
+                        <div key={key} style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 6, alignItems: "baseline" }}>
+                          <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+                          <span>{value}</span>
+                        </div>
+                      );
+                    }
+                    return (
+                      <label key={key} style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 6, alignItems: "center" }}>
+                        <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+                        <input name={`sym-${key}`}
+                          value={symbolNotes[noteKey]?.[key] ?? (key === "type" ? "" : (fields[key] || ""))}
+                          placeholder={empty ? "Enter…" : undefined}
+                          onChange={(e) => setNote(key, e.target.value)}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "4px 6px", border: "1px solid var(--ink-faint)", background: empty ? "var(--paper-cream)" : "var(--paper-bright)", fontSize: 12, color: "var(--ink)", fontFamily: "var(--f-body)" }} />
+                      </label>
+                    );
+                  })}
+                  {sym.matches.length > 0 && (
+                    <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
+                      <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Also on</div>
+                      {sym.matches.slice(0, 6).map((m, i) => {
+                        const mp = panelByKey(m.sheet_id);
+                        return (
+                          <div key={`${m.sheet_id}-${i}`} style={{ fontSize: 11.5, color: "var(--cobalt)" }}>
+                            {mp ? labelFor(mp) : m.sheet_id}
+                          </div>
+                        );
+                      })}
+                      {sym.matches.length > 6 && <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>+{sym.matches.length - 6} more</div>}
+                    </div>
+                  )}
+                  {!sym.matches.length && !fields.room_name && !fields.description && !fields.manufacturer && (
+                    <div style={{ fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.45, marginTop: 2 }}>
+                      No room name or schedule match yet — {pinned ? "fill in the fields above." : "click to enter details."}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
           {/* inline on-canvas text editor — a screen-space overlay pinned to its anchor
               (pan/zoom is frozen while open). Enter commits, Esc cancels, blur commits;
               all on the input's OWN handlers so the global keydown (which returns early
@@ -5469,6 +6025,19 @@ export default function TakeoffCanvas() {
                 return (
                   <g key={p.key} transform={`translate(${p.xOffset},0)`}>
                     {panels.length > 1 && <text x={0} y={-26} fontSize={64} fontWeight={700} fill={darkMode ? "#9a917f" : "#6b6256"}>{label}</text>}
+                    {/* Plan symbols — door/window/type/finish marks from the PDF text layer */}
+                    {planSymbols.filter((s) => s.sheet_id === p.key).map((s) => {
+                      const z = tf.scale;
+                      const on = s.id === symbolFocus || s.id === symbolHover?.id;
+                      const sw = (on ? 1.6 : 1.1) / z;
+                      const col = on ? "#1f3fc7" : "rgba(31,63,199,.45)";
+                      if (s.kind === "door" || s.kind === "window" || s.kind === "detail") {
+                        return <circle key={s.id} cx={s.x} cy={s.y} r={Math.max(s.w, s.h) * 0.55}
+                          fill={on ? "rgba(31,63,199,.10)" : "transparent"} stroke={col} strokeWidth={sw} strokeDasharray={`${3 / z} ${2 / z}`} />;
+                      }
+                      return <rect key={s.id} x={s.x - s.w / 2} y={s.y - s.h / 2} width={s.w} height={s.h}
+                        fill={on ? "rgba(31,63,199,.10)" : "transparent"} stroke={col} strokeWidth={sw} strokeDasharray={`${3 / z} ${2 / z}`} />;
+                    })}
                     {pShapes.map((s) => {
                       const cond = condById[s.condition_id];
                       const col = cond?.color || "#888";
@@ -6076,6 +6645,7 @@ export default function TakeoffCanvas() {
             takeoffs toggle mirrors the DOCKED panel's collapsed pref — the rail
             rides the canvas edge, so it stays visible either way. */}
         <div style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 8 }}>
+          {panelBtn(() => setLeftTab((t) => (t === "files" ? null : "files")), "sheets", "Project files — plans in this takeoff (upload folder, zip, or PDFs)", leftTab === "files", sheets.length)}
           {panelBtn(() => setLeftTab((t) => (t === "markup" ? null : "markup")), "markup", "Markups on these sheets (clouds, callouts, notes)", leftTab === "markup", markupCount)}
           {panelBtn(() => setLeftTab((t) => (t === "stamp" ? null : "stamp")), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
           {panelBtn(() => setLeftTab((t) => (t === "rfi" ? null : "rfi")), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
@@ -6159,6 +6729,7 @@ export default function TakeoffCanvas() {
           openTabs={openTabs} onOpen={openSheets}
           onAddFiles={handleFiles}
           levels={sheetLevels}
+          fileFolders={fileFolders}
           onAssignLevel={(keys, label) => setSheetLevels((m) => {
             const next = { ...m };
             for (const k of keys) { if (label) next[k] = label; else delete next[k]; }

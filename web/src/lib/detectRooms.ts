@@ -15,7 +15,7 @@
 // server's Node-side session (mcp/src/pdf.ts's positionedText already does
 // the viewport-transform composition; this module has no need to redo it).
 
-import { floodRegion, SENS_BALANCED } from "./oneclick.ts";
+import { floodRegionSealed, SENS_BALANCED } from "./oneclick.ts";
 import type { MaskObj, FloodResult } from "./oneclick.ts";
 
 /** A room-number label pattern: 2–3 digits with an optional trailing letter
@@ -65,22 +65,24 @@ export interface DetectedRegion {
 }
 
 /** Seed the EXISTING flood at each label and apply the high-precision status
- *  gate: keep a region ONLY if floodRegion returns status "ok". leak / tiny /
+ *  gate: keep a region ONLY if flood returns status "ok". leak / tiny /
  *  boundary are silently dropped — a batch detector must never propose a bad
  *  trace just because a label happened to be there.
  *
  *  The gate keys off flood STATUS, not `hatchFiltered`. A grow-but-verify
  *  hatch escalation still returns status "ok" with hatchFiltered: true — that
  *  is a real room (most rooms on a finish plan are hatched), so it's kept.
- *  hatchFiltered rides through as provenance, never a rejection reason. */
+ *  hatchFiltered rides through as provenance, never a rejection reason.
+ *  `maxGapMaskPx` enables the same door/window seal the canvas One-Click uses. */
 export function detectRegions(
   maskObj: MaskObj,
   seeds: RoomLabelSeed[],
   sensitivity: number = SENS_BALANCED,
+  maxGapMaskPx: number = 0,
 ): DetectedRegion[] {
   const out: DetectedRegion[] = [];
   for (const s of seeds) {
-    const f = floodRegion(maskObj, s.seed[0], s.seed[1], sensitivity);
+    const f = floodRegionSealed(maskObj, s.seed[0], s.seed[1], sensitivity, maxGapMaskPx);
     if (f.status !== "ok") continue;
     out.push({ str: s.str, seed: s.seed, flood: f });
   }

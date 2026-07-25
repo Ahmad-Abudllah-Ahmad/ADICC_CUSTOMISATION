@@ -3,9 +3,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildMask, floodRegion, traceRegion, snapVertices, ringArea, rdpClosed,
+  buildMask, floodRegion, floodRegionSealed, sealOpenings, openingGapPx,
+  traceRegion, traceRegionWithHoles, snapVertices, ringArea, rdpClosed,
   extractVectorGeometry, classifyHatchSegs, SEG_CURVE, SEG_CLIP, SEG_FILLONLY,
-  SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE,
+  SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, polygonsOverlap, unionPolygons,
   type Point, type MaskObj,
 } from "../src/lib/oneclick.ts";
 import { cloudBezier, cloudPath, arrowheadPath, reflectVertsNorm, closedMetrics } from "../src/lib/geometry.js";
@@ -174,7 +175,7 @@ test("hatch: fill-only (poché) walls riding the tile rhythm stay hard — the r
   assert.ok(approx(ringArea(traceRegion(f)), 240000, 0.03), `escalated ring ≈ room area, got ${ringArea(traceRegion(f))}`);
 });
 
-test("hatch: a hatched room with a real door gap still refuses (no faked region)", () => {
+test("hatch: a hatched room with a real door gap still leaks without sealing", () => {
   const gapped = [
     100, 100, 380, 100, 420, 100, 700, 100,
     700, 100, 700, 500, 700, 500, 100, 500, 100, 500, 100, 100,
@@ -184,6 +185,126 @@ test("hatch: a hatched room with a real door gap still refuses (no faked region)
   const all = [...border, ...gapped, ...hatch];
   const f = floodRegion(buildMask(all, IMG_W, IMG_H, MAXDIM, zeroMeta(all)), 400, 300);
   assert.notEqual(f.status, "ok");
+});
+
+test("seal: door-width gap closes and recovers the room (openingsSealed)", () => {
+  // 40 image-px gap → 20 mask-px at ws=0.5; seal with maxGap=24 bridges it.
+  const gapped = [
+    100, 100, 380, 100, 420, 100, 700, 100,
+    700, 100, 700, 500, 700, 500, 100, 500, 100, 500, 100, 100,
+  ];
+  const all = [...border, ...gapped];
+  const mo = buildMask(all, IMG_W, IMG_H, MAXDIM);
+  assert.equal(floodRegion(mo, 400, 300).status, "leak");
+  const f = floodRegionSealed(mo, 400, 300, SENS_BALANCED, 24);
+  assert.equal(f.status, "ok");
+  if (f.status !== "ok") return;
+  assert.equal(f.openingsSealed, true);
+  assert.ok(approx(ringArea(traceRegion(f)), 240000, 0.05), `sealed ring ≈ room, got ${ringArea(traceRegion(f))}`);
+});
+
+test("seal: over-wide corridor gap still leaks (no hallway merge)", () => {
+  // ~120 image-px gap → 60 mask-px; maxGap=24 cannot bridge.
+  const gapped = [
+    100, 100, 340, 100, 460, 100, 700, 100,
+    700, 100, 700, 500, 700, 500, 100, 500, 100, 500, 100, 100,
+  ];
+  const all = [...border, ...gapped];
+  const mo = buildMask(all, IMG_W, IMG_H, MAXDIM);
+  const f = floodRegionSealed(mo, 400, 300, SENS_BALANCED, 24);
+  assert.equal(f.status, "leak");
+});
+
+test("seal: door-connected rooms prefer the sealed room (not the floor plate)", () => {
+  // Two enclosed rooms sharing a wall with a door-width gap. Unsealed flood walks
+  // through the door into BOTH rooms (still "ok" — no sheet-edge leak). Sealed
+  // must recover only the clicked room.
+  // Outer envelope + shared partition at x=400 with a ~40 image-px door (y 280..320).
+  const envelope = [
+    100, 100, 700, 100,
+    700, 100, 700, 500,
+    700, 500, 100, 500,
+    100, 500, 100, 100,
+  ];
+  const partition = [
+    400, 100, 400, 280,
+    400, 320, 400, 500,
+  ];
+  const all = [...border, ...envelope, ...partition];
+  const mo = buildMask(all, IMG_W, IMG_H, MAXDIM);
+  const open = floodRegion(mo, 250, 300);
+  assert.equal(open.status, "ok");
+  if (open.status !== "ok") return;
+  assert.ok(open.count > 50000, "unsealed fills both rooms through the door");
+  const f = floodRegionSealed(mo, 250, 300, SENS_BALANCED, 24);
+  assert.equal(f.status, "ok");
+  if (f.status !== "ok") return;
+  assert.equal(f.openingsSealed, true);
+  assert.ok(f.count < open.count * 0.7, `sealed must shrink past the door: sealed=${f.count} open=${open.count}`);
+  assert.ok(approx(ringArea(traceRegion(f)), 300 * 400, 0.08), `left room only, got ${ringArea(traceRegion(f))}`);
+});
+
+test("union: overlapping squares merge into one ring ≈ combined area", () => {
+  const a: Point[] = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  const b: Point[] = [[5, 5], [15, 5], [15, 15], [5, 15]];
+  assert.equal(polygonsOverlap(a, b), true);
+  const u = unionPolygons([a, b]);
+  assert.ok(u && u.length >= 4, "union returns a ring");
+  // two 10×10 squares overlapping 5×5 → 175
+  assert.ok(approx(ringArea(u!), 175, 0.08), `union area ≈ 175, got ${ringArea(u!)}`);
+});
+
+test("union: adjacent rooms sharing only a wall do not overlap", () => {
+  const left: Point[] = [[0, 0], [10, 0], [10, 10], [0, 10]];
+  const right: Point[] = [[10, 0], [20, 0], [20, 10], [10, 10]];
+  assert.equal(polygonsOverlap(left, right), false);
+});
+
+test("openingGapPx: converts feet → mask px from upp and ws", () => {
+  assert.equal(openingGapPx(0.1, 0.5, 4), 20);   // 4ft / 0.1 ft/px * 0.5 = 20
+  assert.equal(openingGapPx(0, 0.5, 4), 0);
+  assert.equal(openingGapPx(0.1, 0, 4), 0);
+});
+
+test("cutouts: interior column/vanity island is traced as a hole", () => {
+  // Room + closed column outline; flood leaves the column interior unfilled.
+  const col = squareSegs(300, 250, 360, 310);       // 60×60 fixture
+  const all = [...border, ...room, ...col];
+  const mo = buildMask(all, IMG_W, IMG_H, MAXDIM);
+  const f = floodRegion(mo, 400, 200);
+  assert.equal(f.status, "ok");
+  if (f.status !== "ok") return;
+  // upp = 0.05 ft/image-px → room ~600 SF, column ~9 SF (passes 0.4…40% gates)
+  const { outer, holes } = traceRegionWithHoles(f, { upp: 0.05 });
+  assert.ok(outer.length >= 4);
+  assert.equal(holes.length, 1, `expected 1 fixture hole, got ${holes.length}`);
+  const net = ringArea(outer) - ringArea(holes[0]);
+  assert.ok(approx(net, 240000 - 3600, 0.08), `net ≈ room−column, got ${net}`);
+});
+
+test("cutouts: tiny island below min SF is ignored", () => {
+  const speck = squareSegs(400, 300, 408, 308);     // 8×8 image ≈ negligible SF
+  const all = [...border, ...room, ...speck];
+  const mo = buildMask(all, IMG_W, IMG_H, MAXDIM);
+  const f = floodRegion(mo, 200, 200);
+  assert.equal(f.status, "ok");
+  if (f.status !== "ok") return;
+  const { holes } = traceRegionWithHoles(f, { upp: 0.05, minSf: 0.4 });
+  assert.equal(holes.length, 0, "text-speck island must not auto-carve");
+});
+
+test("sealOpenings: hard walls gain bridge cells across a short gap", () => {
+  const gapped = [
+    100, 100, 380, 100, 420, 100, 700, 100,
+    700, 100, 700, 500, 700, 500, 100, 500, 100, 500, 100, 100,
+  ];
+  const mo = buildMask([...border, ...gapped], IMG_W, IMG_H, MAXDIM);
+  const sealed = sealOpenings(mo, 24);
+  let bridged = 0;
+  // Mid-gap on the top wall in mask space (ws≈0.5): image x=400 → mask ~200
+  const mx = Math.round(400 * mo.ws), my = Math.round(100 * mo.ws);
+  for (let dx = -2; dx <= 2; dx++) if (sealed.mask[my * sealed.mw + mx + dx] & 1) bridged++;
+  assert.ok(bridged > 0, "sealed mask should place hard ink across the door gap");
 });
 
 // ── grow-but-verify escalation (issue #32) ─────────────────────────────────

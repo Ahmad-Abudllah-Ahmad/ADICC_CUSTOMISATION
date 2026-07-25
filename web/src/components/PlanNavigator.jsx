@@ -55,6 +55,7 @@ export default function PlanNavigator({
   onAddFiles, onClosePdf, onRemoveFromProject,
   onCloseProject, onBrowseProjects,
   levels = {}, onAssignLevel,
+  fileFolders = {},   // sheet PDF name → relative folder path (Folder upload); nests the gallery grid
   // browse (Drive) data
   listFolder, addSheets, onAdded,
 }) {
@@ -129,8 +130,11 @@ export default function PlanNavigator({
 
   // ══ PLAN (gallery) state + thumbnail worker ══════════════════════════════
   const fileRef = useRef(null);
+  const folderRef = useRef(null);   // directory picker — whole project folder upload
   const [pages, setPages] = useState({});   // file -> numPages (as discovered)
   const [sel, setSel] = useState([]);
+  const [planQ, setPlanQ] = useState("");                 // Plan-set search (folder view + grid)
+  const [openGalleryFolders, setOpenGalleryFolders] = useState({}); // folder path → false collapses (default open)
   const [sampleBusy, setSampleBusy] = useState(false);
   const [driveBusy, setDriveBusy] = useState(false);
   const [driveErr, setDriveErr] = useState("");
@@ -262,6 +266,75 @@ export default function PlanNavigator({
   // regardless of whether other groups have levels — see sortGalleryGroups's
   // comment for why this must be a PER-GROUP gate, not a whole-gallery one.
   const groups = sortGalleryGroups(groupSheetsByLevel(allKeys, levels), labelOf);
+  // Folder-upload nesting: build a REAL directory tree from relative paths
+  // (01 ARCH…/GFA/PDF → three nested expandable rows). Loose sheets sit at root.
+  // Search keeps matching branches; sheet counts roll up through each subtree.
+  const hasFolderTree = useMemo(() => Object.values(fileFolders || {}).some((p) => !!p), [fileFolders]);
+  const planNeedle = planQ.trim().toLowerCase();
+  const folderTree = useMemo(() => {
+    if (!hasFolderTree) return null;
+    const root = { name: "", path: "", folders: {}, files: [] };
+    const ensure = (parts) => {
+      let node = root;
+      let path = "";
+      for (const part of parts) {
+        path = path ? `${path}/${part}` : part;
+        if (!node.folders[part]) node.folders[part] = { name: part, path, folders: {}, files: [] };
+        node = node.folders[part];
+      }
+      return node;
+    };
+    for (const key of allKeys) {
+      const file = parseSheetKey(key).file;
+      const folder = (fileFolders[file] || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (planNeedle) {
+        const lbl = (labels[key] || key).toLowerCase();
+        const folderHit = folder.toLowerCase().includes(planNeedle);
+        if (!folderHit && !lbl.includes(planNeedle) && !key.toLowerCase().includes(planNeedle)) continue;
+      }
+      const parts = folder.split("/").filter(Boolean);
+      ensure(parts).files.push(key);
+    }
+    const sortKeys = (keys) => {
+      const sorted = sortGalleryGroups(groupSheetsByLevel(keys, levels), labelOf).flatMap((g) => g.keys);
+      return sorted.length ? sorted : keys;
+    };
+    const walk = (node) => {
+      node.files = sortKeys(node.files);
+      for (const child of Object.values(node.folders)) walk(child);
+    };
+    walk(root);
+    return root;
+  }, [allKeys, fileFolders, hasFolderTree, planNeedle, labels, levels]);
+  const countTreeSheets = (node) => {
+    let n = node.files.length;
+    for (const child of Object.values(node.folders)) n += countTreeSheets(child);
+    return n;
+  };
+  // Default-expand every folder path we know about (incl. parents); search keeps matches open
+  useEffect(() => {
+    if (!hasFolderTree) return;
+    setOpenGalleryFolders((prev) => {
+      const next = { ...prev };
+      for (const path of Object.values(fileFolders || {})) {
+        if (!path) continue;
+        const segs = path.replace(/\\/g, "/").split("/").filter(Boolean);
+        for (let i = 1; i <= segs.length; i++) {
+          const p = segs.slice(0, i).join("/");
+          if (next[p] === false && !planNeedle) continue;
+          if (planNeedle) next[p] = true;
+          else if (next[p] === undefined) next[p] = true;
+        }
+      }
+      if (next[""] === undefined) next[""] = true;
+      return next;
+    });
+  }, [fileFolders, hasFolderTree, planNeedle]);
+  const folderOpen = (path) => openGalleryFolders[path] !== false;
+  const toggleGalleryFolder = (path) => setOpenGalleryFolders((m) => {
+    const currentlyOpen = m[path] !== false;
+    return { ...m, [path]: !currentlyOpen };
+  });
   const assignLevel = () => {
     const label = window.prompt('Level for the selected sheets (e.g. "L1", "Level 2", "Garage") — empty clears:', "");
     if (label === null) return;
@@ -349,6 +422,10 @@ export default function PlanNavigator({
           <button onClick={() => setMode("browse")} style={{ ...ctrlBtn, border: "none", background: mode === "browse" ? "var(--ink)" : "transparent", color: mode === "browse" ? "var(--paper-bright)" : "var(--ink-muted)" }}>Browse Drive</button>
         </div>
       )}
+      {mode === "plan" && sheets.length > 0 && (
+        <input name="plan-filter" value={planQ} onChange={(e) => setPlanQ(e.target.value)} placeholder="Search sheets or folders…"
+          style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", fontSize: 12.5, minWidth: 180 }} />
+      )}
       {mode === "browse" && (
         <>
           <input name="drive-filter" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by name…"
@@ -363,29 +440,38 @@ export default function PlanNavigator({
       )}
       {mode === "plan" && onAddFiles && (
         <div style={{ position: "relative" }}>
-          <button onClick={() => (browseEnabled ? setAddMenu((v) => !v) : fileRef.current?.click())}
-            title="Add plans — from your computer or Google Drive"
+          <button onClick={() => setAddMenu((v) => !v)}
+            title="Add plans — files, a whole folder, or Google Drive"
             style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5 }}>
-            <Icon name="plus" size={13} />Add plans{browseEnabled && <Icon name="chevronDown" size={12} />}
+            <Icon name="plus" size={13} />Add plans<Icon name="chevronDown" size={12} />
           </button>
-          {addMenu && browseEnabled && (
+          {addMenu && (
             <>
               <div onClick={() => setAddMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 1 }} />
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 2, minWidth: 210, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)" }}>
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 2, minWidth: 230, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)" }}>
                 <button onClick={() => { setAddMenu(false); fileRef.current?.click(); }} style={{ ...ctrlBtn, width: "100%", border: "none", borderBottom: "1px solid var(--ink-faint)", justifyContent: "flex-start", padding: "10px 12px" }}>
-                  <Icon name="document" size={14} />From this computer
+                  <Icon name="document" size={14} />Upload files
                 </button>
-                <button onClick={() => { setAddMenu(false); setMode("browse"); }} style={{ ...ctrlBtn, width: "100%", border: "none", justifyContent: "flex-start", padding: "10px 12px" }}>
-                  <Icon name="cloud" size={14} />From Google Drive
+                <button onClick={() => { setAddMenu(false); folderRef.current?.click(); }} style={{ ...ctrlBtn, width: "100%", border: "none", borderBottom: browseEnabled ? "1px solid var(--ink-faint)" : "none", justifyContent: "flex-start", padding: "10px 12px" }}>
+                  <Icon name="sheets" size={14} />Upload folder
                 </button>
+                {browseEnabled && (
+                  <button onClick={() => { setAddMenu(false); setMode("browse"); }} style={{ ...ctrlBtn, width: "100%", border: "none", justifyContent: "flex-start", padding: "10px 12px" }}>
+                    <Icon name="cloud" size={14} />From Google Drive
+                  </button>
+                )}
               </div>
             </>
           )}
         </div>
       )}
       {onAddFiles && (
-        <input name="sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed" multiple style={{ display: "none" }}
-          onChange={(e) => { onAddFiles(e.target.files); e.target.value = ""; }} />
+        <>
+          <input name="sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed" multiple style={{ display: "none" }}
+            onChange={(e) => { onAddFiles(e.target.files); e.target.value = ""; }} />
+          <input name="sheet-folder" ref={folderRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
+            onChange={(e) => { onAddFiles(e.target.files); e.target.value = ""; }} />
+        </>
       )}
       <AuthChip />
       {onCloseProject && (
@@ -470,58 +556,113 @@ export default function PlanNavigator({
   );
 
   // ── PLAN body + footer ──────────────────────────────────────────────────
+  const renderSheetCard = (key) => {
+    const idx = sel.indexOf(key);
+    const isSel = idx >= 0;
+    const thumb = thumbCacheRef.current.get(key);
+    const cnt = shapeCount(key);
+    const isOpenTab = openTabs.includes(key);
+    const parsed = parseSheetKey(key);
+    const isFirstPageOfPdf = parsed.page === 1;
+    return (
+      <div key={key} data-sheetkey={key} ref={(el) => { if (el && !thumb) obsRef.current?.observe(el); }}
+        onClick={() => toggleSel(key)}
+        style={{ border: isSel ? "1.5px solid var(--cobalt)" : "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", position: "relative", boxShadow: isSel ? "var(--shadow-2)" : "var(--shadow-1)" }}>
+        <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", border: isSel ? "none" : "1.5px solid var(--ink-faint)", background: isSel ? "var(--cobalt)" : "var(--paper-bright)", color: "var(--paper-bright)", fontFamily: "var(--f-mono)", fontSize: 12, fontWeight: 700 }}>{isSel ? idx + 1 : ""}</span>
+        <div style={{ position: "absolute", top: 8, right: 8, zIndex: 2, display: "flex", gap: 6 }}>
+          {isFirstPageOfPdf && onClosePdf && (
+            <button onClick={(e) => { e.stopPropagation(); requestClose(parsed.file); }} title={cloudMode ? "Close this PDF — unload it from the plan set (it stays in Drive)" : "Close this PDF — remove it from the plan set (local plans aren't stored elsewhere)"}
+              style={{ padding: "5px 8px", border: "none", background: "var(--paper-bright)", color: "var(--ink-muted)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 11, boxShadow: "var(--shadow-1)" }}>✕</button>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); onOpen([key], false); }} title="Open just this sheet"
+            style={{ padding: "5px 12px", border: "none", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase" }}>View</button>
+        </div>
+        <div style={{ height: 185, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--well)", borderBottom: "1px solid var(--ink-faint)", overflow: "hidden" }}>
+          {thumb
+            ? <img src={thumb} alt={labelOf(key)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+            : <div className="skeleton" style={{ width: "86%", height: "78%" }} />}
+        </div>
+        <div style={{ padding: "8px 10px", display: "flex", alignItems: "baseline", gap: 8 }}>
+          <strong style={{ fontFamily: "var(--f-mono)", fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={key}>{labelOf(key)}</strong>
+          {levels[key] && <span title="Level" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--ink-muted)", border: "1px solid var(--ink-faint)", padding: "1px 5px" }}>{levels[key]}</span>}
+          {isOpenTab && <span title="Already open as a tab" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--cobalt)", textTransform: "uppercase", letterSpacing: "0.08em" }}>open</span>}
+          {cnt > 0 && <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, color: "var(--ink-muted)" }}>{cnt}▦</span>}
+          <span style={{ fontSize: 10, fontWeight: 600, whiteSpace: "nowrap", color: scales[key] ? "var(--c-positive)" : detectedScales[key] ? "var(--c-warning)" : "var(--c-danger)" }}>
+            {scales[key] ? "scale ✓" : detectedScales[key] ? `plan: ${detectedScales[key].label}` : "no scale"}
+          </span>
+        </div>
+      </div>
+    );
+  };
+  const sheetGrid = (keys) => (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(270px, 1fr))", gap: 14 }}>
+      {keys.map(renderSheetCard)}
+    </div>
+  );
+  const renderGalleryFolder = (node, depth) => {
+    const childNames = Object.keys(node.folders).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    return (
+      <>
+        {childNames.map((name) => {
+          const child = node.folders[name];
+          const open = folderOpen(child.path);
+          const n = countTreeSheets(child);
+          return (
+            <div key={child.path} style={{ marginBottom: 10, marginLeft: depth ? 14 : 0 }}>
+              <button type="button" onClick={() => toggleGalleryFolder(child.path)}
+                title={open ? `Collapse ${name}` : `Expand ${name}`}
+                style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: open ? 10 : 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 13 }}>
+                <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, width: 12, color: "var(--cobalt)" }}>{open ? "▾" : "▸"}</span>
+                <Icon name="sheets" size={14} />
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+                <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, color: "var(--ink-muted)", letterSpacing: "0.08em", textTransform: "uppercase" }}>{n} sheet{n === 1 ? "" : "s"}</span>
+              </button>
+              {open && (
+                <div style={{ paddingLeft: depth ? 4 : 0 }}>
+                  {renderGalleryFolder(child, depth + 1)}
+                  {child.files.length > 0 && sheetGrid(child.files)}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {depth === 0 && node.files.length > 0 && (
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-muted)", margin: "0 0 8px 2px" }}>
+              Unfiled · {node.files.length}
+            </div>
+            {sheetGrid(node.files)}
+          </div>
+        )}
+      </>
+    );
+  };
   const planBody = (
     <>
       <div style={{ flex: 1, overflow: "auto", padding: 18 }}>
-        {groups.map((grp) => (
+        {folderTree ? (
+          countTreeSheets(folderTree) === 0 && allKeys.length > 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--ink-muted)", fontSize: 13 }}>Nothing matches “{planQ.trim()}”.</div>
+          ) : renderGalleryFolder(folderTree, 0)
+        ) : groups.map((grp) => {
+          const keys = planNeedle
+            ? grp.keys.filter((k) => {
+              const lbl = (labels[k] || k).toLowerCase();
+              return lbl.includes(planNeedle) || k.toLowerCase().includes(planNeedle);
+            })
+            : grp.keys;
+          if (planNeedle && !keys.length) return null;
+          return (
         <div key={grp.level ?? "__all"} style={{ marginBottom: grp.level !== null ? 22 : 0 }}>
         {grp.level !== null && (
           <div style={{ fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-muted)", margin: "0 0 8px 2px" }}>
-            {grp.level || "Unassigned"} · {grp.keys.length}
+            {grp.level || "Unassigned"} · {keys.length}
           </div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(270px, 1fr))", gap: 14 }}>
-          {grp.keys.map((key) => {
-            const idx = sel.indexOf(key);
-            const isSel = idx >= 0;
-            const thumb = thumbCacheRef.current.get(key);
-            const cnt = shapeCount(key);
-            const isOpenTab = openTabs.includes(key);
-            const parsed = parseSheetKey(key);
-            const isFirstPageOfPdf = parsed.page === 1;   // per-PDF close lives on the first card only
-            return (
-              <div key={key} data-sheetkey={key} ref={(el) => { if (el && !thumb) obsRef.current?.observe(el); }}
-                onClick={() => toggleSel(key)}
-                style={{ border: isSel ? "1.5px solid var(--cobalt)" : "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", position: "relative", boxShadow: isSel ? "var(--shadow-2)" : "var(--shadow-1)" }}>
-                <span style={{ position: "absolute", top: 8, left: 8, zIndex: 2, width: 22, height: 22, display: "flex", alignItems: "center", justifyContent: "center", border: isSel ? "none" : "1.5px solid var(--ink-faint)", background: isSel ? "var(--cobalt)" : "var(--paper-bright)", color: "var(--paper-bright)", fontFamily: "var(--f-mono)", fontSize: 12, fontWeight: 700 }}>{isSel ? idx + 1 : ""}</span>
-                <div style={{ position: "absolute", top: 8, right: 8, zIndex: 2, display: "flex", gap: 6 }}>
-                  {isFirstPageOfPdf && onClosePdf && (
-                    <button onClick={(e) => { e.stopPropagation(); requestClose(parsed.file); }} title={cloudMode ? "Close this PDF — unload it from the plan set (it stays in Drive)" : "Close this PDF — remove it from the plan set (local plans aren't stored elsewhere)"}
-                      style={{ padding: "5px 8px", border: "none", background: "var(--paper-bright)", color: "var(--ink-muted)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 11, boxShadow: "var(--shadow-1)" }}>✕</button>
-                  )}
-                  <button onClick={(e) => { e.stopPropagation(); onOpen([key], false); }} title="Open just this sheet"
-                    style={{ padding: "5px 12px", border: "none", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase" }}>View</button>
-                </div>
-                <div style={{ height: 185, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--well)", borderBottom: "1px solid var(--ink-faint)", overflow: "hidden" }}>
-                  {thumb
-                    ? <img src={thumb} alt={labelOf(key)} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
-                    : <div className="skeleton" style={{ width: "86%", height: "78%" }} />}
-                </div>
-                <div style={{ padding: "8px 10px", display: "flex", alignItems: "baseline", gap: 8 }}>
-                  <strong style={{ fontFamily: "var(--f-mono)", fontSize: 12.5, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }} title={key}>{labelOf(key)}</strong>
-                  {levels[key] && <span title="Level" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--ink-muted)", border: "1px solid var(--ink-faint)", padding: "1px 5px" }}>{levels[key]}</span>}
-                  {isOpenTab && <span title="Already open as a tab" style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", color: "var(--cobalt)", textTransform: "uppercase", letterSpacing: "0.08em" }}>open</span>}
-                  {cnt > 0 && <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, color: "var(--ink-muted)" }}>{cnt}▦</span>}
-                  <span style={{ fontSize: 10, fontWeight: 600, whiteSpace: "nowrap", color: scales[key] ? "var(--c-positive)" : detectedScales[key] ? "var(--c-warning)" : "var(--c-danger)" }}>
-                    {scales[key] ? "scale ✓" : detectedScales[key] ? `plan: ${detectedScales[key].label}` : "no scale"}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+        {sheetGrid(keys)}
         </div>
-        </div>
-        ))}
+          );
+        })}
         {!allKeys.length && (
           <div style={{ padding: 48, textAlign: "center", color: "var(--ink-muted)", fontSize: 13.5, lineHeight: 1.7 }}>
             {!sheets.length ? (
@@ -529,11 +670,20 @@ export default function PlanNavigator({
                 <div style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--cobalt)", marginBottom: 6 }}>People &amp; agents · one engine</div>
                 <div style={{ fontFamily: "var(--f-display)", fontSize: 18, color: "var(--ink)", lineHeight: 1.32, marginBottom: 5 }}>Measure a plan by hand — or point an AI&nbsp;agent at the same engine.</div>
                 <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.55, marginBottom: 20 }}>Every measurement keeps its scale and how it was made — a person, one click, or an agent.</div>
-                <button onClick={() => fileRef.current?.click()}
-                  style={{ display: "block", width: "100%", margin: "24px auto 0", padding: "44px 24px", border: "2px dashed var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", color: "var(--ink-muted)", fontFamily: "var(--f-body)", fontSize: 13.5, lineHeight: 1.7 }}>
+                <div style={{ display: "block", width: "100%", margin: "24px auto 0", padding: "36px 24px", border: "2px dashed var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink-muted)", fontFamily: "var(--f-body)", fontSize: 13.5, lineHeight: 1.7, boxSizing: "border-box" }}>
                   <div style={{ fontFamily: "var(--f-display)", fontSize: 20, color: "var(--ink)", marginBottom: 8 }}>Open your plans</div>
-                  Drag a PDF, an image, or a whole .zip plan set here — or click to choose. Nothing leaves your browser.
-                </button>
+                  <div style={{ marginBottom: 18 }}>Drag a PDF, image, .zip, or folder here — or choose below. Nothing leaves your browser.</div>
+                  <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => fileRef.current?.click()}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "10px 16px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+                      <Icon name="document" size={14} />Upload files
+                    </button>
+                    <button type="button" onClick={() => folderRef.current?.click()}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "10px 16px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>
+                      <Icon name="sheets" size={14} />Upload folder
+                    </button>
+                  </div>
+                </div>
                 {isGoogleConfigured() && (!user || projectHomeFolderId()) && (
                   <div style={{ marginTop: 10, fontSize: 12, lineHeight: 1.6 }}>
                     {!user ? (

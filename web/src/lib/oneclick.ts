@@ -4,8 +4,8 @@
 // traced polygon, vertices snapped. The pipeline:
 //   extractVectorGeometry  PDF op list → line segments + snap endpoints (image px)
 //   buildMask              segments → downscaled 1-bit boundary raster
-//   floodRegion            seed → bounded region (or "leak"/"tiny"/"boundary")
-//   traceRegion            region → outer contour → RDP-simplified polygon (image px)
+//   floodRegionSealed      seed → bounded region (prefers door/window gap seal)
+//   traceRegionWithHoles   region → outer contour + fixture/column cutouts
 //
 // A single-pixel Bresenham barrier is 8-connected, which provably blocks the
 // 4-connected scanline fill — no dilation, so the boundary sits ~half a mask px
@@ -25,6 +25,12 @@
 // (grow-but-verify). If the escalated pass leaks, stays tiny, or balloons, the
 // primary result stands — a misclassified wall can never make the tool worse
 // than the strict mask.
+//
+// Openings + cutouts (2026-07-24): sealOpenings bridges hard-wall gaps up to a
+// door/window-sized max (scale-aware via openingGapPx) and the sealed flood is
+// preferred whenever it encloses — so door-connected floor plates don't win as
+// a giant "ok". Still refuses if sealing can't enclose. After a clean flood,
+// enclosed islands (vanity, toilet, washbasin, column, shaft) are auto-cutouts.
 
 export type Point = [number, number];
 export interface OpList { fnArray: number[]; argsArray: any[]; }  // per-op args array, or null for arg-less ops
@@ -39,7 +45,13 @@ export type FloodResult =
   | { status: "boundary" }
   | { status: "leak" }
   | { status: "tiny"; count: number }
-  | { status: "ok"; region: Uint8Array; count: number; mw: number; mh: number; ws: number; hardHits?: number; softHits?: number; hatchFiltered?: boolean };
+  | { status: "ok"; region: Uint8Array; count: number; mw: number; mh: number; ws: number; hardHits?: number; softHits?: number; hatchFiltered?: boolean; openingsSealed?: boolean };
+
+/** Min/max real-area gates for auto-carved interior cutouts (fixtures, columns). */
+export const CUTOUT_MIN_SF = 0.4;
+export const CUTOUT_MAX_FRAC = 0.40;
+/** Default max opening to bridge when sealing door/window gaps (feet). */
+export const OPENING_MAX_FT = 4;
 /** Caller's snap-grid lookup: nearest true endpoint to (x,y) within maxDist, or null. */
 export type NearestFn = (x: number, y: number, maxDist: number) => Point | null | undefined;
 
@@ -466,6 +478,84 @@ export function buildMask(segs: number[], imgW: number, imgH: number, maxDim = M
   return { mask, mw, mh, ws, softCount };
 }
 
+// ── 3b. opening seal (door / window gaps) ──────────────────────────────────
+// Bridge hard-wall gaps up to a door/window-sized max so a room with an open
+// doorway still encloses. Soft (hatch) bits are left alone — only bit-1 walls
+// are sealed. Callers convert real opening length → mask px via openingGapPx.
+// Safety lives in floodRegionSealed: sealed is preferred when it encloses; if
+// sealing still can't enclose, the unsealed result stands.
+//
+// Implementation is O(mw·mh) axis-aligned gap fill (not iterated morph-close):
+// a 4 ft door on a large sheet can be 80+ mask px, and radius-R morph-close is
+// O(R·mw·mh) — multi-second UI freezes on every click. Row/column gap bridging
+// closes the same door/window openings in one pass. Sealed masks are
+// WeakMap-cached per source mask.
+
+/** Image/mask conversion: max opening in feet → mask pixels (0 if scale unknown). */
+export function openingGapPx(upp: number, ws: number, maxOpeningFt: number = OPENING_MAX_FT): number {
+  if (!(upp > 0) || !(ws > 0) || !(maxOpeningFt > 0)) return 0;
+  return Math.max(1, Math.round((maxOpeningFt / upp) * ws));
+}
+
+/** Fill open runs of length 1…maxGap between hard pixels on each row, then each col. */
+function sealAxisGaps(hard: Uint8Array, mw: number, mh: number, maxGap: number): Uint8Array {
+  const out = hard.slice();
+  for (let y = 0; y < mh; y++) {
+    const row = y * mw;
+    let prev = -1;
+    for (let x = 0; x < mw; x++) {
+      if (!hard[row + x]) continue;
+      if (prev >= 0) {
+        const g = x - prev - 1;
+        if (g > 0 && g <= maxGap) for (let i = prev + 1; i < x; i++) out[row + i] = 1;
+      }
+      prev = x;
+    }
+  }
+  for (let x = 0; x < mw; x++) {
+    let prev = -1;
+    for (let y = 0; y < mh; y++) {
+      if (!hard[y * mw + x]) continue;
+      if (prev >= 0) {
+        const g = y - prev - 1;
+        if (g > 0 && g <= maxGap) for (let i = prev + 1; i < y; i++) out[i * mw + x] = 1;
+      }
+      prev = y;
+    }
+  }
+  return out;
+}
+
+// Sealed-mask cache: same vector/raster mask + gap → reuse across clicks.
+const sealedCache = new WeakMap<Uint8Array, Map<number, MaskObj>>();
+
+/** Copy the mask with hard (bit-1) walls closed across gaps ≤ maxGapMaskPx.
+ *  Soft (bit-2) hatch cells are preserved; hard always wins where both land. */
+export function sealOpenings(maskObj: MaskObj, maxGapMaskPx: number): MaskObj {
+  const { mask, mw, mh, ws, softCount } = maskObj;
+  const gap = Math.max(0, Math.floor(maxGapMaskPx));
+  if (gap < 1) return { mask: mask.slice(), mw, mh, ws, softCount };
+
+  let byGap = sealedCache.get(mask);
+  const hit = byGap?.get(gap);
+  if (hit) return hit;
+
+  const hard = new Uint8Array(mw * mh);
+  for (let i = 0; i < hard.length; i++) if (mask[i] & 1) hard[i] = 1;
+  // Axis-aligned bridge only — doors/windows in plan are almost always H/V.
+  // (Iterated morph-close at door radius was O(R·mw·mh) and froze the UI.)
+  const closed = sealAxisGaps(hard, mw, mh, gap);
+  const out = new Uint8Array(mw * mh);
+  for (let i = 0; i < out.length; i++) {
+    const soft = mask[i] & 2;
+    out[i] = closed[i] ? (1 | soft) : soft;
+  }
+  const result: MaskObj = { mask: out, mw, mh, ws, softCount };
+  if (!byGap) { byGap = new Map(); sealedCache.set(mask, byGap); }
+  byGap.set(gap, result);
+  return result;
+}
+
 // ── 4. flood fill ──────────────────────────────────────────────────────────
 // Scanline fill from an image-px seed. `barrier` picks which mask bits block:
 // 3 = walls + hatch (the strict original behavior), 1 = walls only. hardHits/
@@ -565,34 +655,145 @@ export function floodRegion(maskObj: MaskObj, ix: number, iy: number, sensitivit
   return r1;
 }
 
+/** Flood with door/window gap sealing. Tries the normal escalating fill first.
+ *  Sealing runs only when needed — a leak, or an oversized "ok" that is likely
+ *  a door-connected floor plate — so already-closed rooms stay a single cheap
+ *  flood (no full-sheet seal on every click). Prefer the sealed result when it
+ *  encloses and is smaller; otherwise the unsealed result stands. */
+export function floodRegionSealed(
+  maskObj: MaskObj, ix: number, iy: number,
+  sensitivity: number = SENS_BALANCED, maxGapMaskPx: number = 0,
+): FloodResult {
+  const r1 = floodRegion(maskObj, ix, iy, sensitivity);
+  if (!(maxGapMaskPx >= 1)) return r1;
+  // Modest enclosed fills are already the room — skip the seal pass.
+  const sheet = maskObj.mw * maskObj.mh;
+  if (r1.status === "ok" && r1.count <= sheet * 0.06) return r1;
+  if (r1.status !== "ok" && r1.status !== "leak") return r1;
+  const sealed = sealOpenings(maskObj, maxGapMaskPx);
+  const r2 = floodRegion(sealed, ix, iy, sensitivity);
+  if (r2.status === "ok" && (r1.status !== "ok" || r2.count < r1.count * 0.9)) {
+    r2.openingsSealed = true;
+    return r2;
+  }
+  return r1;
+}
+
 // ── 5. contour trace + simplify ────────────────────────────────────────────
 // Moore-neighbor trace of the region's OUTER boundary, then closed-ring RDP.
 // Returns image-px vertices.
 export function traceRegion(reg: RegionResult, epsMaskPx = 1.5): Point[] {
-  const { region, mw, mh, ws } = reg;
+  return mooreTrace(reg.region, reg.mw, reg.mh, reg.ws, epsMaskPx);
+}
+
+/** Moore-neighbor contour of 1-cells in a bitmap (room region or a hole mask). */
+function mooreTrace(
+  bitmap: Uint8Array, mw: number, mh: number, ws: number, epsMaskPx: number,
+): Point[] {
   let s = -1;
-  for (let i = 0; i < region.length; i++) if (region[i]) { s = i; break; }
+  for (let i = 0; i < bitmap.length; i++) if (bitmap[i]) { s = i; break; }
   if (s < 0) return [];
   const sx = s % mw, sy = (s / mw) | 0;
-  const at = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < mw && y < mh && !!region[y * mw + x];
-  // Moore neighborhood, clockwise from W
+  const at = (x: number, y: number): boolean => x >= 0 && y >= 0 && x < mw && y < mh && !!bitmap[y * mw + x];
   const N = [[-1, 0], [-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1]];
   const pts: Point[] = [];
-  let cx = sx, cy = sy, dir = 6;          // entered heading south (came from the open row above)
+  let cx = sx, cy = sy, dir = 6;
   const maxSteps = mw * mh * 4;
   for (let step = 0; step < maxSteps; step++) {
     pts.push([cx, cy]);
     let found = false;
     for (let k = 0; k < 8; k++) {
-      const d = (dir + 6 + k) % 8;        // start search 90° counter-clockwise of arrival
+      const d = (dir + 6 + k) % 8;
       const nx = cx + N[d][0], ny = cy + N[d][1];
       if (at(nx, ny)) { cx = nx; cy = ny; dir = d; found = true; break; }
     }
-    if (!found) break;                     // isolated pixel
+    if (!found) break;
     if (cx === sx && cy === sy && pts.length > 2) break;
   }
   const ring = rdpClosed(pts, epsMaskPx);
   return ring.map(([x, y]) => [x / ws, y / ws] as Point);
+}
+
+/** Mark exterior (non-region cells reachable from the mask border), then return
+ *  each remaining enclosed non-region component as a 1-bitmap RegionResult. */
+export function findRegionHoles(reg: RegionResult): RegionResult[] {
+  const { region, mw, mh, ws } = reg;
+  const exterior = new Uint8Array(mw * mh);
+  const stack: number[] = [];
+  const push = (x: number, y: number) => {
+    const i = y * mw + x;
+    if (exterior[i] || region[i]) return;
+    exterior[i] = 1;
+    stack.push(i);
+  };
+  for (let x = 0; x < mw; x++) { push(x, 0); push(x, mh - 1); }
+  for (let y = 0; y < mh; y++) { push(0, y); push(mw - 1, y); }
+  while (stack.length) {
+    const i = stack.pop() as number;
+    const x = i % mw, y = (i / mw) | 0;
+    if (x > 0) push(x - 1, y);
+    if (x < mw - 1) push(x + 1, y);
+    if (y > 0) push(x, y - 1);
+    if (y < mh - 1) push(x, y + 1);
+  }
+  const seen = new Uint8Array(mw * mh);
+  const holes: RegionResult[] = [];
+  for (let i = 0; i < region.length; i++) {
+    if (region[i] || exterior[i] || seen[i]) continue;
+    // BFS this hole component
+    const hole = new Uint8Array(mw * mh);
+    const q: number[] = [i];
+    seen[i] = 1;
+    let count = 0;
+    while (q.length) {
+      const j = q.pop() as number;
+      hole[j] = 1; count++;
+      const x = j % mw, y = (j / mw) | 0;
+      const tryN = (nx: number, ny: number) => {
+        if (nx < 0 || ny < 0 || nx >= mw || ny >= mh) return;
+        const k = ny * mw + nx;
+        if (seen[k] || region[k] || exterior[k]) return;
+        seen[k] = 1;
+        q.push(k);
+      };
+      tryN(x - 1, y); tryN(x + 1, y); tryN(x, y - 1); tryN(x, y + 1);
+    }
+    if (count >= TINY_PX) holes.push({ region: hole, mw, mh, ws, count });
+  }
+  return holes;
+}
+
+export interface TraceHolesOpts {
+  /** Units per IMAGE px (feet or meters per px — same unit the report uses). */
+  upp: number;
+  minSf?: number;
+  maxFrac?: number;
+  epsMaskPx?: number;
+}
+
+/** Outer contour plus size-gated interior holes (vanity, toilet, column, shaft).
+ *  Hole area is measured in the caller's real unit² via upp. */
+export function traceRegionWithHoles(
+  reg: RegionResult, opts: TraceHolesOpts,
+): { outer: Point[]; holes: Point[][] } {
+  const eps = opts.epsMaskPx ?? 1.5;
+  const minSf = opts.minSf ?? CUTOUT_MIN_SF;
+  const maxFrac = opts.maxFrac ?? CUTOUT_MAX_FRAC;
+  const outer = mooreTrace(reg.region, reg.mw, reg.mh, reg.ws, eps);
+  if (outer.length < 3 || !(opts.upp > 0)) return { outer, holes: [] };
+  const parentSf = ringArea(outer) * opts.upp * opts.upp;
+  if (!(parentSf > 0)) return { outer, holes: [] };
+  const maxSf = parentSf * maxFrac;
+  const cellImg = 1 / reg.ws;
+  const cellSf = cellImg * cellImg * opts.upp * opts.upp;
+  const holes: Point[][] = [];
+  for (const h of findRegionHoles(reg)) {
+    const sf = (h.count || 0) * cellSf;
+    if (sf < minSf || sf > maxSf) continue;
+    const ring = mooreTrace(h.region, h.mw, h.mh, h.ws, eps);
+    if (ring.length >= 3) holes.push(ring);
+  }
+  return { outer, holes };
 }
 
 function perpDist(p: Point, a: Point, b: Point): number {
@@ -624,6 +825,125 @@ export function rdpClosed(pts: Point[], eps: number): Point[] {
   const h2 = rdpOpen(pts.slice(split).concat([pts[0]]), eps);
   const ring = h1.slice(0, -1).concat(h2.slice(0, -1));
   return ring.length >= 3 ? ring : pts.slice();
+}
+
+// ── 5b. overlap + union (proposal multi-click merge) ───────────────────────
+// When the estimator clicks again and the new fill overlaps an existing
+// proposal region of the same kind, coalesce into one ring instead of stacking
+// duplicate spaces. Proper edge crossings + interior samples detect real
+// area overlap; shared walls (collinear edges / endpoints) do not merge.
+
+function segOrient(ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+/** True iff closed rings A and B share interior area (not merely a wall edge). */
+export function polygonsOverlap(a: Point[], b: Point[]): boolean {
+  if (!a || a.length < 3 || !b || b.length < 3) return false;
+  let ax0 = Infinity, ay0 = Infinity, ax1 = -Infinity, ay1 = -Infinity;
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const [x, y] of a) { if (x < ax0) ax0 = x; if (y < ay0) ay0 = y; if (x > ax1) ax1 = x; if (y > ay1) ay1 = y; }
+  for (const [x, y] of b) { if (x < bx0) bx0 = x; if (y < by0) by0 = y; if (x > bx1) bx1 = x; if (y > by1) by1 = y; }
+  if (ax1 < bx0 || bx1 < ax0 || ay1 < by0 || by1 < ay0) return false;
+  // Strict interior only — vertices on a shared wall must not count as overlap.
+  for (const [x, y] of a) if (strictlyInside(x, y, b)) return true;
+  for (const [x, y] of b) if (strictlyInside(x, y, a)) return true;
+  for (let i = 0; i < a.length; i++) {
+    const [x0, y0] = a[i], [x1, y1] = a[(i + 1) % a.length];
+    for (let j = 0; j < b.length; j++) {
+      const [u0, v0] = b[j], [u1, v1] = b[(j + 1) % b.length];
+      const o1 = segOrient(x0, y0, x1, y1, u0, v0);
+      const o2 = segOrient(x0, y0, x1, y1, u1, v1);
+      const o3 = segOrient(u0, v0, u1, v1, x0, y0);
+      const o4 = segOrient(u0, v0, u1, v1, x1, y1);
+      // Strict signs only — shared endpoints / collinear wall edges stay false.
+      if (((o1 > 0) !== (o2 > 0)) && ((o3 > 0) !== (o4 > 0)) && o1 !== 0 && o2 !== 0 && o3 !== 0 && o4 !== 0) return true;
+    }
+  }
+  return false;
+}
+
+function pointInPolyImg(x: number, y: number, pts: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if (((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+function distToSegImg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+/** pointInPoly and clearly off the boundary (shared walls / corners). */
+function strictlyInside(x: number, y: number, pts: Point[], eps = 0.75): boolean {
+  if (!pointInPolyImg(x, y, pts)) return false;
+  let d = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const [ax, ay] = pts[i], [bx, by] = pts[(i + 1) % pts.length];
+    const di = distToSegImg(x, y, ax, ay, bx, by);
+    if (di < d) d = di;
+  }
+  return d > eps;
+}
+
+/** Scanline-fill a closed ring (mask-space floats) into a 0/1 bitmap (OR). */
+function rasterFillPoly(mask: Uint8Array, mw: number, mh: number, poly: Point[]): void {
+  const n = poly.length;
+  if (n < 3) return;
+  for (let y = 0; y < mh; y++) {
+    const ys = y + 0.5;
+    const xs: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % n];
+      if ((y0 > ys) === (y1 > ys)) continue;
+      xs.push(x0 + (ys - y0) * (x1 - x0) / (y1 - y0));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      let xL = Math.ceil(xs[k]), xR = Math.floor(xs[k + 1]);
+      if (xL < 0) xL = 0;
+      if (xR >= mw) xR = mw - 1;
+      const row = y * mw;
+      for (let x = xL; x <= xR; x++) mask[row + x] = 1;
+    }
+  }
+}
+
+/** Boolean union of overlapping closed rings → one outer contour in image px. */
+export function unionPolygons(polys: Point[][], epsMaskPx = 1.5): Point[] | null {
+  const rings = polys.filter((p) => p && p.length >= 3);
+  if (!rings.length) return null;
+  if (rings.length === 1) return rings[0].map(([x, y]) => [x, y] as Point);
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const poly of rings) {
+    for (const [x, y] of poly) {
+      if (x < minX) minX = x; if (y < minY) minY = y;
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+    }
+  }
+  if (!(maxX > minX) || !(maxY > minY)) return null;
+  const pad = 2;
+  const span = Math.max(maxX - minX, maxY - minY, 1);
+  const ws = Math.min(1, 1200 / span);
+  const mw = Math.max(4, Math.ceil((maxX - minX) * ws) + pad * 2);
+  const mh = Math.max(4, Math.ceil((maxY - minY) * ws) + pad * 2);
+  const ox = minX - pad / ws, oy = minY - pad / ws;
+  const mask = new Uint8Array(mw * mh);
+  for (const poly of rings) {
+    const local: Point[] = poly.map(([x, y]) => [(x - ox) * ws, (y - oy) * ws]);
+    rasterFillPoly(mask, mw, mh, local);
+  }
+  let count = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) count++;
+  if (count < TINY_PX) return null;
+  const ring = mooreTrace(mask, mw, mh, 1, epsMaskPx); // ws=1 → mask-px verts
+  if (ring.length < 3) return null;
+  return ring.map(([x, y]) => [x / ws + ox, y / ws + oy] as Point);
 }
 
 // ── 6. vertex snap + cleanup ───────────────────────────────────────────────

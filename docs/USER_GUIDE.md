@@ -253,10 +253,12 @@ The top-right readout tracks the armed tool: totals for the tracing tools, `W ×
 
 One-Click Area (`O`) is the fastest way to measure a room: click inside it, and the linework bounds a flood fill, the boundary traces itself, and the vertices snap to true corners. What comes back is a **proposal** — dashed, editable, uncommitted — and nothing enters your takeoff until you create it. Review is the point: the engine does the tracing, you keep the judgment.
 
+**Openings and fixtures:** door and window gaps up to about 4′ are closed across so the fill doesn't spill into the hall. Enclosed islands inside the room — a column, shaft, vanity, toilet, washbasin, or similar fixture drawn as closed linework — auto-stage as red dashed **cutouts** (deducts). Review them like any ⌥-carved cutout: nudge grips, ⌫ to drop the last region, or Esc to discard, then Create.
+
 ### The flow
 
 1. Arm `O` and click inside a room. The traced region appears dashed with a star at your seed point.
-2. Keep clicking — each click adds a space to the selection (the readout totals them live). **`⌥`-click carves a cutout**: an enclosed area *inside* an already-selected space — a column, a shaft — that will commit as a deduct.
+2. Keep clicking — each click adds a space to the selection (the readout totals them live). **`⌥`-click carves a cutout**: an enclosed area *inside* an already-selected space — a column, a shaft — that will commit as a deduct. (Auto-cutouts from fixtures/columns appear the same way without ⌥.)
 3. **Create** with `⏎`, a double-click, or the **Create (N)** toolbar button. Every space commits as a shape on the active condition; cutouts commit as deducts. The toast confirms: *"Created N takeoff(s) — 〈SF〉 〈TAG〉. Click the next room."*
 
 `⌫` walks the selection back (last region drops), and `Esc` discards it all. The readout keeps the crib sheet on screen: *click adds a space · ⌥-click carves a cutout · ⏎ Create · ⌫ undo · Esc cancel*.
@@ -278,7 +280,7 @@ Hatch and poché don't fool the fill: tile grids, plank lines, and section fills
 
 When One-Click refuses, it says why, and the answer is always actionable:
 
-- *"That space isn't enclosed on the plan linework — the fill spilled."* — there's a genuine gap (an open doorway, a break in the wall). Click a more enclosed spot, or trace it with Area (`A`). A hatched room with a real door gap **refuses rather than guessing** — that's deliberate.
+- *"That space isn't enclosed on the plan linework — the fill spilled past a gap wider than a door/window."* — the gap is larger than the seal will bridge (a wide opening or break in the wall). Click a more enclosed spot, or trace it with Area (`A`). Door- and window-sized openings are sealed automatically when possible.
 - *"Landed in dense linework (hatching/text)."* — the click hit a text block or hatching too dense to read as a room. Zoom in and click an open spot, or use Area.
 
 ### Fill sensitivity
