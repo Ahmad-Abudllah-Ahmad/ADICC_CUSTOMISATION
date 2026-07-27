@@ -23,6 +23,8 @@ export interface RawPlanSymbol {
   y: number;
   w: number;
   h: number;
+  /** Hover outline shape — circle for door/SD/GD marks, rect for boxed type marks. */
+  outline?: "circle" | "rect";
   /** Room name from nearby PDF text (e.g. "GENERAL STORE-04" above PD1-39). */
   room_name?: string;
 }
@@ -43,6 +45,13 @@ export interface SymbolScheduleInfo {
   color?: string;
   size?: string;
   remarks?: string;
+  fire_rating?: string;
+  floors?: string;
+  type?: string;
+  /** Schedule sheet this row was parsed from (for floating viewer). */
+  source_sheet?: string;
+  source_title?: string;
+  source_bbox?: { x: number; y: number; w: number; h: number };
 }
 
 /** User-entered overrides for blank (or incorrect) fields — keyed externally. */
@@ -55,6 +64,8 @@ export type SymbolNotes = {
   size?: string;
   remarks?: string;
   type?: string;
+  fire_rating?: string;
+  floors?: string;
 };
 
 export interface PlanSymbol extends RawPlanSymbol {
@@ -64,8 +75,9 @@ export interface PlanSymbol extends RawPlanSymbol {
   schedule: SymbolScheduleInfo;
 }
 
-// Door / window marks (circular tags on plans): D06, D03, W12, D1A
+// Door / window marks (circular tags on plans): D06, D03, W12, SD12 (sliding door)
 const DOOR_RE = /^D\d{1,3}[A-Z]?$/;
+const SLIDING_DOOR_RE = /^SD\d{1,3}[A-Z]?$/;
 const WINDOW_RE = /^W\d{1,3}[A-Z]?$/;
 // Boxed type / unit marks: T1-08, PD1-39, 1ST-02 (digit-led unit codes)
 const TYPE_RE = /^(?:T\d{1,2}-\d{2}[A-Z]?|[A-Z]{1,3}\d+-\d{2,3}[A-Z]?|\d{1,2}[A-Z]{1,3}-\d{2,3}[A-Z]?)$/;
@@ -84,11 +96,116 @@ const SKIP = new Set([
   "DETAIL", "SECTION", "ELEVATION", "SIM", "OPP", "DN", "UP",
 ]);
 
+/** Normalize mark text — fold case/spaces and fix common PDF glyph misreads. */
+function normalizeMark(raw: string): string {
+  let tag = (raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  // A vertical stroke through S (wall line through the circle) reads as $ in some PDFs.
+  if (/^\$D\d/.test(tag)) tag = `S${tag.slice(1)}`;
+  // A vertical stroke through leading 1 on boxed type marks (1ST-26) reads as | or I.
+  if (/^[|Il][A-Z]{2,3}-\d{2,3}[A-Z]?$/.test(tag)) tag = `1${tag.slice(1)}`;
+  if (/^1[|Il]([A-Z]{2,3}-\d{2,3}[A-Z]?)$/.test(tag)) tag = `1${tag.slice(2)}`;
+  return tag;
+}
+
+/** Circle vs rect overlay — D/SD/GD marks are circled on plan; type marks are boxed. */
+function symbolOutline(tag: string, kind: SymbolKind): "circle" | "rect" {
+  if (kind === "door" || kind === "window" || kind === "detail") return "circle";
+  if (kind === "finish" && /^GD-\d/.test(tag)) return "circle";
+  if (kind === "type") return "rect";
+  return "rect";
+}
+
+function tokenW(t: SymbolToken): number {
+  return Math.max(t.w || 0, (t.str?.length || 1) * Math.max(6, t.h || 10) * 0.55);
+}
+
+function sameMarkLine(a: SymbolToken, b: SymbolToken): boolean {
+  const tol = Math.max(a.h || 10, b.h || 10) * 0.95;
+  return Math.abs(a.y - b.y) <= tol;
+}
+
+/** Horizontal or vertical split runs (rotated GD-02 in a circle, etc.). */
+function chainAligned(chain: SymbolToken[]): boolean {
+  if (chain.length <= 1) return true;
+  const h0 = Math.max(6, chain[0].h || 10);
+  const xTol = h0 * 1.15;
+  const yTol = h0 * 0.95;
+
+  const horiz = chain.every((t, k) => k === 0 || sameMarkLine(chain[0], t));
+  if (horiz) {
+    for (let k = 1; k < chain.length; k++) {
+      const prev = chain[k - 1], cur = chain[k];
+      const gap = cur.x - (prev.x + tokenW(prev));
+      const tol = Math.max(prev.h || 10, cur.h || 10) * 3;
+      if (gap < -tol * 0.4 || gap > tol) return false;
+    }
+    return true;
+  }
+
+  const vert = chain.every((t, k) => k === 0 || Math.abs(t.x - chain[0].x) <= xTol);
+  if (!vert) return false;
+  const sorted = [...chain].sort((a, b) => a.y - b.y);
+  for (let k = 1; k < sorted.length; k++) {
+    const prev = sorted[k - 1], cur = sorted[k];
+    const gap = cur.y - prev.y;
+    const tol = Math.max(prev.h || 10, cur.h || 10) * 2.8;
+    if (gap < -tol * 0.25 || gap > tol) return false;
+  }
+  return true;
+}
+
+function chainJoinOrder(chain: SymbolToken[]): SymbolToken[] {
+  const horiz = chain.every((t, k) => k === 0 || sameMarkLine(chain[0], t));
+  return horiz ? chain : [...chain].sort((a, b) => a.y - b.y);
+}
+
+/** Tight glyph bounds (center x,y + size) from one or more PDF text tokens. */
+function boundsFromParts(parts: SymbolToken[]): { x: number; y: number; w: number; h: number } {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of parts) {
+    const h = Math.max(6, p.h || 10);
+    const w = tokenW(p);
+    x0 = Math.min(x0, p.x);
+    y0 = Math.min(y0, p.y - h);
+    x1 = Math.max(x1, p.x + w);
+    y1 = Math.max(y1, p.y + h * 0.12);
+  }
+  const w = Math.max(x1 - x0, 6);
+  const h = Math.max(y1 - y0, 6);
+  return { x: x0 + w / 2, y: y0 + h / 2, w, h };
+}
+
+/** Join split PDF runs into one mark string (GD+02→GD-02, 1+ST-26→1ST-26, SD+12→SD12). */
+function joinMarkParts(parts: string[]): string {
+  let s = parts[0] || "";
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts[i];
+    if (/^-\d/.test(p)) s += p;
+    else if (/^(SD|D|W)$/i.test(s) && /^\d/.test(p)) s += p;
+    else if (/^\d/.test(p) && !s.endsWith("-") && /[A-Z]$/.test(s)) s += `-${p}`;
+    else s += p;
+  }
+  return s.replace(/--+/g, "-");
+}
+
+function makePlanSymbol(parts: SymbolToken[], hit: SymbolKindInfo): RawPlanSymbol {
+  const b = boundsFromParts(parts);
+  const outline = symbolOutline(hit.tag, hit.kind);
+  let { w, h } = b;
+  if (outline === "circle") {
+    const side = Math.max(w, h);
+    w = side;
+    h = side;
+  }
+  return { tag: hit.tag, kind: hit.kind, x: b.x, y: b.y, w, h, outline };
+}
+
 /** Classify a raw text run as a plan symbol, or null if it isn't one. */
 export function classifyPlanSymbol(raw: string): SymbolKindInfo | null {
-  const tag = (raw || "").trim().toUpperCase().replace(/\s+/g, "");
+  const tag = normalizeMark(raw);
   if (!tag || tag.length < 2 || tag.length > 12) return null;
   if (SKIP.has(tag)) return null;
+  if (SLIDING_DOOR_RE.test(tag)) return { tag, kind: "door" };
   if (DOOR_RE.test(tag)) return { tag, kind: "door" };
   if (WINDOW_RE.test(tag)) return { tag, kind: "window" };
   if (TYPE_RE.test(tag)) return { tag, kind: "type" };
@@ -97,6 +214,37 @@ export function classifyPlanSymbol(raw: string): SymbolKindInfo | null {
   // Short sheet numbers (A-101, A003) are not plan marks
   if (SHEET_NO_RE.test(tag) && !DOOR_RE.test(tag) && !WINDOW_RE.test(tag)) return null;
   return null;
+}
+
+type MarkCandidate = { parts: SymbolToken[]; tag: string };
+
+/** Join split PDF runs (SD+12, GD+-02, 1+ST-26, D+06, …). */
+function collectMarkCandidates(tokens: SymbolToken[]): MarkCandidate[] {
+  const sorted = [...tokens].sort((a, b) => a.y - b.y || a.x - b.x);
+  const used = new Set<number>();
+  const out: MarkCandidate[] = [];
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (used.has(i)) continue;
+    let best: MarkCandidate | null = null;
+
+    for (let len = Math.min(4, sorted.length - i); len >= 1; len--) {
+      const chain = sorted.slice(i, i + len);
+      if (chain.some((_, k) => k > 0 && used.has(i + k))) continue;
+      if (len > 1 && !chainAligned(chain)) continue;
+      const ordered = chainJoinOrder(chain);
+      const parts = ordered.map((t) => normalizeMark(t.str || ""));
+      const tag = len === 1 ? parts[0] : joinMarkParts(parts);
+      if (!tag || !classifyPlanSymbol(tag)) continue;
+      if (!best || len > best.parts.length) best = { parts: ordered, tag };
+    }
+
+    if (best) {
+      out.push(best);
+      for (let k = 0; k < best.parts.length; k++) used.add(i + k);
+    }
+  }
+  return out;
 }
 
 /** True if a text run looks like a room / space name (not a code mark). */
@@ -127,18 +275,10 @@ export function symbolNoteKey(sheet_id: string, tag: string, x: number, y: numbe
 export function extractPlanSymbols(tokens: SymbolToken[]): RawPlanSymbol[] {
   const toks = (tokens || []).filter((t) => (t.str || "").trim());
   const out: RawPlanSymbol[] = [];
-  for (const t of toks) {
-    const parts = (t.str || "").trim().split(/\s+/);
-    for (const part of parts) {
-      const hit = classifyPlanSymbol(part);
-      if (!hit) continue;
-      const h = Math.max(6, t.h || 10);
-      const w = Math.max(h, t.w || hit.tag.length * h * 0.62);
-      // Text-matrix origin is typically the baseline-left; center the hit box.
-      const x = t.x + w * 0.5;
-      const y = t.y - h * 0.35;
-      out.push({ tag: hit.tag, kind: hit.kind, x, y, w: w * 1.35, h: h * 1.5 });
-    }
+  for (const c of collectMarkCandidates(toks)) {
+    const hit = classifyPlanSymbol(c.tag);
+    if (!hit) continue;
+    out.push(makePlanSymbol(c.parts, hit));
   }
   const deduped = dedupeNearby(out);
   return attachRoomNames(deduped, toks);
@@ -301,10 +441,44 @@ type RowLike = {
   remarks?: string;
 };
 
-/** Fill schedule fields from imported schedule rows and/or conditions. */
+/** Optional KB row from symbolScheduleKb (door/finish schedule sheets). */
+export type KbRowLike = {
+  tag?: string;
+  room_name?: string;
+  description?: string;
+  manufacturer?: string;
+  style?: string;
+  color?: string;
+  size?: string;
+  remarks?: string;
+  fire_rating?: string;
+  floors?: string;
+  type?: string;
+  source_sheet?: string;
+  source_title?: string;
+  source_bbox?: { x: number; y: number; w: number; h: number };
+};
+
+function kbForTag(kb: KbRowLike[] | Map<string, KbRowLike> | undefined, tag: string): KbRowLike | undefined {
+  if (!kb) return undefined;
+  if (kb instanceof Map) {
+    const direct = kb.get(tag);
+    if (direct) return direct;
+    // Try padded / dashed door variants
+    const m = tag.match(/^D(\d{1,3})([A-Z]?)$/i);
+    if (m) {
+      const n = m[1].padStart(2, "0");
+      return kb.get(`D${n}${m[2]}`) || kb.get(`D-${parseInt(m[1], 10)}${m[2]}`) || kb.get(`D${parseInt(m[1], 10)}${m[2]}`);
+    }
+    return undefined;
+  }
+  return kb.find((e) => (e.tag || "").toUpperCase() === tag.toUpperCase());
+}
+
+/** Fill schedule fields from imported schedule rows, project KB, and/or conditions. */
 export function enrichSymbolsWithSchedule(
   symbols: PlanSymbol[],
-  opts: { conditions?: CondLike[]; rows?: RowLike[] } = {},
+  opts: { conditions?: CondLike[]; rows?: RowLike[]; kb?: KbRowLike[] | Map<string, KbRowLike> } = {},
 ): PlanSymbol[] {
   const rowBy = new Map<string, RowLike>();
   for (const r of opts.rows || []) {
@@ -319,21 +493,38 @@ export function enrichSymbolsWithSchedule(
   return symbols.map((s) => {
     const row = rowBy.get(s.tag);
     const cond = condBy.get(s.tag);
+    const kb = kbForTag(opts.kb, s.tag);
     const mat0 = cond?.materials?.[0];
     const schedule: SymbolScheduleInfo = {
       finish_tag: row?.finish_tag || cond?.finish_tag || (s.kind === "finish" ? s.tag : undefined),
-      description: row?.description || cond?.description || cond?.name || undefined,
-      manufacturer: row?.manufacturer || mat0?.manufacturer || undefined,
-      style: row?.style || mat0?.name || undefined,
-      color: row?.spec_color || undefined,
-      size: row?.size || undefined,
-      remarks: row?.remarks || undefined,
+      description: row?.description || kb?.description || cond?.description || cond?.name || undefined,
+      manufacturer: row?.manufacturer || kb?.manufacturer || mat0?.manufacturer || undefined,
+      style: row?.style || kb?.style || mat0?.name || undefined,
+      color: row?.spec_color || kb?.color || undefined,
+      size: row?.size || kb?.size || undefined,
+      remarks: row?.remarks || kb?.remarks || undefined,
+      fire_rating: kb?.fire_rating || undefined,
+      floors: kb?.floors || undefined,
+      type: kb?.type || undefined,
+      source_sheet: kb?.source_sheet || undefined,
+      source_title: kb?.source_title || undefined,
+      source_bbox: kb?.source_bbox || undefined,
     };
+    // Prefer KB room for door/window (schedule is source of truth); plan label otherwise
+    const room_name = (s.kind === "door" || s.kind === "window")
+      ? (kb?.room_name || s.room_name)
+      : (s.room_name || kb?.room_name);
     // Drop empty keys so the UI can treat missing as "enter manually"
     for (const k of Object.keys(schedule) as (keyof SymbolScheduleInfo)[]) {
+      if (k === "source_bbox") {
+        if (!schedule.source_bbox) delete schedule.source_bbox;
+        continue;
+      }
       if (!schedule[k] || !String(schedule[k]).trim()) delete schedule[k];
     }
-    return { ...s, schedule };
+    return room_name && room_name !== s.room_name
+      ? { ...s, room_name, schedule }
+      : { ...s, schedule };
   });
 }
 
@@ -355,7 +546,9 @@ export function resolveSymbolFields(
     color: pick(n.color, schedule.color),
     size: pick(n.size, schedule.size),
     remarks: pick(n.remarks, schedule.remarks),
-    type: pick(n.type),
+    type: pick(n.type, schedule.type),
+    fire_rating: pick(n.fire_rating, schedule.fire_rating),
+    floors: pick(n.floors, schedule.floors),
   };
 }
 

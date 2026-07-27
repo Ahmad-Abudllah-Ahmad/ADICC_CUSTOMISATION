@@ -60,7 +60,7 @@ export function linkedMarkups(rfi, markups = []) {
  * @param {string} [projectName]
  * @param {((sheetId: any) => string)|null} [sheetLabel]
  */
-export function rfisToCsv(rfis = [], markups = [], projectName = "", sheetLabel = null, brandName = "OpenTakeoff") {
+export function rfisToCsv(rfis = [], markups = [], projectName = "", sheetLabel = null, brandName = "ADICC") {
   const label = (id) => (sheetLabel ? sheetLabel(id) : id);
   const header = [
     "Number", "Subject", "Status", "Ball in court", "Priority",
@@ -99,7 +99,7 @@ export function rfisToJson(rfis = [], projectName = "") {
   return {
     schema: "opentakeoff.rfis.v1",
     project_name: projectName || null,
-    generated_with: "OpenTakeoff",
+    generated_with: "ADICC",
     rfis: rfis || [],
   };
 }

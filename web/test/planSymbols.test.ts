@@ -72,9 +72,58 @@ test("resolve: room_name from extract, overridable manually", () => {
 test("classify: door / window / type / finish marks", () => {
   assert.deepEqual(classifyPlanSymbol("D06"), { tag: "D06", kind: "door" });
   assert.deepEqual(classifyPlanSymbol("d03"), { tag: "D03", kind: "door" });
+  assert.deepEqual(classifyPlanSymbol("SD12"), { tag: "SD12", kind: "door" });
+  assert.deepEqual(classifyPlanSymbol("$D12"), { tag: "SD12", kind: "door" });
   assert.deepEqual(classifyPlanSymbol("W12"), { tag: "W12", kind: "window" });
   assert.deepEqual(classifyPlanSymbol("T1-08"), { tag: "T1-08", kind: "type" });
   assert.deepEqual(classifyPlanSymbol("CPT-1"), { tag: "CPT-1", kind: "finish" });
+});
+
+test("extract: merges split SD + 12 sliding-door mark", () => {
+  const raw = extractPlanSymbols([
+    { str: "SD", x: 100, y: 200, h: 12 },
+    { str: "12", x: 118, y: 200, h: 12 },
+  ]);
+  assert.equal(raw.length, 1);
+  assert.equal(raw[0].tag, "SD12");
+  assert.equal(raw[0].kind, "door");
+  assert.equal(raw[0].outline, "circle");
+});
+
+test("extract: merges split 1 + ST-26 type mark (wall line through 1)", () => {
+  const raw = extractPlanSymbols([
+    { str: "1", x: 100, y: 200, h: 12 },
+    { str: "ST-26", x: 110, y: 200, h: 12 },
+  ]);
+  assert.equal(raw.length, 1);
+  assert.equal(raw[0].tag, "1ST-26");
+  assert.equal(raw[0].kind, "type");
+  assert.equal(raw[0].outline, "rect");
+});
+
+test("extract: merges split GD + -02 finish mark (circled)", () => {
+  const raw = extractPlanSymbols([
+    { str: "GD", x: 100, y: 200, h: 12 },
+    { str: "-02", x: 118, y: 200, h: 12 },
+  ]);
+  assert.equal(raw.length, 1);
+  assert.equal(raw[0].tag, "GD-02");
+  assert.equal(raw[0].kind, "finish");
+  assert.equal(raw[0].outline, "circle");
+});
+
+test("extract: merges vertical GD + -02 (rotated in circle)", () => {
+  const raw = extractPlanSymbols([
+    { str: "GD", x: 100, y: 200, h: 12 },
+    { str: "-02", x: 100, y: 214, h: 12 },
+  ]);
+  assert.equal(raw.length, 1);
+  assert.equal(raw[0].tag, "GD-02");
+  assert.equal(raw[0].outline, "circle");
+});
+
+test("classify: |ST-26 misread as 1ST-26", () => {
+  assert.deepEqual(classifyPlanSymbol("|ST-26"), { tag: "1ST-26", kind: "type" });
 });
 
 test("classify: rejects notes, sheet numbers, prose", () => {

@@ -57,7 +57,7 @@ export default function ProjectHome() {
       {/* header: brand + title + local-canvas escape hatch + signed-in chip */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)", flexWrap: "wrap" }}>
         <strong style={{ fontFamily: "var(--f-display)", fontSize: 20, letterSpacing: "-0.02em" }}>
-          open<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span>
+          ADI<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>CC</span>
         </strong>
         <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>Projects</strong>
         {/* Escape hatch sits WITH the title (top-left), matching PlanNavigator's

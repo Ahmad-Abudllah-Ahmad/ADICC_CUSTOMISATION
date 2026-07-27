@@ -14,8 +14,8 @@
 import { metaGet, metaPut } from "./store.js";
 import { activeProfile } from "./identity.js";
 
-export const OT_NAME = "OpenTakeoff";
-export const OT_CREDIT = "Measured with OpenTakeoff";
+export const OT_NAME = "ADICC";
+export const OT_CREDIT = "Measured with ADICC";
 
 /**
  * @param {{mode?: string, profileId?: string|null,
@@ -46,7 +46,7 @@ export function resolveBranding(sel) {
     // already OpenTakeoff-branded throughout, so a separate credit is redundant)
     credit: clear ? OT_CREDIT : null,
     // marked-set cover wordmark — carries the OpenTakeoff prefix in default mode
-    coverTitle: clear ? "Marked Set" : "OpenTakeoff · Marked Set",
+    coverTitle: clear ? "Marked Set" : "ADICC · Marked Set",
   };
 }
 

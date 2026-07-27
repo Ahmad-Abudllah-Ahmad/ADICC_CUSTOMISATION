@@ -1,8 +1,8 @@
-# OpenTakeoff
+# ADICC
 
 > Free, open-source (Apache-2.0) construction takeoff software that runs entirely in the browser. Open a plan (PDF, image, or .zip plan set), set the scale, trace areas — with one-click room detection and a 45°/90° angle lock — then apply waste % and per-condition supporting materials, and export quantities (SF/SY/LF/EA) as CSV/JSON. Built for flooring; the measuring engine works for any trade (drywall, paint, concrete, sitework). No account, no upload — plans never leave the machine.
 
-OpenTakeoff is the open-source alternative to subscription takeoff tools (STACK, PlanSwift, Kreo, Togal, Bluebeam quantity takeoff). It is a static web app: self-hosting is one `npm run build` and any static file host.
+ADICC is the open-source alternative to subscription takeoff tools (STACK, PlanSwift, Kreo, Togal, Bluebeam quantity takeoff). It is a static web app: self-hosting is one `npm run build` and any static file host.
 
 ## Docs
 

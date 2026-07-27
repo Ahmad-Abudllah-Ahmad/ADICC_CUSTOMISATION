@@ -39,6 +39,10 @@ import {
   extractPlanSymbols, buildPlanSymbolIndex, enrichSymbolsWithSchedule,
   resolveSymbolFields, hitPlanSymbol, symbolNoteKey, SYMBOL_KIND_LABEL,
 } from "../lib/planSymbols";
+import {
+  classifySheetByName, extractScheduleKbFromSheet, buildScheduleKb,
+} from "../lib/symbolScheduleKb";
+import SymbolSourceViewer from "../components/SymbolSourceViewer.jsx";
 import { isGoogleConfigured, isSignedIn, isAllowedDomain, getAccessToken, orgDomainHint } from "../lib/google/auth.js";
 import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons } from "../lib/oneclick";
 import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS } from "../lib/rastermask";
@@ -188,11 +192,16 @@ export default function TakeoffCanvas() {
   // Raw extract lives in a ref (per-sheet); planSymbols is the enriched view
   // (cross-sheet matches + schedule fields). symbolNotes holds manual fills.
   const planSymbolsRawRef = useRef({});
+  const scheduleKbRef = useRef(new Map());   // mark → ScheduleKbEntry from project PDFs
   const [symbolEpoch, setSymbolEpoch] = useState(0);
+  const [symbolKbEpoch, setSymbolKbEpoch] = useState(0);
   const [planSymbols, setPlanSymbols] = useState([]);
   const [symbolNotes, setSymbolNotes] = useState({});
   const [symbolHover, setSymbolHover] = useState(null);   // { id, cx, cy } screen-local
   const [symbolFocus, setSymbolFocus] = useState(null);   // pinned PlanSymbol id for editing
+  const [symbolSourceView, setSymbolSourceView] = useState(null); // floating PDF viewer target
+  const symbolSourceViewRef = useRef(null);
+  useEffect(() => { symbolSourceViewRef.current = symbolSourceView; }, [symbolSourceView]);
   const [openFolderPaths, setOpenFolderPaths] = useState({}); // folder path → false to collapse (default expanded)
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
@@ -1352,10 +1361,56 @@ export default function TakeoffCanvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupSig, hiResKeys.join(" ")]);
 
-  // Rebuild the enriched plan-symbol index whenever extracts or conditions change.
+  // Rebuild the enriched plan-symbol index whenever extracts, conditions, or
+  // the project schedule knowledge-base change.
   useEffect(() => {
-    setPlanSymbols(enrichSymbolsWithSchedule(buildPlanSymbolIndex(planSymbolsRawRef.current), { conditions }));
-  }, [conditions, symbolEpoch]);
+    setPlanSymbols(enrichSymbolsWithSchedule(buildPlanSymbolIndex(planSymbolsRawRef.current), {
+      conditions,
+      kb: scheduleKbRef.current,
+    }));
+  }, [conditions, symbolEpoch, symbolKbEpoch]);
+
+  // Background: scan uploaded PDFs whose filenames look like door / window /
+  // finish schedules (or detail sheets) and build a mark → detail knowledge base
+  // so hover can show accurate fields from the schedule PDFs themselves.
+  useEffect(() => {
+    if (!sheets.length) {
+      scheduleKbRef.current = new Map();
+      setSymbolKbEpoch((n) => n + 1);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const entries = [];
+      for (const s of sheets) {
+        if (cancelled) return;
+        const cls = classifySheetByName(s.name);
+        if (cls === "other") continue;
+        try {
+          const pdf = await docFor(s.name);
+          if (cancelled) return;
+          const nPages = pdf.numPages || 1;
+          for (let n = 1; n <= nPages; n++) {
+            if (cancelled) return;
+            try {
+              const page = await pdf.getPage(n);
+              const tc = await page.getTextContent();
+              const vp = page.getViewport({ scale: RENDER_SCALE });
+              const tokens = extractRegionText(tc, vp, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
+              const key = n > 1 ? `${s.name}#${n}` : s.name;
+              entries.push(...extractScheduleKbFromSheet(tokens, { sheet_id: key, file_name: s.name }));
+            } catch { /* skip page */ }
+          }
+        } catch { /* skip file */ }
+      }
+      if (cancelled) return;
+      scheduleKbRef.current = buildScheduleKb(entries);
+      setSymbolKbEpoch((n) => n + 1);
+    })();
+    return () => { cancelled = true; };
+    // docFor is stable (useCallback []); sheets identity drives the scan
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheets]);
 
   // ── detail view: re-render the visible region at the current zoom ───────────
   // The base panel bitmap is the fast first paint and the zoomed-out view. Once
@@ -1871,7 +1926,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -5870,7 +5925,7 @@ export default function TakeoffCanvas() {
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
-          onDoubleClick={(e) => { if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
+          onDoubleClick={(e) => { if (symbolHover) { setSymbolFocus(symbolHover.id); return; } if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
@@ -5900,16 +5955,18 @@ export default function TakeoffCanvas() {
             const pinned = !!focusSym;
             const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
             const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
-            const left = pinned ? Math.min((symbolHover?.cx ?? 24), (containerRef.current?.clientWidth || 400) - 280) : (symbolHover?.cx ?? 24);
-            const top = pinned ? Math.min((symbolHover?.cy ?? 24), (containerRef.current?.clientHeight || 400) - 320) : (symbolHover?.cy ?? 24);
+            const left = pinned ? Math.min((symbolHover?.cx ?? 24), (containerRef.current?.clientWidth || 400) - 300) : (symbolHover?.cx ?? 24);
+            const top = pinned ? Math.min((symbolHover?.cy ?? 24), (containerRef.current?.clientHeight || 400) - 380) : (symbolHover?.cy ?? 24);
             const fieldRows = [
               ["room_name", "Room name", fields.room_name],
-              ["type", "Type", SYMBOL_KIND_LABEL[sym.kind]],
+              ["type", "Type", fields.type || SYMBOL_KIND_LABEL[sym.kind]],
               ["description", "Description", fields.description],
+              ["size", "Size / opening", fields.size],
+              ["fire_rating", "Fire rating", fields.fire_rating],
+              ["floors", "Floors", fields.floors],
               ["manufacturer", "Manufacturer", fields.manufacturer],
               ["style", "Style", fields.style],
               ["color", "Color", fields.color],
-              ["size", "Size", fields.size],
               ["remarks", "Remarks", fields.remarks],
             ];
             const setNote = (field, value) => {
@@ -5922,10 +5979,44 @@ export default function TakeoffCanvas() {
                 return next;
               });
             };
+            const hasSource = !!(sym.schedule?.source_sheet);
+            const hasEdits = !!(symbolNotes[noteKey] && Object.keys(symbolNotes[noteKey]).length);
+            const openSource = () => {
+              if (!sym.schedule?.source_sheet) return;
+              setSymbolSourceView({
+                sheetId: sym.schedule.source_sheet,
+                title: sym.schedule.source_title || sym.schedule.source_sheet,
+                bbox: sym.schedule.source_bbox || null,
+                tag: sym.tag,
+              });
+            };
             return (
-              <div style={{ position: "absolute", left, top, zIndex: 12, width: 260, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", pointerEvents: pinned ? "auto" : "none", fontFamily: "var(--f-body)", fontSize: 12, color: "var(--ink)" }}
-                onPointerDown={(e) => e.stopPropagation()}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "10px 12px 6px", borderBottom: "1px solid var(--ink-faint)" }}>
+              <div style={{ position: "absolute", left, top, zIndex: 12, width: 300, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", pointerEvents: "auto", fontFamily: "var(--f-body)", fontSize: 12, color: "var(--ink)", cursor: !pinned ? "pointer" : "default" }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => { e.stopPropagation(); if (!pinned) setSymbolFocus(sym.id); }}
+                onDoubleClick={(e) => { e.stopPropagation(); if (!pinned) setSymbolFocus(sym.id); }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "10px 12px 6px", borderBottom: "1px solid var(--ink-faint)", cursor: pinned ? "grab" : "pointer", userSelect: "none" }}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    if (!pinned) {
+                      setSymbolFocus(sym.id);
+                      return;
+                    }
+                    e.preventDefault();
+                    const ox = e.clientX - left;
+                    const oy = e.clientY - top;
+                    const move = (ev) => {
+                      const nl = Math.max(8, Math.min((containerRef.current?.clientWidth || 1200) - 308, ev.clientX - ox));
+                      const nt = Math.max(8, Math.min((containerRef.current?.clientHeight || 1200) - 80, ev.clientY - oy));
+                      setSymbolHover((prev) => (prev ? { ...prev, cx: nl, cy: nt } : { id: sym.id, cx: nl, cy: nt }));
+                    };
+                    const up = () => {
+                      window.removeEventListener("pointermove", move);
+                      window.removeEventListener("pointerup", up);
+                    };
+                    window.addEventListener("pointermove", move);
+                    window.addEventListener("pointerup", up);
+                  }}>
                   <div style={{ minWidth: 0, flex: 1 }}>
                     {fields.room_name ? (
                       <div style={{ fontFamily: "var(--f-display)", fontWeight: 700, fontSize: 14, color: "var(--ink)", lineHeight: 1.25, marginBottom: 2 }}>{fields.room_name}</div>
@@ -5942,36 +6033,49 @@ export default function TakeoffCanvas() {
                     <span style={{ fontSize: 10, color: "var(--ink-muted)", whiteSpace: "nowrap" }}>click to edit</span>
                   )}
                 </div>
-                <div style={{ padding: "8px 12px", display: "grid", gap: 6 }}>
+                <div style={{ padding: "8px 12px", display: "grid", gap: 6, maxHeight: pinned ? 380 : 320, overflowY: "auto" }}>
                   {fieldRows.map(([key, label, value]) => {
                     const empty = !value;
                     if (!pinned) {
                       return (
-                        <div key={key} style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 6, alignItems: "baseline" }}>
+                        <div key={key} style={{ display: "grid", gridTemplateColumns: "96px 1fr", gap: 6, alignItems: "baseline" }}>
                           <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
-                          <span style={{ color: empty ? "var(--ink-faint)" : "var(--ink)" }}>{empty ? "—" : value}</span>
-                        </div>
-                      );
-                    }
-                    if (key === "type" && value) {
-                      return (
-                        <div key={key} style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 6, alignItems: "baseline" }}>
-                          <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
-                          <span>{value}</span>
+                          <span style={{ color: empty ? "var(--ink-faint)" : "var(--ink)", lineHeight: 1.35 }}>{empty ? "—" : value}</span>
                         </div>
                       );
                     }
                     return (
-                      <label key={key} style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 6, alignItems: "center" }}>
+                      <label key={key} style={{ display: "grid", gridTemplateColumns: "96px 1fr", gap: 6, alignItems: "center" }}>
                         <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
                         <input name={`sym-${key}`}
-                          value={symbolNotes[noteKey]?.[key] ?? (key === "type" ? "" : (fields[key] || ""))}
-                          placeholder={empty ? "Enter…" : undefined}
+                          value={symbolNotes[noteKey]?.[key] ?? (fields[key] || (key === "type" ? (SYMBOL_KIND_LABEL[sym.kind] || "") : "") || "")}
+                          placeholder="Enter…"
                           onChange={(e) => setNote(key, e.target.value)}
-                          style={{ width: "100%", boxSizing: "border-box", padding: "4px 6px", border: "1px solid var(--ink-faint)", background: empty ? "var(--paper-cream)" : "var(--paper-bright)", fontSize: 12, color: "var(--ink)", fontFamily: "var(--f-body)" }} />
+                          style={{ width: "100%", boxSizing: "border-box", padding: "4px 6px", border: "1px solid var(--ink-faint)", background: empty && !symbolNotes[noteKey]?.[key] ? "var(--paper-cream)" : "var(--paper-bright)", fontSize: 12, color: "var(--ink)", fontFamily: "var(--f-body)" }} />
                       </label>
                     );
                   })}
+                  {hasSource && (
+                    <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
+                      <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Source</div>
+                      <button type="button" onClick={openSource}
+                        title="Open source PDF with this schedule region highlighted"
+                        style={{
+                          display: "block", width: "100%", textAlign: "left", padding: 0, border: "none",
+                          background: "transparent", cursor: "pointer", fontSize: 11.5, color: "var(--cobalt)",
+                          lineHeight: 1.35, fontFamily: "var(--f-body)", textDecoration: "underline",
+                          textUnderlineOffset: 2,
+                        }}>
+                        {sym.schedule.source_title || sym.schedule.source_sheet}
+                      </button>
+                      {pinned && (
+                        <button type="button" onClick={openSource}
+                          style={{ width: "100%", marginTop: 8, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--cobalt)", fontFamily: "var(--f-body)" }}>
+                          Open source PDF →
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {sym.matches.length > 0 && (
                     <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
                       <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Also on</div>
@@ -5986,15 +6090,35 @@ export default function TakeoffCanvas() {
                       {sym.matches.length > 6 && <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>+{sym.matches.length - 6} more</div>}
                     </div>
                   )}
-                  {!sym.matches.length && !fields.room_name && !fields.description && !fields.manufacturer && (
+                  {pinned && (
+                    <div style={{ marginTop: 6, paddingTop: 8, borderTop: "1px solid var(--ink-faint)", display: "grid", gap: 8 }}>
+                      <div style={{ fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.4 }}>
+                        {hasEdits ? "Edits saved with this takeoff." : "Edit any field — changes save with the takeoff."}
+                      </div>
+                      <button type="button" onClick={() => setSymbolFocus(null)}
+                        style={{ width: "100%", padding: "7px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--f-body)" }}>
+                        Done
+                      </button>
+                    </div>
+                  )}
+                  {!pinned && !hasSource && !fields.description && !fields.room_name && (
                     <div style={{ fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.45, marginTop: 2 }}>
-                      No room name or schedule match yet — {pinned ? "fill in the fields above." : "click to enter details."}
+                      No schedule match yet — click to enter details, or upload the door/finish schedule PDFs.
                     </div>
                   )}
                 </div>
               </div>
             );
           })()}
+          {symbolSourceView && (
+            <SymbolSourceViewer
+              sheetId={symbolSourceView.sheetId}
+              title={`${symbolSourceView.tag || ""} · ${symbolSourceView.title || ""}`.replace(/^ · /, "")}
+              bbox={symbolSourceView.bbox}
+              getDoc={docFor}
+              onClose={() => setSymbolSourceView(null)}
+            />
+          )}
           {/* inline on-canvas text editor — a screen-space overlay pinned to its anchor
               (pan/zoom is frozen while open). Enter commits, Esc cancels, blur commits;
               all on the input's OWN handlers so the global keydown (which returns early
@@ -6031,8 +6155,9 @@ export default function TakeoffCanvas() {
                       const on = s.id === symbolFocus || s.id === symbolHover?.id;
                       const sw = (on ? 1.6 : 1.1) / z;
                       const col = on ? "#1f3fc7" : "rgba(31,63,199,.45)";
-                      if (s.kind === "door" || s.kind === "window" || s.kind === "detail") {
-                        return <circle key={s.id} cx={s.x} cy={s.y} r={Math.max(s.w, s.h) * 0.55}
+                      const shape = s.outline || (s.kind === "door" || s.kind === "window" || s.kind === "detail" ? "circle" : "rect");
+                      if (shape === "circle") {
+                        return <circle key={s.id} cx={s.x} cy={s.y} r={Math.max(s.w, s.h) / 2}
                           fill={on ? "rgba(31,63,199,.10)" : "transparent"} stroke={col} strokeWidth={sw} strokeDasharray={`${3 / z} ${2 / z}`} />;
                       }
                       return <rect key={s.id} x={s.x - s.w / 2} y={s.y - s.h / 2} width={s.w} height={s.h}

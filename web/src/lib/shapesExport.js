@@ -42,7 +42,7 @@ export function shapesDetail(conditions, shapes, sheetLabel) {
   });
 }
 
-export function shapesToCsv(rows, projectName = "", brandName = "OpenTakeoff") {
+export function shapesToCsv(rows, projectName = "", brandName = "ADICC") {
   const header = ["Shape", "Sheet", "Sheet ID", "Finish", "Role", "Area SF", "LF", "EA", "Height ft", "Height override", "Origin"];
   const lines = [
     "# Per-shape measured quantities — no multiplier or waste; deducts negative; LF on floor/deduct/surface rows is trace reference only (incl. openings) — linear rows alone sum to condition LF",
@@ -64,7 +64,7 @@ export function shapesToJson(rows, projectName) {
   return {
     schema: "opentakeoff.shapes.v1",
     project_name: projectName || null,
-    generated_with: "OpenTakeoff",
+    generated_with: "ADICC",
     shapes: rows,
   };
 }

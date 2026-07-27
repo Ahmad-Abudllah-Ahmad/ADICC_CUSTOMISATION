@@ -296,7 +296,7 @@ export function grandTotals(rows) {
  *   (SF/LF-based). "imperial" (default) is byte-identical to the frozen export.
  * @returns {string}
  */
-export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel = null, cols = null, ctx = null, byLabel = null, brandName = "OpenTakeoff", units = "imperial") {
+export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel = null, cols = null, ctx = null, byLabel = null, brandName = "ADICC", units = "imperial") {
   // the caller passes RAW descriptors; conversion happens here (one site per
   // output) through the same applyUnits seam the report table uses
   const columns = applyUnits(cols || CSV_PROFILE.filter((c) => c.defaultVisible), units, METRIC_CSV_LABELS);
@@ -400,7 +400,7 @@ export function reportJson({ projectName = "", rows = [], bySheet = [], scaleInf
   return {
     schema: "opentakeoff.report.v1",
     project_name: projectName || null,
-    generated_with: "OpenTakeoff",
+    generated_with: "ADICC",
     sheets: scaleInfo.map((si) => ({ sheet_id: si.sheet_id, sheet: label(si.sheet_id), scale_source: si.scale_source ?? si.source ?? "unknown" })),
     // custom-column values APPEND after materials (row key order otherwise
     // untouched). Iterating the DEFINED columns — never raw attrs — naturally

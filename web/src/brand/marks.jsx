@@ -17,7 +17,7 @@ export function Wordmark({ size = 96, color = "var(--ink)", weight = 800, letter
         fontOpticalSizing: "auto",
       }}
     >
-      open<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span>
+      ADI<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>CC</span>
     </span>
   );
 }
