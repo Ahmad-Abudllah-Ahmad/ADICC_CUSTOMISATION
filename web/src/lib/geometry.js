@@ -196,7 +196,15 @@ export function hitShape(shape, x, y, w, h, thr) {
   const pts = shape.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
   if (shape.measure_role === "count") return Math.hypot(pts[0][0] - x, pts[0][1] - y) < thr * 2;
   if (shape.measure_role === "linear" || shape.measure_role === "surface_area") { for (let i = 1; i < pts.length; i++) if (distToSeg(x, y, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]) < thr) return true; return false; }
-  if (pointInPoly(x, y, pts)) return true;
+  if (pointInPoly(x, y, pts)) {
+    if (Array.isArray(shape.holes_norm)) {
+      for (const hole of shape.holes_norm) {
+        const hp = hole.map(([nx, ny]) => [nx * w, ny * h]);
+        if (pointInPoly(x, y, hp)) return false;
+      }
+    }
+    return true;
+  }
   for (let i = 0; i < pts.length; i++) { const j = (i + 1) % pts.length; if (distToSeg(x, y, pts[i][0], pts[i][1], pts[j][0], pts[j][1]) < thr) return true; }
   return false;
 }

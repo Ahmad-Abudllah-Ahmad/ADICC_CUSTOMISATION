@@ -94,6 +94,9 @@ export function vertsEqual(a, b) {
 export function geomSnapshot(s) {
   return {
     verts_norm: s.verts_norm.map((v) => [...v]),
+    ...(Array.isArray(s.holes_norm) && s.holes_norm.length
+      ? { holes_norm: s.holes_norm.map((h) => h.map((v) => [...v])) }
+      : {}),
     ...("computed" in s ? { computed: s.computed } : {}),
     ...("updated_at" in s ? { updated_at: s.updated_at } : {}),
     ...("origin" in s ? { origin: s.origin } : {}),
@@ -103,9 +106,18 @@ export function geomSnapshot(s) {
 // Write a snapshot's four fields back onto a shape, presence-aware.
 const withGeomFields = (s, snap) => {
   const out = { ...s, verts_norm: snap.verts_norm };
+  if (Array.isArray(snap.holes_norm)) out.holes_norm = snap.holes_norm.map((h) => h.map((v) => [...v]));
+  else delete out.holes_norm;
   if ("computed" in snap) out.computed = snap.computed; else delete out.computed;
   if ("updated_at" in snap) out.updated_at = snap.updated_at; else delete out.updated_at;
   if ("origin" in snap) out.origin = snap.origin; else delete out.origin;
+  return out;
+};
+
+const withHoleField = (out, holes) => {
+  if (holes === undefined) return out;
+  if (Array.isArray(holes) && holes.length) out.holes_norm = holes.map((h) => h.map((v) => [...v]));
+  else delete out.holes_norm;
   return out;
 };
 
@@ -159,7 +171,8 @@ export function applyShapeCommand(shapes, cmd) {
         if (s.id !== cmd.id) return s;
         if (cmd.restampFrom) {
           // undo path: put back geometry + the EXACT prior provenance; no stamp.
-          const out = { ...s, verts_norm: cmd.verts_norm };
+          let out = { ...s, verts_norm: cmd.verts_norm };
+          out = withHoleField(out, cmd.holes_norm);
           if (cmd.computed !== undefined) out.computed = cmd.computed;
           if ("updated_at" in cmd.restampFrom) out.updated_at = cmd.restampFrom.updated_at; else delete out.updated_at;
           if ("origin" in cmd.restampFrom) out.origin = cmd.restampFrom.origin; else delete out.origin;
@@ -173,7 +186,8 @@ export function applyShapeCommand(shapes, cmd) {
         // to the current state when the caller didn't preview (discrete edits).
         const prev = cmd.prev || geomSnapshot(s);
         const stamped = stampEdit(withGeomFields(s, prev), kindFor(cmd.editKind));
-        const out = { ...stamped, verts_norm: cmd.verts_norm };
+        let out = { ...stamped, verts_norm: cmd.verts_norm };
+        if (cmd.holes_norm !== undefined) out = withHoleField(out, cmd.holes_norm);
         if (cmd.computed !== undefined) out.computed = cmd.computed;   // move gestures omit computed — translation never re-prices
         inverse = geomInverse(cmd.id, cmd.editKind, prev);
         return out;
@@ -277,6 +291,7 @@ export function applyShapeCommand(shapes, cmd) {
 const geomInverse = (id, editKind, snap) => ({
   type: "geom", id, editKind,
   verts_norm: snap.verts_norm,
+  ...(Array.isArray(snap.holes_norm) ? { holes_norm: snap.holes_norm.map((h) => h.map((v) => [...v])) } : {}),
   ...("computed" in snap ? { computed: snap.computed } : {}),
   restampFrom: {
     ...("updated_at" in snap ? { updated_at: snap.updated_at } : {}),

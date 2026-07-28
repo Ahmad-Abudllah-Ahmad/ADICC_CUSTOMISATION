@@ -914,11 +914,10 @@ function rasterFillPoly(mask: Uint8Array, mw: number, mh: number, poly: Point[])
   }
 }
 
-/** Boolean union of overlapping closed rings → one outer contour in image px. */
-export function unionPolygons(polys: Point[][], epsMaskPx = 1.5): Point[] | null {
+/** Shared raster setup for boolean polygon ops → mask + world→mask mapping. */
+function rasterSetup(polys: Point[][], maxDim = 1200): { mask: Uint8Array; mw: number; mh: number; ws: number; ox: number; oy: number } | null {
   const rings = polys.filter((p) => p && p.length >= 3);
   if (!rings.length) return null;
-  if (rings.length === 1) return rings[0].map(([x, y]) => [x, y] as Point);
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const poly of rings) {
     for (const [x, y] of poly) {
@@ -929,21 +928,205 @@ export function unionPolygons(polys: Point[][], epsMaskPx = 1.5): Point[] | null
   if (!(maxX > minX) || !(maxY > minY)) return null;
   const pad = 2;
   const span = Math.max(maxX - minX, maxY - minY, 1);
-  const ws = Math.min(1, 1200 / span);
+  const ws = Math.min(1, maxDim / span);
   const mw = Math.max(4, Math.ceil((maxX - minX) * ws) + pad * 2);
   const mh = Math.max(4, Math.ceil((maxY - minY) * ws) + pad * 2);
   const ox = minX - pad / ws, oy = minY - pad / ws;
-  const mask = new Uint8Array(mw * mh);
-  for (const poly of rings) {
-    const local: Point[] = poly.map(([x, y]) => [(x - ox) * ws, (y - oy) * ws]);
-    rasterFillPoly(mask, mw, mh, local);
-  }
+  return { mask: new Uint8Array(mw * mh), mw, mh, ws, ox, oy };
+}
+
+function localPoly(poly: Point[], ox: number, oy: number, ws: number): Point[] {
+  return poly.map(([x, y]) => [(x - ox) * ws, (y - oy) * ws] as Point);
+}
+
+function traceMask(mask: Uint8Array, mw: number, mh: number, ws: number, ox: number, oy: number, epsMaskPx: number): Point[] | null {
   let count = 0;
   for (let i = 0; i < mask.length; i++) if (mask[i]) count++;
   if (count < TINY_PX) return null;
   const ring = mooreTrace(mask, mw, mh, 1, epsMaskPx); // ws=1 → mask-px verts
   if (ring.length < 3) return null;
   return ring.map(([x, y]) => [x / ws + ox, y / ws + oy] as Point);
+}
+
+/** Greedy maximal-rectangle cover of a 0/1 mask → image-px quads (exact trim for holes). */
+function maskToMaxRectPolys(
+  mask: Uint8Array, mw: number, mh: number, ws: number, ox: number, oy: number, minMaskPx = 2,
+): Point[][] {
+  const used = new Uint8Array(mw * mh);
+  const polys: Point[][] = [];
+  for (let y = 0; y < mh; y++) {
+    let x = 0;
+    while (x < mw) {
+      const i = y * mw + x;
+      if (!mask[i] || used[i]) { x++; continue; }
+      let x1 = x;
+      while (x1 < mw && mask[y * mw + x1] && !used[y * mw + x1]) x1++;
+      let y1 = y + 1;
+      outer: while (y1 < mh) {
+        for (let xx = x; xx < x1; xx++) {
+          if (!mask[y1 * mw + xx] || used[y1 * mw + xx]) break outer;
+        }
+        y1++;
+      }
+      for (let yy = y; yy < y1; yy++) {
+        for (let xx = x; xx < x1; xx++) used[yy * mw + xx] = 1;
+      }
+      if (x1 - x >= minMaskPx && y1 - y >= minMaskPx) {
+        const px0 = x / ws + ox, py0 = y / ws + oy;
+        const px1 = x1 / ws + ox, py1 = y1 / ws + oy;
+        polys.push([[px0, py0], [px1, py0], [px1, py1], [px0, py1]]);
+      }
+      x = x1;
+    }
+  }
+  return polys;
+}
+
+function closestBridgeIndices(outer: Point[], inner: Point[]): { oi: number; ii: number } {
+  let oi = 0, ii = 0, dmin = Infinity;
+  for (let i = 0; i < outer.length; i++) {
+    for (let j = 0; j < inner.length; j++) {
+      const d = Math.hypot(outer[i][0] - inner[j][0], outer[i][1] - inner[j][1]);
+      if (d < dmin) { dmin = d; oi = i; ii = j; }
+    }
+  }
+  return { oi, ii };
+}
+
+/** One ring tracing a frame (outer minus one interior hole) in image px. */
+function framePolygon(outer: Point[], inner: Point[], epsMaskPx: number): Point[] | null {
+  if (outer.length < 3 || inner.length < 3) return null;
+  const { oi, ii } = closestBridgeIndices(outer, inner);
+  const oSeq = [...outer.slice(oi), ...outer.slice(0, oi)];
+  const innerRev = [...inner].reverse();
+  const iiRev = inner.length - 1 - ii;
+  const iSeq = [...innerRev.slice(iiRev), ...innerRev.slice(0, iiRev)];
+  const ring = [...oSeq, inner[ii], ...iSeq, oSeq[0]];
+  if (!(epsMaskPx > 0)) return ring.length >= 3 ? ring : null;
+  const cleaned = rdpClosed(ring, epsMaskPx);
+  return cleaned.length >= 3 ? cleaned : null;
+}
+
+/** Cutter fully inside parent with clearance from the outer edge (interior punch). */
+export function cutterStrictlyInsideParent(a: Point[], b: Point[], edgeInsetPx = 2.5): boolean {
+  const cx = b.reduce((s, p) => s + p[0], 0) / b.length;
+  const cy = b.reduce((s, p) => s + p[1], 0) / b.length;
+  if (!pointInPolyImg(cx, cy, a)) return false;
+  for (const [x, y] of b) {
+    if (!pointInPolyImg(x, y, a)) return false;
+    for (let i = 0; i < a.length; i++) {
+      const j = (i + 1) % a.length;
+      if (distToSegImg(x, y, a[i][0], a[i][1], a[j][0], a[j][1]) < edgeInsetPx) return false;
+    }
+  }
+  return true;
+}
+
+function maskRingToImagePoly(
+  mask: Uint8Array, mw: number, mh: number, ws: number, ox: number, oy: number, epsMaskPx: number,
+): Point[] | null {
+  let count = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) count++;
+  if (count < TINY_PX) return null;
+  const reg: RegionResult = { region: mask, mw, mh, ws, count };
+  const outer = mooreTrace(mask, mw, mh, ws, epsMaskPx).map(([x, y]) => [x / ws + ox, y / ws + oy] as Point);
+  if (outer.length < 3) return null;
+  const holes = findRegionHoles(reg);
+  if (!holes.length) return null;
+  let best = holes[0];
+  for (const h of holes) if ((h.count || 0) > (best.count || 0)) best = h;
+  const inner = mooreTrace(best.region, best.mw, best.mh, best.ws, epsMaskPx)
+    .map(([x, y]) => [x / ws + ox, y / ws + oy] as Point);
+  if (inner.length < 3) return null;
+  return framePolygon(outer, inner, epsMaskPx);
+}
+
+/** Boolean subtract B from A → one or more floor rings that exactly cover A−B in image px. */
+export function subtractPolygonsToPolys(a: Point[], b: Point[], epsMaskPx = 0.5): Point[][] {
+  if (!a || a.length < 3) return [];
+  if (!b || b.length < 3) return [a.map(([x, y]) => [x, y] as Point)];
+  const aRing = a.map(([x, y]) => [x, y] as Point);
+  const bRing = b.map(([x, y]) => [x, y] as Point);
+  // Interior punch — exact parent + cutter rings so the hole matches the child mask.
+  if (cutterStrictlyInsideParent(aRing, bRing)) {
+    const frame = framePolygon(aRing, bRing, 0);
+    if (frame && frame.length >= 3) return [frame];
+  }
+  const trimEps = Math.min(epsMaskPx, 0.75);
+  const setup = rasterSetup([a, b], MASK_MAX_DIM);
+  if (!setup) return [];
+  const { mask, mw, mh, ws, ox, oy } = setup;
+  rasterFillPoly(mask, mw, mh, localPoly(a, ox, oy, ws));
+  const cut = new Uint8Array(mw * mh);
+  rasterFillPoly(cut, mw, mh, localPoly(b, ox, oy, ws));
+  for (let i = 0; i < mask.length; i++) if (cut[i]) mask[i] = 0;
+  let pixels = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) pixels++;
+  if (pixels < TINY_PX) return [];
+  const pixelArea = pixels / (ws * ws);
+  const bcx = bRing.reduce((s, p) => s + p[0], 0) / bRing.length;
+  const bcy = bRing.reduce((s, p) => s + p[1], 0) / bRing.length;
+  const tryExactFrame = () => {
+    if (!pointInPolyImg(bcx, bcy, aRing)) return null;
+    return framePolygon(aRing, bRing, 0);
+  };
+  const traced = traceMask(mask, mw, mh, ws, ox, oy, trimEps);
+  if (traced && traced.length >= 3) {
+    const traceArea = ringArea(traced);
+    if (traceArea <= pixelArea * 1.08 && traceArea >= pixelArea * 0.92) return [traced];
+    if (traceArea > pixelArea * 1.05) {
+      const exact = tryExactFrame();
+      if (exact && exact.length >= 3) return [exact];
+      const frame = maskRingToImagePoly(mask, mw, mh, ws, ox, oy, trimEps);
+      if (frame && frame.length >= 3) return [frame];
+    }
+  } else {
+    const exact = tryExactFrame();
+    if (exact && exact.length >= 3) return [exact];
+    const frame = maskRingToImagePoly(mask, mw, mh, ws, ox, oy, trimEps);
+    if (frame && frame.length >= 3) return [frame];
+  }
+  return maskToMaxRectPolys(mask, mw, mh, ws, ox, oy);
+}
+
+/** Boolean union of overlapping closed rings → one outer contour in image px. */
+export function unionPolygons(polys: Point[][], epsMaskPx = 1.5): Point[] | null {
+  const rings = polys.filter((p) => p && p.length >= 3);
+  if (!rings.length) return null;
+  if (rings.length === 1) return rings[0].map(([x, y]) => [x, y] as Point);
+  const setup = rasterSetup(rings, MASK_MAX_DIM);
+  if (!setup) return null;
+  const { mask, mw, mh, ws, ox, oy } = setup;
+  for (const poly of rings) rasterFillPoly(mask, mw, mh, localPoly(poly, ox, oy, ws));
+  return traceMask(mask, mw, mh, ws, ox, oy, epsMaskPx);
+}
+
+/** Boolean difference A − B → one outer contour in image px (null if empty). */
+export function differencePolygons(a: Point[], b: Point[], epsMaskPx = 1.5): Point[] | null {
+  if (!a || a.length < 3) return null;
+  if (!b || b.length < 3) return a.map(([x, y]) => [x, y] as Point);
+  const setup = rasterSetup([a, b]);
+  if (!setup) return null;
+  const { mask, mw, mh, ws, ox, oy } = setup;
+  rasterFillPoly(mask, mw, mh, localPoly(a, ox, oy, ws));
+  // Punch B out of A.
+  const cut = new Uint8Array(mw * mh);
+  rasterFillPoly(cut, mw, mh, localPoly(b, ox, oy, ws));
+  for (let i = 0; i < mask.length; i++) if (cut[i]) mask[i] = 0;
+  return traceMask(mask, mw, mh, ws, ox, oy, epsMaskPx);
+}
+
+/** Boolean intersection A ∩ B → one outer contour in image px (null if empty). */
+export function intersectPolygons(a: Point[], b: Point[], epsMaskPx = 0.75): Point[] | null {
+  if (!a || a.length < 3 || !b || b.length < 3) return null;
+  const setup = rasterSetup([a, b], MASK_MAX_DIM);
+  if (!setup) return null;
+  const { mask, mw, mh, ws, ox, oy } = setup;
+  rasterFillPoly(mask, mw, mh, localPoly(a, ox, oy, ws));
+  const bMask = new Uint8Array(mw * mh);
+  rasterFillPoly(bMask, mw, mh, localPoly(b, ox, oy, ws));
+  for (let i = 0; i < mask.length; i++) mask[i] = mask[i] && bMask[i] ? 1 : 0;
+  return traceMask(mask, mw, mh, ws, ox, oy, Math.min(epsMaskPx, 0.75));
 }
 
 // ── 6. vertex snap + cleanup ───────────────────────────────────────────────

@@ -372,6 +372,22 @@ function mergeStackedRoomNames(
   return out;
 }
 
+/** Room / space labels printed on the plan (GYM, GENERAL STORE-04, …). */
+export type RoomLabel = { text: string; x: number; y: number; h: number; w: number };
+
+/** Extract positioned room-name labels from PDF text tokens (for BOQ room detection). */
+export function extractRoomLabels(tokens: SymbolToken[]): RoomLabel[] {
+  const names: RoomLabel[] = [];
+  for (const t of tokens || []) {
+    const text = (t.str || "").trim().replace(/\s+/g, " ").toUpperCase();
+    if (!looksLikeRoomName(text)) continue;
+    const h = Math.max(6, t.h || 10);
+    const w = Math.max(h, t.w || text.length * h * 0.55);
+    names.push({ text, x: t.x + w * 0.5, y: t.y - h * 0.35, h, w });
+  }
+  return mergeStackedRoomNames(names);
+}
+
 /** Drop the weaker of two same-tag marks within ~1.2× glyph size. */
 function dedupeNearby(syms: RawPlanSymbol[]): RawPlanSymbol[] {
   const sorted = [...syms].sort((a, b) => a.tag.localeCompare(b.tag) || a.y - b.y || a.x - b.x);

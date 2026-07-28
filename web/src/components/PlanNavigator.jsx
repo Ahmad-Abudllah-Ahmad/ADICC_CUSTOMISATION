@@ -134,7 +134,7 @@ export default function PlanNavigator({
   const [pages, setPages] = useState({});   // file -> numPages (as discovered)
   const [sel, setSel] = useState([]);
   const [planQ, setPlanQ] = useState("");                 // Plan-set search (folder view + grid)
-  const [openGalleryFolders, setOpenGalleryFolders] = useState({}); // folder path → false collapses (default open)
+  const [openGalleryFolders, setOpenGalleryFolders] = useState({}); // folder path → true when expanded (default collapsed)
   const [sampleBusy, setSampleBusy] = useState(false);
   const [driveBusy, setDriveBusy] = useState(false);
   const [driveErr, setDriveErr] = useState("");
@@ -311,30 +311,21 @@ export default function PlanNavigator({
     for (const child of Object.values(node.folders)) n += countTreeSheets(child);
     return n;
   };
-  // Default-expand every folder path we know about (incl. parents); search keeps matches open
+  // Keep search matches expanded so results stay visible while filtering
   useEffect(() => {
-    if (!hasFolderTree) return;
+    if (!hasFolderTree || !planNeedle) return;
     setOpenGalleryFolders((prev) => {
       const next = { ...prev };
       for (const path of Object.values(fileFolders || {})) {
         if (!path) continue;
         const segs = path.replace(/\\/g, "/").split("/").filter(Boolean);
-        for (let i = 1; i <= segs.length; i++) {
-          const p = segs.slice(0, i).join("/");
-          if (next[p] === false && !planNeedle) continue;
-          if (planNeedle) next[p] = true;
-          else if (next[p] === undefined) next[p] = true;
-        }
+        for (let i = 1; i <= segs.length; i++) next[segs.slice(0, i).join("/")] = true;
       }
-      if (next[""] === undefined) next[""] = true;
       return next;
     });
   }, [fileFolders, hasFolderTree, planNeedle]);
-  const folderOpen = (path) => openGalleryFolders[path] !== false;
-  const toggleGalleryFolder = (path) => setOpenGalleryFolders((m) => {
-    const currentlyOpen = m[path] !== false;
-    return { ...m, [path]: !currentlyOpen };
-  });
+  const folderOpen = (path) => openGalleryFolders[path] === true;
+  const toggleGalleryFolder = (path) => setOpenGalleryFolders((m) => ({ ...m, [path]: !folderOpen(path) }));
   const assignLevel = () => {
     const label = window.prompt('Level for the selected sheets (e.g. "L1", "Level 2", "Garage") — empty clears:', "");
     if (label === null) return;

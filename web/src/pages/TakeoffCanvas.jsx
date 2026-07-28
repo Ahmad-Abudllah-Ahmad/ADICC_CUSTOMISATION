@@ -36,7 +36,7 @@ import { parseSchedule, rowToSeed } from "../lib/scheduleParse";
 import { normalizeScanRows, postScanWithRetry, SCAN_ENDPOINT, scanRasterScale } from "../lib/scheduleScan";
 import { normalizeTag } from "../lib/scheduleEdit";
 import {
-  extractPlanSymbols, buildPlanSymbolIndex, enrichSymbolsWithSchedule,
+  extractPlanSymbols, extractRoomLabels, buildPlanSymbolIndex, enrichSymbolsWithSchedule,
   resolveSymbolFields, hitPlanSymbol, symbolNoteKey, SYMBOL_KIND_LABEL,
 } from "../lib/planSymbols";
 import {
@@ -44,7 +44,7 @@ import {
 } from "../lib/symbolScheduleKb";
 import SymbolSourceViewer from "../components/SymbolSourceViewer.jsx";
 import { isGoogleConfigured, isSignedIn, isAllowedDomain, getAccessToken, orgDomainHint } from "../lib/google/auth.js";
-import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons } from "../lib/oneclick";
+import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons, differencePolygons, intersectPolygons, subtractPolygonsToPolys } from "../lib/oneclick";
 import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS } from "../lib/rastermask";
 import { conditionTotals, verticalWallSf } from "../lib/totals.js";
 import { shapesInZone } from "../lib/zone.js";
@@ -62,6 +62,9 @@ import { libFields, matFieldOverridden, libPushPatch, libRevertPatch, libEntryPa
 import RfiPanel from "../components/RfiPanel.jsx";
 import StampPanel from "../components/StampPanel.jsx";
 import ImportSchedulePanel from "../components/ImportSchedulePanel.jsx";
+import BoqPanel from "../components/BoqPanel.jsx";
+import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
+import { resolveShapeBoq, rowKey } from "../lib/boqDetect.js";
 // In-canvas takeoff agent — BYO-key tool-use loop (lib/agentLoop) aiming the
 // registry of deterministic tools (lib/agentTools); this file provides the
 // CAPABILITIES those tools close over and the review gate their proposals
@@ -192,6 +195,7 @@ export default function TakeoffCanvas() {
   // Raw extract lives in a ref (per-sheet); planSymbols is the enriched view
   // (cross-sheet matches + schedule fields). symbolNotes holds manual fills.
   const planSymbolsRawRef = useRef({});
+  const roomLabelsRawRef = useRef({});
   const scheduleKbRef = useRef(new Map());   // mark → ScheduleKbEntry from project PDFs
   const [symbolEpoch, setSymbolEpoch] = useState(0);
   const [symbolKbEpoch, setSymbolKbEpoch] = useState(0);
@@ -202,7 +206,7 @@ export default function TakeoffCanvas() {
   const [symbolSourceView, setSymbolSourceView] = useState(null); // floating PDF viewer target
   const symbolSourceViewRef = useRef(null);
   useEffect(() => { symbolSourceViewRef.current = symbolSourceView; }, [symbolSourceView]);
-  const [openFolderPaths, setOpenFolderPaths] = useState({}); // folder path → false to collapse (default expanded)
+  const [openFolderPaths, setOpenFolderPaths] = useState({}); // folder path → true when expanded (default collapsed)
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   const [zoneCheck, setZoneCheck] = useState(null);   // ephemeral zone-check region {key, pts (norm)} — never persisted (buildPayload doesn't read it)
@@ -344,6 +348,7 @@ export default function TakeoffCanvas() {
   const [ocHover, setOcHover] = useState(-1);      // proposal region under the cursor — handles reveal on hover
   const [selectedId, setSelectedId] = useState(null);   // selected shape (Select tool)
   const [selVert, setSelVert] = useState(null);         // selected vertex index of the selected shape — Delete removes just that point
+  const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
   const [selectedMarkupId, setSelectedMarkupId] = useState(null); // selected markup — mutually exclusive with selectedId
   const [rfis, setRfis] = useState([]);                 // RFI register (Request For Information); linked to markups via markup.rfi_id === rfi.id
   // Deletion provenance: shapes leave no record once filtered out of `shapes`,
@@ -377,8 +382,11 @@ export default function TakeoffCanvas() {
   //     `computed` the recorded commands froze).
   const undoStackRef = useRef([]);   // [{ cmd, inverse }]
   const redoStackRef = useRef([]);
-  function dispatchShape(cmd, { record = true, reset = false } = {}) {
-    const res = applyShapeCommand(shapes, cmd);
+  const shapesRef = useRef(shapes);
+  shapesRef.current = shapes;
+  function dispatchShape(cmd, { record = true, reset = false, baseShapes = null } = {}) {
+    const res = applyShapeCommand(baseShapes || shapesRef.current, cmd);
+    shapesRef.current = res.shapes;
     setShapes(res.shapes);
     if (res.counted) countDeleted(res.counted);
     if (reset) { undoStackRef.current = []; redoStackRef.current = []; }
@@ -402,7 +410,8 @@ export default function TakeoffCanvas() {
     const entry = undoStackRef.current[undoStackRef.current.length - 1];
     if (!entry) return;
     undoStackRef.current = undoStackRef.current.slice(0, -1);
-    const res = applyShapeCommand(shapes, entry.inverse);
+    const res = applyShapeCommand(shapesRef.current, entry.inverse);
+    shapesRef.current = res.shapes;
     setShapes(res.shapes);
     redoStackRef.current = [...redoStackRef.current, { cmd: res.inverse, inverse: entry.inverse }];
     setSelVert(null);   // vertex counts may have changed — a stale index must not aim the next ⌫
@@ -411,14 +420,15 @@ export default function TakeoffCanvas() {
     const entry = redoStackRef.current[redoStackRef.current.length - 1];
     if (!entry) return;
     redoStackRef.current = redoStackRef.current.slice(0, -1);
-    const res = applyShapeCommand(shapes, entry.cmd);
+    const res = applyShapeCommand(shapesRef.current, entry.cmd);
+    shapesRef.current = res.shapes;
     setShapes(res.shapes);
     undoStackRef.current = [...undoStackRef.current, { cmd: entry.cmd, inverse: res.inverse }];
     setSelVert(null);   // same stale-index guard as undo
   }
   // selecting a shape clears any markup selection and vice-versa — one live
   // selection at a time (bidirectional mutual exclusivity). Passing null clears both.
-  const selectShape = (id) => { setSelectedId(id); setSelectedMarkupId(null); };
+  const selectShape = (id) => { setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null); };
   const selectMarkup = (id) => { setSelectedMarkupId(id); setSelectedId(null); };
   const pendingFlyRef = useRef(null);   // fly-to target whose sheet is opening this tick (two-phase center once its bitmap loads)
 
@@ -456,7 +466,15 @@ export default function TakeoffCanvas() {
     return () => clearTimeout(t);
   }, [commitMsgState]);
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
+  const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
+  const [boqFocusShapeId, setBoqFocusShapeId] = useState(null); // filtered BOQ view — one mask
+  const [shapeBoqHover, setShapeBoqHover] = useState(null);     // { id, cx, cy } canvas-local hover card
+  const [shapeBoqFocus, setShapeBoqFocus] = useState(null);     // pinned shape id — static BOQ card
+  const shapeBoqHoverStickyRef = useRef(false);       // pointer inside hover card — keep visible
+  const pendingFlyShapeRef = useRef(null);             // fly-to shape whose sheet is opening
+  const [boqLines, setBoqLines] = useState([]);        // manual BOQ detail rows; persisted in boq_lines
   const [showRevisions, setShowRevisions] = useState(false); // Revisions overlay (save / compare any two, buy-list deltas, CSV, auto-banked restore)
+  const [overlapPrompt, setOverlapPrompt] = useState(null); // draw-over-fill dialog: merge vs remove overlap
   const [importRows, setImportRows] = useState(null);        // Import-from-schedule approval rows (null = dialog closed)
   const [scheduleAnchor, setScheduleAnchor] = useState(null); // first marquee corner for the "schedule" tool — ISOLATED from poly so it can never leak into a measure shape
   const [projectName, setProjectName] = useState("");   // optional label for the report header
@@ -633,6 +651,32 @@ export default function TakeoffCanvas() {
     setOpenTabs((t) => { const merged = [...t]; for (const k of keys) if (!merged.includes(k)) merged.push(k); return merged; });
     if (sideBySide && keys.length >= 2) { setSheetGroup(keys.slice(0, MAX_GROUP)); setFocusKey(keys[0]); }
     else goToSheet(keys[0]);
+    setView("canvas");
+  }
+  function revealSheetInFilesSidebar(sheetKey) {
+    if (!sheetKey) return;
+    setLeftTab("files");
+    const folder = fileFolders[parseSheetKey(sheetKey).file];
+    if (folder) {
+      const segs = folder.split("/").filter(Boolean);
+      setOpenFolderPaths((prev) => {
+        const next = { ...prev };
+        for (let i = 1; i <= segs.length; i++) next[segs.slice(0, i).join("/")] = true;
+        return next;
+      });
+    }
+    if (!panelKeySet.has(sheetKey)) {
+      openSheets([sheetKey], false);
+      return;
+    }
+    setOpenTabs((t) => (t.includes(sheetKey) ? t : [...t, sheetKey]));
+    setFocusKey(sheetKey);
+    const t = parseSheetKey(sheetKey);
+    if (sheetGroup.length) {
+      if (!sheetGroup.includes(sheetKey)) goToSheet(sheetKey);
+    } else if (t.file !== active || t.page !== page) {
+      goToSheet(sheetKey);
+    }
     setView("canvas");
   }
   function closeTab(key) {
@@ -835,19 +879,6 @@ export default function TakeoffCanvas() {
         }
         return next;
       });
-      // expand newly seen folder paths (and parents) by default
-      setOpenFolderPaths((prev) => {
-        const next = { ...prev };
-        for (const h of pathHints) {
-          const segs = h.folder.split("/");
-          for (let i = 1; i <= segs.length; i++) {
-            const p = segs.slice(0, i).join("/");
-            if (next[p] === false) continue; // user collapsed — leave it
-            next[p] = true;
-          }
-        }
-        return next;
-      });
     }
     await refreshSheets();
     const names = pdfs.map((f) => f.name);
@@ -955,6 +986,10 @@ export default function TakeoffCanvas() {
     // Extracted to sanitizeSheetLevels (lib/sheetLevels.js) so this gate has
     // its own unit tests independent of the reducer.
     setSheetLevels(sanitizeSheetLevels(a.sheet_levels));
+    // additive boq_lines — manual BOQ detail persisted with the takeoff
+    setBoqLines(Array.isArray(a.boq_lines)
+      ? a.boq_lines.filter((l) => l && typeof l === "object" && typeof l.id === "string")
+      : []);
     // additive file_folders — sheet name → relative folder path from Folder upload
     {
       const raw = a.file_folders;
@@ -965,12 +1000,7 @@ export default function TakeoffCanvas() {
         }
       }
       setFileFolders(next);
-      const open = {};
-      for (const folder of Object.values(next)) {
-        const segs = folder.split("/").filter(Boolean);
-        for (let i = 1; i <= segs.length; i++) open[segs.slice(0, i).join("/")] = true;
-      }
-      setOpenFolderPaths(open);
+      setOpenFolderPaths({}); // collapsed by default — user expands folders manually
     }
     // additive symbol_notes — manual fills for plan marks with no schedule data
     {
@@ -1131,7 +1161,7 @@ export default function TakeoffCanvas() {
   // Proposal gone (created, discarded, sheet changed) ⇒ drop any handle selection/hover.
   useEffect(() => { if (!proposal) { setOcSel(null); ocHoverRef.current = -1; setOcHover(-1); } }, [proposal]);
   // Switching to a different shape (or clearing the selection) drops the vertex pick.
-  useEffect(() => { setSelVert(null); }, [selectedId]);
+  useEffect(() => { setSelVert(null); setSelHole(null); }, [selectedId]);
 
   // remember every live composition so Regroup works after ANY exit from group
   // mode (Ungroup button, tab click, gallery View) — not just the last Ungroup
@@ -1305,6 +1335,7 @@ export default function TakeoffCanvas() {
           try {
             const tokens = extractRegionText(tc, m.viewport, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
             planSymbolsRawRef.current = { ...planSymbolsRawRef.current, [m.key]: extractPlanSymbols(tokens) };
+            roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [m.key]: extractRoomLabels(tokens) };
             setSymbolEpoch((n) => n + 1);
           } catch { /* best-effort */ }
         }).catch(() => {});
@@ -1344,6 +1375,7 @@ export default function TakeoffCanvas() {
                 const key = n > 1 ? `${active}#${n}` : active;
                 const tokens = extractRegionText(tc, vp2, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
                 planSymbolsRawRef.current = { ...planSymbolsRawRef.current, [key]: extractPlanSymbols(tokens) };
+                roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [key]: extractRoomLabels(tokens) };
                 setSymbolEpoch((e) => e + 1);
               } catch { /* best-effort */ }
             } catch { /* skip */ }
@@ -1369,6 +1401,9 @@ export default function TakeoffCanvas() {
       kb: scheduleKbRef.current,
     }));
   }, [conditions, symbolEpoch, symbolKbEpoch]);
+
+  const roomLabelsBySheet = useMemo(() => ({ ...roomLabelsRawRef.current }), [symbolEpoch]);
+  const scheduleKb = useMemo(() => new Map(scheduleKbRef.current), [symbolKbEpoch]);
 
   // Background: scan uploaded PDFs whose filenames look like door / window /
   // finish schedules (or detail sheets) and build a mark → detail knowledge base
@@ -1554,6 +1589,22 @@ export default function TakeoffCanvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [panelImgs, groupSig, status]);
 
+  // fly-to phase 2 for BOQ row navigation — same two-phase pattern as markups.
+  useEffect(() => {
+    const id = pendingFlyShapeRef.current;
+    if (!id) return;
+    const s = shapes.find((x) => x.id === id);
+    if (status === "error" || !s) { pendingFlyShapeRef.current = null; return; }
+    if (status !== "ready" || !panelKeySet.has(s.sheet_id)) return;
+    const sp = panels.find((p) => p.key === s.sheet_id);
+    if (sp && sp.img.w) { centerOnShape(s); pendingFlyShapeRef.current = null; }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panelImgs, groupSig, status, shapes]);
+
+  const boqDetectCtx = useMemo(() => ({
+    planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb,
+  }), [planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb]);
+
   // ── autosave (debounced) ──────────────────────────────────────────────────
   // buildPayload is the single serializer — autosave and snapshots must write
   // identical records for the same state (byte-stability matters downstream).
@@ -1565,7 +1616,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -1624,7 +1675,7 @@ export default function TakeoffCanvas() {
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, lastGroup, openTabs, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -1854,6 +1905,7 @@ export default function TakeoffCanvas() {
         // offer is the most recent thing the user was told ⏎ does, and it
         // auto-expires — so it can never contest ⏎ for long, and a pending
         // agent-proposal accept resumes the key the moment the offer clears
+        if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("merge"); return; }
         if (agentOfferFnsRef.current?.pending()) { e.preventDefault(); agentOfferFnsRef.current.confirm(); return; }
         if (tool === "oneclick" && proposal?.regions.length) { e.preventDefault(); createProposal(); return; }
         const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
@@ -1926,7 +1978,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -1943,7 +1995,7 @@ export default function TakeoffCanvas() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tool, selectedId, selVert, selectedMarkupId, showMarkups, poly, proposal, ocSel, shapes, sheetKey, groupSig, scales, focusKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tool, selectedId, selVert, selectedMarkupId, showMarkups, poly, proposal, ocSel, shapes, sheetKey, groupSig, scales, focusKey, overlapPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The typed "drawing says" value belongs to ONE completed two-point check.
   // The moment the measurement is no longer complete — third-click restart,
@@ -2019,6 +2071,15 @@ export default function TakeoffCanvas() {
     // (select+move a vertex, move a whole edge, or Shift-click to insert a point) —
     // it must win here, before the deferred add-a-region click below.
     if (tool === "oneclick" && proposal && oneClickHandleAt(e)) return;
+    // Mask click — open that plan in the Files sidebar (same as clicking the file row)
+    if (tool !== "select") {
+      const thr = 8 / tfRef.current.scale;
+      const maskHit = [...visibleShapes].reverse().find((s) => {
+        const sp = panelByKey(s.sheet_id);
+        return sp && hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
+      });
+      if (maskHit) revealSheetInFilesSidebar(maskHit.sheet_id);
+    }
     // every point-placing tool DEFERS to pointer-up: hold-and-drag (mouse left
     // or one-finger trackpad press) pans mid-measurement instead of placing
     pendingClickRef.current = { p, cx: e.clientX, cy: e.clientY };
@@ -2125,7 +2186,7 @@ export default function TakeoffCanvas() {
     const thr = 8 / tfRef.current.scale;
     const sel = selectedId ? shapes.find((s) => s.id === selectedId) : null;
     const selSp = sel && panelKeySet.has(sel.sheet_id) ? panelByKey(sel.sheet_id) : null;
-    setSelVert(null);   // default: this press clears the vertex pick (overridden below on a corner/insert hit)
+    setSelVert(null); setSelHole(null);   // default: this press clears the vertex pick (overridden below on a corner/insert hit)
     // 1. Handles of the ALREADY-selected shape win first, so a shape (or vertex)
     //    enclosed by a markup — e.g. a revision cloud drawn around a room — stays
     //    editable rather than being shielded by the markup's hit area. Same edit
@@ -2133,10 +2194,37 @@ export default function TakeoffCanvas() {
     //    just it), drag a corner to move it, drag an edge grip to move the whole
     //    line (both endpoints), Shift-click an edge to insert a new anchor point.
     if (sel && selSp && sel.measure_role !== "count") {
-      const pts = sel.verts_norm.map(([nx, ny]) => [nx * selSp.img.w + selSp.xOffset, ny * selSp.img.h]);
       const closed = sel.measure_role !== "linear" && sel.measure_role !== "surface_area";
+      // trim-hole grips first — interior removal rings are editable polygons too
+      if (closed && sel.holes_norm?.length) {
+        for (let hi = sel.holes_norm.length - 1; hi >= 0; hi--) {
+          const hpts = sel.holes_norm[hi].map(([nx, ny]) => [nx * selSp.img.w + selSp.xOffset, ny * selSp.img.h]);
+          for (let i = 0; i < hpts.length; i++) {
+            if (Math.hypot(hpts[i][0] - p[0], hpts[i][1] - p[1]) < thr * 1.6) {
+              setSelHole(hi);
+              setSelVert(i);
+              dragRef.current = { kind: "holeVertex", shapeId: selectedId, holeIndex: hi, vIndex: i, prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY };
+              e.currentTarget.setPointerCapture(e.pointerId); return;
+            }
+          }
+          for (let i = 0; i < hpts.length; i++) {
+            const j = (i + 1) % hpts.length;
+            const a = hpts[i], b = hpts[j];
+            if (Math.hypot((a[0] + b[0]) / 2 - p[0], (a[1] + b[1]) / 2 - p[1]) < thr * 1.4) {
+              dragRef.current = {
+                kind: "holeEdge", shapeId: selectedId, holeIndex: hi, i, j,
+                oaN: [...sel.holes_norm[hi][i]], obN: [...sel.holes_norm[hi][j]], start: p,
+                prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY,
+              };
+              e.currentTarget.setPointerCapture(e.pointerId); return;
+            }
+          }
+        }
+      }
+      const pts = sel.verts_norm.map(([nx, ny]) => [nx * selSp.img.w + selSp.xOffset, ny * selSp.img.h]);
       for (let i = 0; i < pts.length; i++) {
         if (Math.hypot(pts[i][0] - p[0], pts[i][1] - p[1]) < thr * 1.6) {
+          setSelHole(null);
           setSelVert(i);   // select this corner + arm its move drag
           // prev = the grab-time snapshot the commit-on-release geom command
           // stamps/freezes from; gx/gy only gate the live PREVIEW now (the
@@ -2214,7 +2302,7 @@ export default function TakeoffCanvas() {
       return hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
     });
     selectShape(hit ? hit.id : null);
-    if (hit) { dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return; }
+    if (hit) { revealSheetInFilesSidebar(hit.sheet_id); dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return; }
     // 4b. plan symbol (door/type mark) — pin the detail card for review / manual fill
     {
       const panel = panelAt(p[0]);
@@ -2243,17 +2331,38 @@ export default function TakeoffCanvas() {
     e.currentTarget.setPointerCapture(e.pointerId);
     if (containerRef.current) containerRef.current.style.cursor = "grabbing";
   }
+  function holesEqual(a, b) {
+    const ha = a || [], hb = b || [];
+    if (ha.length !== hb.length) return false;
+    for (let i = 0; i < ha.length; i++) if (!vertsEqual(ha[i], hb[i])) return false;
+    return true;
+  }
   // Delete just the selected corner (Delete/⌫), keeping a polygon ≥3 / a run ≥2.
   // At the floor we deselect so the NEXT ⌫ falls through to deleting the whole
   // shape — mirrors the One-Click proposal behavior.
   function deleteSelectedShapeVertex() {
     const sel = shapes.find((s) => s.id === selectedId);
-    if (!sel || selVert == null || selVert >= sel.verts_norm.length) { setSelVert(null); return; }   // stale index (shape changed under the selection) — never dispatch a no-op edit
+    if (!sel || selVert == null) { setSelVert(null); setSelHole(null); return; }
     const closed = sel.measure_role !== "linear" && sel.measure_role !== "surface_area";
     const min = closed ? 3 : 2;
+    if (selHole != null && Array.isArray(sel.holes_norm) && sel.holes_norm[selHole]) {
+      const ring = sel.holes_norm[selHole];
+      if (selVert >= ring.length) { setSelVert(null); setSelHole(null); return; }
+      let holes_norm = sel.holes_norm.map((h) => h.map((v) => [...v]));
+      if (ring.length <= min) holes_norm = holes_norm.filter((_, i) => i !== selHole);
+      else holes_norm[selHole] = ring.filter((_, j) => j !== selVert);
+      dispatchShape({
+        type: "geom", id: sel.id, editKind: "vertexDelete",
+        verts_norm: sel.verts_norm, holes_norm,
+        computed: recomputeShape({ ...sel, holes_norm }), prev: geomSnapshot(sel),
+      });
+      setSelVert(null); setSelHole(null);
+      return;
+    }
+    if (selVert >= sel.verts_norm.length) { setSelVert(null); setSelHole(null); return; }   // stale index (shape changed under the selection) — never dispatch a no-op edit
     if (sel.verts_norm.length <= min) {
       setCommitMsg(closed ? "A shape needs at least 3 points — ⌫ again deletes the whole shape." : "A run needs at least 2 points — ⌫ again deletes the whole run.");
-      setSelVert(null); return;
+      setSelVert(null); setSelHole(null); return;
     }
     // dropping a corner is as real an edit as dragging one — the vertexDelete
     // command stamps "vertex" centrally, so a machine shape corrected only
@@ -2263,7 +2372,7 @@ export default function TakeoffCanvas() {
       type: "geom", id: sel.id, editKind: "vertexDelete",
       verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }), prev: geomSnapshot(sel),
     });
-    setSelVert(null);
+    setSelVert(null); setSelHole(null);
   }
   // Geometry from the shape's OWN sheet: its panel's pixel dims × that sheet's
   // scale. This is what makes cross-sheet paste and group-mode edits honest.
@@ -2291,7 +2400,15 @@ export default function TakeoffCanvas() {
       return { perimeter_lf: +LF.toFixed(2), area_sf: tIn > 0 ? +((LF * tIn) / 12).toFixed(2) : 0 };
     }
     const met = closedMetrics(pts);
-    return { area_sf: +(met.area * u * u).toFixed(2), perimeter_lf: +(met.perim * u).toFixed(2) };
+    let area = met.area;
+    if (Array.isArray(s.holes_norm) && s.holes_norm.length) {
+      for (const hole of s.holes_norm) {
+        const hp = hole.map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+        area -= ringArea(hp);
+      }
+      area = Math.max(0, area);
+    }
+    return { area_sf: +(area * u * u).toFixed(2), perimeter_lf: +(met.perim * u).toFixed(2) };
   }
   function moveCrosshair(e) {
     if (editingRef.current) return;   // inline editor open — no aim crosshair (ref check, never per-mousemove state)
@@ -2445,6 +2562,7 @@ export default function TakeoffCanvas() {
     if (hlRef.current == null && hlPathRef.current) hlPathRef.current.style.display = "none";
     if (hoverRef.current) hoverRef.current.style.display = "none";
     hoverIdRef.current = "";
+    if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
     angleRef.current = null;
   }
   // Pointer left the canvas: hide the aim chrome AND kill the voice-deixis aim —
@@ -2456,7 +2574,7 @@ export default function TakeoffCanvas() {
     voiceAimMarkRef.current = aimSeqRef.current;
   }
   function describeShape(s) {
-    const tag = condById[s.condition_id]?.finish_tag || "?";
+    const tag = condById[s.condition_id]?.finish_tag || (s.isProposal ? "Proposal" : "?");
     const a = s.computed?.area_sf || 0, lf = s.computed?.perimeter_lf || 0;
     if (s.measure_role === "count") return `${tag} · ${num(s.computed?.count || 1, 0)} EA`;
     if (s.measure_role === "deduct") return `${tag} · −${fa(a)} deduct`;
@@ -2476,33 +2594,104 @@ export default function TakeoffCanvas() {
   function updateHover(e) {
     const el = hoverRef.current;
     if (!el) return;
-    if (panRef.current || dragRef.current || pendingClickRef.current || status !== "ready" || symbolFocus) {
+    if (panRef.current || dragRef.current || pendingClickRef.current || status !== "ready" || symbolFocus || shapeBoqFocus) {
       el.style.display = "none"; hoverIdRef.current = "";
+      if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
       if (!symbolFocus) setSymbolHover(null);
       return;
     }
     const pt = toImage(e.clientX, e.clientY);
     const thr = 8 / tfRef.current.scale;
-    const hit = [...visibleShapes].reverse().find((s) => {
+    let hit = [...visibleShapes].reverse().find((s) => {
       const sp = panelByKey(s.sheet_id);
       return hitShapeC(s, pt[0] - sp.xOffset, pt[1], sp.img.w, sp.img.h, thr);
     });
+    if (!hit && proposal && proposal.regions && proposal.regions.length > 0) {
+      const sp = panelByKey(proposal.key);
+      if (sp && sp.img?.w) {
+        const lx = pt[0] - sp.xOffset, ly = pt[1];
+        const near = 14 / tfRef.current.scale;
+        const hitReg = proposal.regions.find((r) => {
+          if (pointInPoly(lx, ly, r.poly)) return true;
+          for (let i = 0; i < r.poly.length; i++) {
+            const a = r.poly[i], b = r.poly[(i + 1) % r.poly.length];
+            const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+            if (Math.hypot(a[0] - lx, a[1] - ly) < near || Math.hypot(mx - lx, my - ly) < near || distToSeg(lx, ly, a[0], a[1], b[0], b[1]) < thr) return true;
+          }
+          return false;
+        });
+        if (hitReg) {
+          hit = {
+            id: "prop_" + proposal.key + "_" + proposal.regions.indexOf(hitReg),
+            condition_id: activeCond,
+            measure_role: hitReg.kind === "neg" ? "deduct" : "floor_area",
+            computed: { area_sf: hitReg.area_sf || 0, perimeter_lf: hitReg.perim_lf || 0 },
+            isProposal: true,
+          };
+        }
+      }
+    }
+    if (!hit && agentProposals && agentProposals.length > 0) {
+      const hitAp = [...agentProposals].reverse().find((ap) => {
+        const sp = panelByKey(ap.sheet_id);
+        if (!sp || !sp.img?.w) return false;
+        const lx = pt[0] - sp.xOffset, ly = pt[1];
+        const pts = (ap.verts_norm || []).map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+        if (pointInPoly(lx, ly, pts)) return true;
+        for (let i = 0; i < pts.length; i++) {
+          const j = (i + 1) % pts.length;
+          if (distToSeg(lx, ly, pts[i][0], pts[i][1], pts[j][0], pts[j][1]) < thr) return true;
+        }
+        return false;
+      });
+      if (hitAp) {
+        hit = {
+          id: "ap_" + hitAp.id,
+          condition_id: hitAp.condition_id,
+          measure_role: hitAp.measure_role || "floor_area",
+          computed: { area_sf: hitAp.area_sf || 0, perimeter_lf: hitAp.perimeter_lf || 0 },
+          isProposal: true,
+        };
+      }
+    }
+    // Plan symbols win hover even under a takeoff fill — otherwise a created
+    // area mask blocks the symbol card and double-click focus.
+    {
+      const panel = panelAt(pt[0]);
+      if (panel?.img?.w) {
+        const sym = hitPlanSymbol(planSymbols, panel.key, pt[0] - panel.xOffset, pt[1], 4 / tfRef.current.scale);
+        if (sym) {
+          el.style.display = "none"; hoverIdRef.current = "";
+          if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
+          const r = containerRef.current.getBoundingClientRect();
+          setSymbolHover({ id: sym.id, cx: e.clientX - r.left + 14, cy: e.clientY - r.top + 16 });
+          return;
+        }
+      }
+    }
+    if (shapeBoqFocus) {
+      el.style.display = "none"; hoverIdRef.current = "";
+      return;
+    }
     if (hit) {
       setSymbolHover(null);
-      if (hoverIdRef.current !== hit.id) { el.textContent = describeShape(hit); hoverIdRef.current = hit.id; }
       const r = containerRef.current.getBoundingClientRect();
+      if (!hit.isProposal) {
+        el.style.display = "none"; hoverIdRef.current = "";
+        const cx = Math.min(e.clientX - r.left + 14, r.width - 260);
+        const cy = Math.min(e.clientY - r.top + 16, r.height - 220);
+        setShapeBoqHover((prev) => (prev?.id === hit.id && prev?.cx === cx && prev?.cy === cy ? prev : { id: hit.id, cx, cy }));
+        return;
+      }
+      if (hoverIdRef.current !== hit.id) { el.textContent = describeShape(hit); hoverIdRef.current = hit.id; }
       el.style.left = `${e.clientX - r.left + 14}px`;
       el.style.top = `${e.clientY - r.top + 16}px`;
       el.style.display = "block";
       return;
     }
     el.style.display = "none"; hoverIdRef.current = "";
-    const panel = panelAt(pt[0]);
-    if (!panel?.img?.w) { setSymbolHover(null); return; }
-    const sym = hitPlanSymbol(planSymbols, panel.key, pt[0] - panel.xOffset, pt[1], 4 / tfRef.current.scale);
-    if (!sym) { setSymbolHover(null); return; }
-    const r = containerRef.current.getBoundingClientRect();
-    setSymbolHover({ id: sym.id, cx: e.clientX - r.left + 14, cy: e.clientY - r.top + 16 });
+    if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
+    setSymbolHover(null);
   }
   function onPointerMove(e) {
     lastPtrRef.current = [e.clientX, e.clientY];   // paste targets the sheet under the cursor
@@ -2553,35 +2742,55 @@ export default function TakeoffCanvas() {
       // is exact: a gesture only ever moves the verts named by the drag ref)
       // and remembered on the ref (d.lastVerts/d.lastComputed) so the release
       // commit and the preview can never disagree.
-      if (d.kind === "vertex" || d.kind === "edge" || d.kind === "move") {
+      if (d.kind === "vertex" || d.kind === "edge" || d.kind === "move" || d.kind === "holeVertex" || d.kind === "holeEdge") {
         if (!d.moved && e.clientX === d.gx && e.clientY === d.gy) return;
         d.moved = true;
         const sp = panelByKey(d.shape.sheet_id);
         let vn;
-        if (d.kind === "vertex") {
-          const [slx, sly] = ocSnap(sp.key, p[0] - sp.xOffset, p[1], !!d.shape.origin?.raster_traced);   // snap the corner to true endpoints (never on a raster-traced shape — see ocSnap)
-          vn = d.prev.verts_norm.map((v, i) => (i === d.vIndex ? [slx / sp.img.w, sly / sp.img.h] : v));
-        } else if (d.kind === "edge") {
-          // translate BOTH endpoints of the line by the drag delta; each end snaps
-          // to the linework independently (normalized → local px → snap → normalized)
+        let holes;
+        if (d.kind === "holeVertex") {
+          const [slx, sly] = ocSnap(sp.key, p[0] - sp.xOffset, p[1], !!d.shape.origin?.raster_traced);
+          holes = (d.prev.holes_norm || []).map((h) => h.map((v) => [...v]));
+          holes[d.holeIndex] = holes[d.holeIndex].map((v, i) => (i === d.vIndex ? [slx / sp.img.w, sly / sp.img.h] : v));
+          d.lastHoles = holes;
+          d.lastComputed = recomputeShape({ ...d.shape, holes_norm: holes });
+          setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s : { ...s, holes_norm: holes, computed: d.lastComputed })));
+        } else if (d.kind === "holeEdge") {
           const dx = (p[0] - d.start[0]) / sp.img.w, dy = (p[1] - d.start[1]) / sp.img.h;
           const rt = !!d.shape.origin?.raster_traced;
           const snapN = (nx, ny) => { const [lx, ly] = ocSnap(sp.key, nx * sp.img.w, ny * sp.img.h, rt); return [lx / sp.img.w, ly / sp.img.h]; };
           const na = snapN(d.oaN[0] + dx, d.oaN[1] + dy), nb = snapN(d.obN[0] + dx, d.obN[1] + dy);
-          vn = d.prev.verts_norm.map((v, i) => (i === d.i ? na : i === d.j ? nb : v));
+          holes = (d.prev.holes_norm || []).map((h) => h.map((v) => [...v]));
+          holes[d.holeIndex] = holes[d.holeIndex].map((v, i) => (i === d.i ? na : i === d.j ? nb : v));
+          d.lastHoles = holes;
+          d.lastComputed = recomputeShape({ ...d.shape, holes_norm: holes });
+          setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s : { ...s, holes_norm: holes, computed: d.lastComputed })));
         } else {
-          // start and p are both stage px, so xOffset cancels in the delta —
-          // only the normalizing divisor is the shape's own panel
-          const dx = (p[0] - d.start[0]) / sp.img.w, dy = (p[1] - d.start[1]) / sp.img.h;
-          vn = d.orig.map(([nx, ny]) => [nx + dx, ny + dy]);
+          if (d.kind === "vertex") {
+            const [slx, sly] = ocSnap(sp.key, p[0] - sp.xOffset, p[1], !!d.shape.origin?.raster_traced);   // snap the corner to true endpoints (never on a raster-traced shape — see ocSnap)
+            vn = d.prev.verts_norm.map((v, i) => (i === d.vIndex ? [slx / sp.img.w, sly / sp.img.h] : v));
+          } else if (d.kind === "edge") {
+            // translate BOTH endpoints of the line by the drag delta; each end snaps
+            // to the linework independently (normalized → local px → snap → normalized)
+            const dx = (p[0] - d.start[0]) / sp.img.w, dy = (p[1] - d.start[1]) / sp.img.h;
+            const rt = !!d.shape.origin?.raster_traced;
+            const snapN = (nx, ny) => { const [lx, ly] = ocSnap(sp.key, nx * sp.img.w, ny * sp.img.h, rt); return [lx / sp.img.w, ly / sp.img.h]; };
+            const na = snapN(d.oaN[0] + dx, d.oaN[1] + dy), nb = snapN(d.obN[0] + dx, d.obN[1] + dy);
+            vn = d.prev.verts_norm.map((v, i) => (i === d.i ? na : i === d.j ? nb : v));
+          } else {
+            // start and p are both stage px, so xOffset cancels in the delta —
+            // only the normalizing divisor is the shape's own panel
+            const dx = (p[0] - d.start[0]) / sp.img.w, dy = (p[1] - d.start[1]) / sp.img.h;
+            vn = d.orig.map(([nx, ny]) => [nx + dx, ny + dy]);
+          }
+          d.lastVerts = vn;
+          // a translation never re-prices (same lengths/areas) — matches the old
+          // move updater, which left `computed` untouched
+          d.lastComputed = d.kind === "move" ? undefined : recomputeShape({ ...d.shape, verts_norm: vn });
+          setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s
+            : d.kind === "move" ? { ...s, verts_norm: vn }
+              : { ...s, verts_norm: vn, computed: d.lastComputed })));
         }
-        d.lastVerts = vn;
-        // a translation never re-prices (same lengths/areas) — matches the old
-        // move updater, which left `computed` untouched
-        d.lastComputed = d.kind === "move" ? undefined : recomputeShape({ ...d.shape, verts_norm: vn });
-        setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s
-          : d.kind === "move" ? { ...s, verts_norm: vn }
-            : { ...s, verts_norm: vn, computed: d.lastComputed })));
       } else if (d.kind === "markupMove") {
         // raw cursor point — markups aren't snapped/angle-locked, and this matches the
         // raw d.start so the delta can't jump from a stale snap/angle ref.
@@ -2679,43 +2888,26 @@ export default function TakeoffCanvas() {
       // pre-drag ring and undo restores it exactly. (pointercancel routes here
       // too, so an interrupted drag still lands as a stamped command, never as
       // orphaned preview state.)
-      if ((d.kind === "vertex" || d.kind === "edge" || d.kind === "move")
-          && d.lastVerts && !vertsEqual(d.lastVerts, d.prev.verts_norm)) {
-        const res = dispatchShape({
-          type: "geom", id: d.shapeId, editKind: d.kind,
-          verts_norm: d.lastVerts,
-          ...(d.lastComputed !== undefined ? { computed: d.lastComputed } : {}),
-          prev: d.prev,
-        });
-        // If the edited polygon now overlaps another same-condition takeoff on
-        // this sheet, absorb those into one shape (keep this id, drop the rest).
-        const edited = res.shapes.find((s) => s.id === d.shapeId);
-        if (edited && (edited.measure_role === "floor_area" || edited.measure_role === "deduct")) {
-          const tp = panelByKey(edited.sheet_id);
-          const w = tp?.img?.w, h = tp?.img?.h;
-          if (w > 0 && h > 0) {
-            const polyOf = (s) => s.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
-            const editedPoly = polyOf(edited);
-            const victims = res.shapes.filter((s) =>
-              s.id !== edited.id
-              && s.sheet_id === edited.sheet_id
-              && s.condition_id === edited.condition_id
-              && s.measure_role === edited.measure_role
-              && polygonsOverlap(editedPoly, polyOf(s)));
-            if (victims.length) {
-              const uni = unionPolygons([editedPoly, ...victims.map(polyOf)]);
-              if (uni && uni.length >= 3) {
-                dispatchShape({ type: "delete", ids: victims.map((v) => v.id) });
-                const vn = uni.map(([x, y]) => [x / w, y / h]);
-                dispatchShape({
-                  type: "geom", id: edited.id, editKind: d.kind,
-                  verts_norm: vn,
-                  computed: recomputeShape({ ...edited, verts_norm: vn }),
-                  prev: geomSnapshot(edited),
-                });
-                selectShape(edited.id);
-                setCommitMsg("Merged overlapping takeoffs into one.");
-              }
+      if ((d.kind === "vertex" || d.kind === "edge" || d.kind === "move" || d.kind === "holeVertex" || d.kind === "holeEdge")
+          && (d.lastVerts || d.lastHoles)) {
+        const vertsChanged = d.lastVerts && !vertsEqual(d.lastVerts, d.prev.verts_norm);
+        const holesChanged = d.lastHoles && !holesEqual(d.lastHoles, d.prev.holes_norm || []);
+        if (vertsChanged || holesChanged) {
+          const res = dispatchShape({
+            type: "geom", id: d.shapeId, editKind: d.kind === "holeVertex" || d.kind === "holeEdge" ? "vertex" : d.kind,
+            verts_norm: d.lastVerts || d.prev.verts_norm,
+            ...(holesChanged ? { holes_norm: d.lastHoles } : {}),
+            ...(d.lastComputed !== undefined ? { computed: d.lastComputed } : {}),
+            prev: d.prev,
+          });
+          // Shapes with trim holes stay one parent — never auto-merge into neighbors.
+          const edited = res.shapes.find((s) => s.id === d.shapeId);
+          if (edited && !edited.holes_norm?.length && (edited.measure_role === "floor_area" || edited.measure_role === "deduct")) {
+            const tp = panelByKey(edited.sheet_id);
+            const w = tp?.img?.w, h = tp?.img?.h;
+            if (w > 0 && h > 0) {
+              const editedPoly = edited.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
+              mergeIntoExistingShapes(editedPoly, edited.sheet_id, edited.condition_id, edited.measure_role, edited.id, res.shapes, d.kind);
             }
           }
         }
@@ -2854,6 +3046,362 @@ export default function TakeoffCanvas() {
     setCheck([]); setCheckStated("");
   }
 
+  function mergeIntoExistingShapes(newPoly, sheetId, condId, role, keepId = null, currentShapes = null, editKind = "vertex") {
+    const pool = currentShapes || shapesRef.current;
+    if (!newPoly || newPoly.length < 3) return null;
+    if (role !== "floor_area" && role !== "deduct") return null;
+    const tp = panelByKey(sheetId);
+    const w = tp?.img?.w, h = tp?.img?.h;
+    if (!(w > 0 && h > 0)) return null;
+    const toNorm = (poly) => poly.map(([x, y]) => [x / w, y / h]);
+    const toPx = (norm) => norm.map(([nx, ny]) => [nx * w, ny * h]);
+    const polyOf = (s) => toPx(s.verts_norm);
+    const holesTouch = (aPx, bPx, tol = 3) => {
+      if (polygonsOverlap(aPx, bPx)) return true;
+      let ax0 = Infinity, ay0 = Infinity, ax1 = -Infinity, ay1 = -Infinity;
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      for (const [x, y] of aPx) { ax0 = Math.min(ax0, x); ay0 = Math.min(ay0, y); ax1 = Math.max(ax1, x); ay1 = Math.max(ay1, y); }
+      for (const [x, y] of bPx) { bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x); by1 = Math.max(by1, y); }
+      if (ax1 + tol < bx0 || bx1 + tol < ax0 || ay1 + tol < by0 || by1 + tol < ay0) return false;
+      for (const [x, y] of bPx) if (pointInPoly(x, y, aPx)) return true;
+      for (const [x, y] of aPx) if (pointInPoly(x, y, bPx)) return true;
+      return true;
+    };
+    const unionRingsPx = (rings) => {
+      const valid = rings.filter((r) => r && r.length >= 3);
+      if (!valid.length) return null;
+      if (valid.length === 1) return valid[0].map(([x, y]) => [x, y]);
+      let uni = unionPolygons(valid, 0.5) || unionPolygons(valid, 0);
+      if (uni && uni.length >= 3) return uni;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const r of valid) for (const [x, y] of r) {
+        x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+      }
+      if (!(x1 > x0 && y1 > y0)) return null;
+      return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    };
+    const coalesceHolesPx = (ringsPx) => {
+      let list = ringsPx.map((r) => r.map(([x, y]) => [x, y]));
+      let changed = true;
+      while (changed && list.length > 1) {
+        changed = false;
+        outer: for (let i = 0; i < list.length; i++) {
+          for (let j = i + 1; j < list.length; j++) {
+            if (!holesTouch(list[i], list[j])) continue;
+            const uni = unionRingsPx([list[i], list[j]]);
+            if (!uni) continue;
+            list = [...list.slice(0, i), ...list.slice(i + 1, j), ...list.slice(j + 1), uni];
+            changed = true;
+            break outer;
+          }
+        }
+      }
+      return list;
+    };
+    const victims = pool.filter((s) =>
+      s.sheet_id === sheetId
+      && s.condition_id === condId
+      && s.measure_role === role
+      && (keepId ? s.id !== keepId : true)
+      && polygonsOverlap(newPoly, polyOf(s)));
+    if (!victims.length) return null;
+    const cx = newPoly.reduce((s, p) => s + p[0], 0) / newPoly.length;
+    const cy = newPoly.reduce((s, p) => s + p[1], 0) / newPoly.length;
+    const pickPrimary = (list) => list.slice().sort((a, b) => {
+      const ah = (a.holes_norm?.length || 0) > 0, bh = (b.holes_norm?.length || 0) > 0;
+      return (bh - ah) || (ringArea(polyOf(b)) - ringArea(polyOf(a)));
+    })[0];
+    const containing = victims.filter((v) => pointInPoly(cx, cy, polyOf(v)));
+    const primary = keepId
+      ? (pool.find((s) => s.id === keepId) || victims[0])
+      : (pickPrimary(containing) || pickPrimary(victims));
+    const others = victims.filter((v) => v.id !== primary.id);
+    const uni = unionPolygons([newPoly, ...victims.map(polyOf)], 0.5) || unionPolygons([newPoly, ...victims.map(polyOf)], 0);
+    if (!uni || uni.length < 3) return null;
+    let holePx = [];
+    for (const v of [primary, ...others]) {
+      for (const ring of (v.holes_norm || [])) holePx.push(toPx(ring));
+    }
+    const trimmed = [];
+    for (const ring of holePx) {
+      if (!holesTouch(ring, newPoly) && !polygonsOverlap(ring, newPoly)) { trimmed.push(ring); continue; }
+      const pieces = subtractPolygonsToPolys(ring, newPoly);
+      if (!pieces.length) continue;
+      for (const p of pieces) if (ringArea(p) > 4) trimmed.push(p);
+    }
+    holePx = coalesceHolesPx(trimmed);
+    const vn = toNorm(uni);
+    const holes_norm = holePx.map(toNorm);
+    if (others.length) dispatchShape({ type: "delete", ids: others.map((v) => v.id) });
+    dispatchShape({
+      type: "geom", id: primary.id, editKind,
+      verts_norm: vn,
+      holes_norm,
+      computed: recomputeShape({ ...primary, verts_norm: vn, holes_norm }),
+      prev: geomSnapshot(primary),
+    });
+    selectShape(primary.id);
+    setCommitMsg("Merged overlapping takeoffs into one.");
+    return primary;
+  }
+
+  // Overlap victims for a pending draw — same filter mergeIntoExistingShapes uses.
+  function overlapVictimsFor(newPoly, sheetId, condId, role) {
+    if (!newPoly || newPoly.length < 3) return [];
+    if (role !== "floor_area" && role !== "deduct") return [];
+    const tp = panelByKey(sheetId);
+    const w = tp?.img?.w, h = tp?.img?.h;
+    if (!(w > 0 && h > 0)) return [];
+    const polyOf = (s) => s.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
+    return shapesRef.current.filter((s) =>
+      s.sheet_id === sheetId
+      && s.condition_id === condId
+      && s.measure_role === role
+      && polygonsOverlap(newPoly, polyOf(s)));
+  }
+
+  // Carve newPoly out of each overlapping takeoff — trim the parent fill/mask so
+  // the overlapping region is physically removed (never a deduct overlay).
+  function removeOverlapFromVictims(newPoly, sheetId, victims) {
+    const tp = panelByKey(sheetId);
+    const w = tp?.img?.w, h = tp?.img?.h;
+    if (!(w > 0 && h > 0) || !victims.length) return;
+    const toNorm = (poly) => poly.map(([x, y]) => [x / w, y / h]);
+    const toPx = (norm) => norm.map(([nx, ny]) => [nx * w, ny * h]);
+    // Adjacent/touching holes must coalesce — polygonsOverlap is strict-interior only.
+    const holesTouch = (aPx, bPx, tol = 3) => {
+      if (polygonsOverlap(aPx, bPx)) return true;
+      let ax0 = Infinity, ay0 = Infinity, ax1 = -Infinity, ay1 = -Infinity;
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      for (const [x, y] of aPx) { ax0 = Math.min(ax0, x); ay0 = Math.min(ay0, y); ax1 = Math.max(ax1, x); ay1 = Math.max(ay1, y); }
+      for (const [x, y] of bPx) { bx0 = Math.min(bx0, x); by0 = Math.min(by0, y); bx1 = Math.max(bx1, x); by1 = Math.max(by1, y); }
+      if (ax1 + tol < bx0 || bx1 + tol < ax0 || ay1 + tol < by0 || by1 + tol < ay0) return false;
+      for (const [x, y] of bPx) if (pointInPoly(x, y, aPx)) return true;
+      for (const [x, y] of aPx) if (pointInPoly(x, y, bPx)) return true;
+      return true;
+    };
+    const unionRingsPx = (rings) => {
+      const valid = rings.filter((r) => r && r.length >= 3);
+      if (!valid.length) return null;
+      if (valid.length === 1) return valid[0].map(([x, y]) => [x, y]);
+      let uni = unionPolygons(valid, 0.5) || unionPolygons(valid, 0);
+      if (uni && uni.length >= 3) return uni;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const r of valid) for (const [x, y] of r) {
+        x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+      }
+      if (!(x1 > x0 && y1 > y0)) return null;
+      return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    };
+    const coalesceHolesPx = (ringsPx) => {
+      let list = ringsPx.map((r) => r.map(([x, y]) => [x, y]));
+      let changed = true;
+      while (changed && list.length > 1) {
+        changed = false;
+        outer: for (let i = 0; i < list.length; i++) {
+          for (let j = i + 1; j < list.length; j++) {
+            if (!holesTouch(list[i], list[j])) continue;
+            const uni = unionRingsPx([list[i], list[j]]);
+            if (!uni) continue;
+            list = [...list.slice(0, i), ...list.slice(i + 1, j), ...list.slice(j + 1), uni];
+            changed = true;
+            break outer;
+          }
+        }
+      }
+      return list;
+    };
+    const primaryTrimVictim = (pool) => {
+      const cx = newPoly.reduce((s, p) => s + p[0], 0) / newPoly.length;
+      const cy = newPoly.reduce((s, p) => s + p[1], 0) / newPoly.length;
+      const scored = pool.map((v) => {
+        const outer = toPx(v.verts_norm);
+        return {
+          v,
+          area: ringArea(outer),
+          contains: pointInPoly(cx, cy, outer),
+          hasHoles: (v.holes_norm?.length || 0) > 0,
+        };
+      });
+      const pick = (list) => list.slice().sort((a, b) => (b.hasHoles - a.hasHoles) || (b.area - a.area))[0]?.v;
+      return pick(scored.filter((s) => s.contains)) || pick(scored);
+    };
+    const mergeHoleIntoList = (prevHoles, cutterPx, outerPx) => {
+      const holes = coalesceHolesPx((prevHoles || []).map((h) => toPx(h.map((v) => [...v])))).map(toNorm);
+      if (cutterPx.every(([x, y]) => holes.some((h) => pointInPoly(x, y, toPx(h))))) return holes;
+      const cutterRemovesFill = cutterPx.some(([x, y]) => pointInPoly(x, y, outerPx)
+        && !holes.some((h) => pointInPoly(x, y, toPx(h))));
+      const mergeIdx = new Set();
+      for (let i = 0; i < holes.length; i++) {
+        if (holesTouch(toPx(holes[i]), cutterPx)) mergeIdx.add(i);
+      }
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        for (let i = 0; i < holes.length; i++) {
+          if (!mergeIdx.has(i)) continue;
+          for (let j = 0; j < holes.length; j++) {
+            if (mergeIdx.has(j)) continue;
+            if (holesTouch(toPx(holes[i]), toPx(holes[j]))) { mergeIdx.add(j); expanded = true; }
+          }
+        }
+      }
+      if (!mergeIdx.size) {
+        const next = cutterRemovesFill ? coalesceHolesPx([...holes.map(toPx), cutterPx]) : coalesceHolesPx(holes.map(toPx));
+        return next.map(toNorm);
+      }
+      const mergePx = [cutterPx, ...[...mergeIdx].map((i) => toPx(holes[i]))];
+      const keep = holes.filter((_, i) => !mergeIdx.has(i)).map(toPx);
+      const uni = unionRingsPx(mergePx);
+      if (!uni) {
+        const next = cutterRemovesFill ? coalesceHolesPx([...holes.map(toPx), cutterPx]) : coalesceHolesPx(holes.map(toPx));
+        return next.map(toNorm);
+      }
+      return coalesceHolesPx([...keep, uni]).map(toNorm);
+    };
+    const applyInteriorTrim = (live, cutterPx, outerPx) => {
+      const role = live.measure_role === "deduct" ? "deduct" : "floor_area";
+      const holes_norm = mergeHoleIntoList(live.holes_norm, cutterPx, outerPx);
+      if (holesEqual(holes_norm, live.holes_norm || [])) return false;
+      dispatchShape({
+        type: "geom", id: live.id, editKind: "vertex",
+        verts_norm: live.verts_norm,
+        holes_norm,
+        computed: recomputeShape({ ...live, measure_role: role, holes_norm }),
+        prev: geomSnapshot(live),
+      });
+      return true;
+    };
+    const applyTrimPolys = (live, polys, cutterPx, outerPx) => {
+      if (live.holes_norm?.length) return applyInteriorTrim(live, cutterPx, outerPx);
+      const role = live.measure_role === "deduct" ? "deduct" : "floor_area";
+      const vnPolys = polys.map((poly) => toNorm(poly));
+      if (polys.length === 1) {
+        dispatchShape({
+          type: "geom", id: live.id, editKind: "vertex",
+          verts_norm: vnPolys[0],
+          holes_norm: [],
+          computed: recomputeShape({ ...live, measure_role: role, verts_norm: vnPolys[0], holes_norm: [] }),
+          prev: geomSnapshot(live),
+        });
+        return true;
+      }
+      return false;
+    };
+    const toDelete = [];
+    let carved = false;
+    const primary = primaryTrimVictim(victims);
+    if (!primary) return;
+    // Drop stray inner masks fully inside the parent — Remove trims one parent, never spawns siblings.
+    for (const v of victims) {
+      if (v.id === primary.id) continue;
+      const innerPx = toPx(v.verts_norm);
+      const outerPx = toPx(primary.verts_norm);
+      if (innerPx.every(([x, y]) => pointInPoly(x, y, outerPx)) && polygonsOverlap(innerPx, newPoly)) {
+        toDelete.push(v.id);
+        carved = true;
+      }
+    }
+    const live = shapesRef.current.find((s) => s.id === primary.id) || primary;
+    const existing = toPx(live.verts_norm);
+    const before = ringArea(existing);
+    const overlapPoly = intersectPolygons(existing, newPoly);
+    const overlapArea = overlapPoly && overlapPoly.length >= 3 ? ringArea(overlapPoly) : 0;
+    const childCx = newPoly.reduce((s, p) => s + p[0], 0) / newPoly.length;
+    const childCy = newPoly.reduce((s, p) => s + p[1], 0) / newPoly.length;
+    const childOnParent = newPoly.length >= 3 && pointInPoly(childCx, childCy, existing);
+    const cutter = childOnParent
+      ? newPoly
+      : ((overlapPoly && overlapPoly.length >= 3)
+        ? overlapPoly
+        : (polygonsOverlap(existing, newPoly) ? newPoly : null));
+    if (cutter) {
+      const sampleRing = (poly) => {
+        const pts = [...poly];
+        for (let i = 0; i < poly.length; i++) {
+          const a = poly[i], b = poly[(i + 1) % poly.length];
+          pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+        }
+        return pts;
+      };
+      const parentUnderNew = sampleRing(existing).every(([x, y]) => pointInPoly(x, y, newPoly));
+      const cutterInside = cutter.every(([x, y]) => pointInPoly(x, y, existing));
+      const interiorPunch = cutterInside && !parentUnderNew;
+      const overlapPx = overlapArea > 1 ? overlapArea : (childOnParent ? Math.min(ringArea(newPoly), before) : 0);
+      if (parentUnderNew || overlapPx >= before * 0.98) {
+        toDelete.push(live.id);
+        carved = true;
+      } else if (interiorPunch || live.holes_norm?.length) {
+        if (applyInteriorTrim(live, cutter, existing)) carved = true;
+      } else {
+        const remainder = subtractPolygonsToPolys(existing, cutter);
+        const remainArea = remainder.reduce((n, p) => n + ringArea(p), 0);
+        if (!remainder.length || remainArea <= 1) {
+          toDelete.push(live.id);
+          carved = true;
+        } else if (applyTrimPolys(live, remainder, cutter, existing)) {
+          carved = true;
+        } else if (applyInteriorTrim(live, cutter, existing)) {
+          carved = true;
+        }
+      }
+    }
+    if (toDelete.length) dispatchShape({ type: "delete", ids: [...new Set(toDelete)] });
+    setCommitMsg(toDelete.includes(primary.id)
+      ? "Removed the overlapping takeoff."
+      : carved
+        ? "Removed the overlapping part from the existing takeoff."
+        : "No overlap could be removed.");
+  }
+
+  function resolveOverlapPrompt(choice) {
+    const p = overlapPrompt;
+    setOverlapPrompt(null);
+    if (!p || choice === "cancel") {
+      if (p?.source === "oneclick") setProposal(null);
+      if (p) setCommitMsg("Overlapping draw discarded.");
+      return;
+    }
+    if (p.source === "poly") {
+      if (choice === "merge") {
+        if (!mergeIntoExistingShapes(p.newPoly, p.sheetId, p.condId, p.role)) {
+          // Merge failed unexpectedly — fall through to a plain add.
+          const met = closedMetrics(p.points);
+          const upp = uppFor(p.sheetId);
+          dispatchShape({ type: "add", shapes: [{
+            sheet_id: p.sheetId, condition_id: p.condId, measure_role: p.role,
+            verts_norm: p.points.map(([x, y]) => [(x - p.xOffset) / p.imgW, y / p.imgH]),
+            computed: { area_sf: +(met.area * upp * upp).toFixed(2), perimeter_lf: +(met.perim * upp).toFixed(2) },
+            ...(p.label ? { label: p.label } : {}),
+            origin: { method: "manual" },
+          }] });
+        }
+        return;
+      }
+      if (choice === "remove") {
+        removeOverlapFromVictims(p.newPoly, p.sheetId, p.victims);
+        setPoly([]);
+        return;
+      }
+    }
+    if (p.source === "oneclick") {
+      if (choice === "merge") {
+        commitOneClickRegions(p.prop, p.direct, { forceMerge: true });
+        setProposal(null);
+        return;
+      }
+      if (choice === "remove") {
+        for (const r of p.prop.regions) {
+          if (r.kind === "neg") continue;
+          const victims = overlapVictimsFor(r.poly, p.prop.key, p.condId, "floor_area");
+          if (victims.length) removeOverlapFromVictims(r.poly, p.prop.key, victims);
+        }
+        setProposal(null);
+        return;
+      }
+    }
+  }
+
   // A shape belongs to the panel of its FIRST point — verts normalize against
   // that panel's dims, quantities use that sheet's scale.
   function commitPoly(points, asDeduct) {
@@ -2862,6 +3410,21 @@ export default function TakeoffCanvas() {
     const upp = uppFor(tp.key);
     if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
+    const role = asDeduct ? "deduct" : "floor_area";
+    const newPoly = points.map(([x, y]) => [x - tp.xOffset, y]);
+    const victims = overlapVictimsFor(newPoly, tp.key, activeCond, role);
+    if (victims.length) {
+      setOverlapPrompt({
+        source: "poly",
+        points, role, newPoly,
+        sheetId: tp.key, condId: activeCond,
+        xOffset: tp.xOffset, imgW: tp.img.w, imgH: tp.img.h,
+        label: activeLabel || undefined,
+        victims,
+        tag: condById[activeCond]?.finish_tag || "this condition",
+      });
+      return;
+    }
     const met = closedMetrics(points);
     // id + created_at are minted by the add command — the ONE creation gate
     dispatchShape({ type: "add", shapes: [{
@@ -3263,26 +3826,46 @@ export default function TakeoffCanvas() {
   // pins { conditionId, label } from the utterance BY VALUE — the arming
   // setState hasn't rendered, so the activeCond/activeLabel closures are one
   // render behind (the updateCondition-by-id precedent in voiceActions).
-  function commitOneClickRegions(prop, direct) {
+  function commitOneClickRegions(prop, direct, opts = {}) {
     const tp = panelByKey(prop.key);
     const condId = direct ? direct.conditionId : activeCond;
     const label = direct && direct.label !== undefined ? direct.label : (activeLabel || undefined);
-    const made = prop.regions.map((r) => ({
-      sheet_id: tp.key, condition_id: condId,
-      measure_role: r.kind === "neg" ? "deduct" : "floor_area",
-      verts_norm: r.poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
-      computed: { area_sf: r.area_sf, perimeter_lf: r.perim_lf },
-      ...(label ? { label } : {}),
-      // the provenance receipt: machine-proposed, human-reviewed at the Create
-      // gate (voice deixis: the spoken imperative is the review). A handle-
-      // corrected region (touched) records the machine's frozen trace (poly0)
-      // as proposed_verts_norm — the one-click correction pair; an untouched
-      // region's verts ARE the proposal, so nothing extra rides. Post-Create
-      // edits are stamped by stampEdit, which freezes the same field from the
-      // pre-edit ring only when Create didn't already.
-      origin: { method: "one_click_v1", seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h], reviewed: true, ...(r.hf ? { hatch_filtered: true } : {}), ...(r.rt ? { raster_traced: true } : {}), ...(r.os ? { openings_sealed: true } : {}), ...(r.autoCutout ? { auto_cutout: true } : {}), ...(r.sens != null ? { fill_sensitivity: r.sens } : {}), ...(r.touched ? { edited_before_create: true, proposed_verts_norm: r.poly0.map(([x, y]) => [x / tp.img.w, y / tp.img.h]) } : {}) },
-    }));
-    dispatchShape({ type: "add", shapes: made });   // the creation gate — id/created_at minted by the command
+    if (!opts.forceMerge) {
+      const overlapRegions = prop.regions.filter((r) => {
+        const role = r.kind === "neg" ? "deduct" : "floor_area";
+        return overlapVictimsFor(r.poly, prop.key, condId, role).length > 0;
+      });
+      if (overlapRegions.length) {
+        setOverlapPrompt({
+          source: "oneclick",
+          prop, direct, condId,
+          tag: (condById[condId] || agentStateRef.current.conditions.find((c) => c.id === condId))?.finish_tag || "this condition",
+          count: overlapRegions.length,
+        });
+        return { ok: false, pending: true, message: "" };
+      }
+    }
+    const made = [];
+    for (const r of prop.regions) {
+      const role = r.kind === "neg" ? "deduct" : "floor_area";
+      if (mergeIntoExistingShapes(r.poly, tp.key, condId, role)) continue;
+      made.push({
+        sheet_id: tp.key, condition_id: condId,
+        measure_role: role,
+        verts_norm: r.poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
+        computed: { area_sf: r.area_sf, perimeter_lf: r.perim_lf },
+        ...(label ? { label } : {}),
+        // the provenance receipt: machine-proposed, human-reviewed at the Create
+        // gate (voice deixis: the spoken imperative is the review). A handle-
+        // corrected region (touched) records the machine's frozen trace (poly0)
+        // as proposed_verts_norm — the one-click correction pair; an untouched
+        // region's verts ARE the proposal, so nothing extra rides. Post-Create
+        // edits are stamped by stampEdit, which freezes the same field from the
+        // pre-edit ring only when Create didn't already.
+        origin: { method: "one_click_v1", seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h], reviewed: true, ...(r.hf ? { hatch_filtered: true } : {}), ...(r.rt ? { raster_traced: true } : {}), ...(r.os ? { openings_sealed: true } : {}), ...(r.autoCutout ? { auto_cutout: true } : {}), ...(r.sens != null ? { fill_sensitivity: r.sens } : {}), ...(r.touched ? { edited_before_create: true, proposed_verts_norm: r.poly0.map(([x, y]) => [x / tp.img.w, y / tp.img.h]) } : {}) },
+      });
+    }
+    if (made.length) dispatchShape({ type: "add", shapes: made });   // the creation gate — id/created_at minted by the command
     const sf = prop.regions.reduce((n, r) => n + (r.kind === "neg" ? -r.area_sf : r.area_sf), 0);
     // condById is a render closure — a condition minted THIS utterance is only
     // in the live mirror, so fall through to it for the tag
@@ -3295,7 +3878,8 @@ export default function TakeoffCanvas() {
   }
   function createProposal() {
     if (!proposal || !proposal.regions.length) return;
-    commitOneClickRegions(proposal);
+    const res = commitOneClickRegions(proposal);
+    if (res?.pending) return; // wait for merge / remove-overlap dialog
     setProposal(null);
   }
 
@@ -3878,6 +4462,54 @@ export default function TakeoffCanvas() {
     setTfNow({ x: r.width / 2 - sx * scale, y: r.height / 2 - sy * scale, scale });
     selectMarkup(m.id);
     return true;
+  }
+  function centerOnShape(s) {
+    const sp = panelByKey(s.sheet_id);
+    if (!sp || !sp.img.w) return false;
+    const verts = s.verts_norm || [];
+    if (!verts.length) return false;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [nx, ny] of verts) {
+      const x = nx * sp.img.w + sp.xOffset, y = ny * sp.img.h;
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+    const el = containerRef.current;
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const minSpan = s.measure_role === "count" ? 48 : 1;
+    const w = Math.max(x1 - x0, minSpan), h = Math.max(y1 - y0, minSpan);
+    const pad = 72;
+    const scale = clamp(Math.min((r.width - pad) / w, (r.height - pad) / h, 2.25));
+    setTfNow({ x: (r.width - w * scale) / 2 - x0 * scale, y: (r.height - h * scale) / 2 - y0 * scale, scale });
+    selectShape(s.id);
+    revealSheetInFilesSidebar(s.sheet_id);
+    return true;
+  }
+  function flyToShape(shapeId) {
+    const s = shapes.find((x) => x.id === shapeId);
+    if (!s) return;
+    setBoqFocusShapeId(null);
+    if (!panelKeySet.has(s.sheet_id)) { pendingFlyShapeRef.current = shapeId; openSheets([s.sheet_id], false); return; }
+    if (!centerOnShape(s)) pendingFlyShapeRef.current = shapeId;
+  }
+  function deleteShapeFromBoq(shapeId) {
+    dispatchShape({ type: "delete", ids: [shapeId] });
+    if (selectedId === shapeId) setSelectedId(null);
+    if (boqFocusShapeId === shapeId) setBoqFocusShapeId(null);
+    if (shapeBoqFocus === shapeId) setShapeBoqFocus(null);
+    setBoqLines((prev) => prev.filter((l) => l.shape_id !== shapeId && l.id !== rowKey(shapeId)));
+    setShapeBoqHover((h) => (h?.id === shapeId ? null : h));
+    shapeBoqHoverStickyRef.current = false;
+  }
+  function openBoqForShape(shapeId) {
+    const s = shapes.find((x) => x.id === shapeId);
+    setShowBoq(true);
+    setBoqFocusShapeId(shapeId);
+    setShapeBoqFocus(null);
+    if (s) centerOnShape(s);
+    setShapeBoqHover(null);
+    shapeBoqHoverStickyRef.current = false;
   }
   function flyToMarkup(m) {
     if (!m) return;
@@ -5315,6 +5947,9 @@ export default function TakeoffCanvas() {
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${tool === "schedule" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: tool === "schedule" ? "var(--cobalt)" : "transparent", color: tool === "schedule" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
           <Icon name="rectTool" size={15} />Schedule
         </button>
+        <button onClick={() => setShowBoq((v) => !v)} disabled={!shapes.length && !conditions.length}
+          title="Bill of Quantities — floor-plan masked takeoff by sheet, with editable line details"
+          style={{ padding: "8px 14px", border: `1px solid ${showBoq ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showBoq ? "var(--cobalt)" : "transparent", color: showBoq ? "var(--paper-bright)" : "var(--ink)", cursor: shapes.length || conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: shapes.length || conditions.length ? 1 : 0.5 }}>BOQ</button>
         <button onClick={() => setShowReport(true)} disabled={!conditions.length} title="Open the takeoff report — per-condition breakdown with waste, plus CSV / JSON export."
           style={{ padding: "8px 14px", border: "none", background: conditions.length ? "var(--ink)" : "var(--text-faint)", color: "var(--paper-bright)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Report</button>
         {/* Deliberately subtle, not a button: local-first app, cloud mode is an
@@ -5751,7 +6386,7 @@ export default function TakeoffCanvas() {
                      }
                      node.files.push(s);
                    }
-                   const isOpen = (path) => openFolderPaths[path] !== false;
+                   const isOpen = (path) => openFolderPaths[path] === true;
                    const toggle = (path) => setOpenFolderPaths((m) => ({ ...m, [path]: !isOpen(path) }));
                    const fileRow = (s, depth) => {
                      const on = active === s.name;
@@ -5925,7 +6560,19 @@ export default function TakeoffCanvas() {
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
-          onDoubleClick={(e) => { if (symbolHover) { setSymbolFocus(symbolHover.id); return; } if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); } else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape(); else if (tool === "select") editMarkupAt(e); }}
+          onDoubleClick={(e) => {
+            if (shapeBoqHover?.id) {
+              setShapeBoqFocus(shapeBoqHover.id);
+              shapeBoqHoverStickyRef.current = true;
+              const s = shapes.find((x) => x.id === shapeBoqHover.id);
+              if (s) revealSheetInFilesSidebar(s.sheet_id);
+              return;
+            }
+            if (symbolHover) { setSymbolFocus(symbolHover.id); return; }
+            if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); }
+            else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
+            else if (tool === "select") editMarkupAt(e);
+          }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
@@ -5944,8 +6591,33 @@ export default function TakeoffCanvas() {
             </svg>
           </div>
           <div ref={aimChipRef} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", display: "none", zIndex: 6, padding: "2px 8px", background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-1)", fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", willChange: "transform" }} />
-          {/* hover readout — what takeoff is under the cursor (DOM-direct) */}
+          {/* hover readout — proposals / agent previews (DOM-direct) */}
           <div ref={hoverRef} style={{ position: "absolute", display: "none", pointerEvents: "none", zIndex: 8, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-1)", padding: "4px 8px", fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--ink)", whiteSpace: "nowrap" }} />
+          {/* BOQ hover card — masked area quantities; click opens filtered BOQ panel */}
+          {(shapeBoqFocus || shapeBoqHover) && (() => {
+            const cardId = shapeBoqFocus || shapeBoqHover?.id;
+            const s = shapes.find((x) => x.id === cardId);
+            if (!s || !shapeBoqHover) return null;
+            const data = resolveShapeBoq(s, conditions, boqDetectCtx, boqLines, units);
+            if (!data) return null;
+            const pinned = !!shapeBoqFocus;
+            return (
+              <ShapeBoqHoverCard
+                data={data}
+                left={shapeBoqHover.cx}
+                top={shapeBoqHover.cy}
+                units={units}
+                pinned={pinned}
+                onOpenBoq={() => openBoqForShape(s.id)}
+                onClose={() => { setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqHoverStickyRef.current = false; }}
+                onPointerEnter={() => { shapeBoqHoverStickyRef.current = true; }}
+                onPointerLeave={() => {
+                  shapeBoqHoverStickyRef.current = false;
+                  if (!shapeBoqFocus) setShapeBoqHover(null);
+                }}
+              />
+            );
+          })()}
           {/* Plan-symbol detail card — hover preview, or pinned (Select-click) for manual fill */}
           {(() => {
             const focusSym = symbolFocus ? planSymbols.find((s) => s.id === symbolFocus) : null;
@@ -6193,11 +6865,25 @@ export default function TakeoffCanvas() {
                         return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4 : 3) / z} strokeDasharray={pending ? pDash : dashArrayFor(cond?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       const ded = s.measure_role === "deduct";
-                      // deduct keeps its danger-red dashing (a safety signal, wins over line_style); positive floor_area follows the condition's line_style
+                      const fill = ded ? (pending ? "rgba(176,58,38,.10)" : "rgba(176,58,38,.28)") : pending ? col + "14" : shapeFill(cond);
+                      const stroke = ded ? "#b03a26" : (sel ? "#1f3fc7" : col);
+                      const dash = pending ? pDash : ded ? `${6 / z} ${4 / z}` : dashArrayFor(cond?.line_style || "solid", z);
+                      const holes = s.holes_norm;
+                      if (holes?.length) {
+                        const outerD = `M ${pts.map((q) => q.join(",")).join(" L ")} Z`;
+                        const holesD = holes.map((h) => {
+                          const hp = dn(h);
+                          return `M ${hp.map((q) => q.join(",")).join(" L ")} Z`;
+                        }).join(" ");
+                        return (
+                          <path key={s.id} d={`${outerD} ${holesD}`} fillRule="evenodd"
+                            fill={fill} stroke={stroke} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw}
+                            strokeDasharray={dash} />
+                        );
+                      }
                       return <polygon key={s.id} points={pts.map((q) => q.join(",")).join(" ")}
-                        fill={ded ? (pending ? "rgba(176,58,38,.10)" : "rgba(176,58,38,.28)") : pending ? col + "14" : shapeFill(cond)}
-                        stroke={ded ? "#b03a26" : (sel ? "#1f3fc7" : col)} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw}
-                        strokeDasharray={pending ? pDash : ded ? `${6 / z} ${4 / z}` : dashArrayFor(cond?.line_style || "solid", z)} />;
+                        fill={fill} stroke={stroke} strokeOpacity={pending ? 0.9 : undefined} strokeWidth={sw}
+                        strokeDasharray={dash} />;
                     })}
                     {/* vertex handles for the selected shape (drag to reshape) */}
                     {selectedId && (() => {
@@ -6221,13 +6907,39 @@ export default function TakeoffCanvas() {
                           })}
                           {/* corner handles — click selects (Delete removes just that point), drag moves */}
                           {qs.map(([x, y], i) => {
-                            const isSel = selVert === i;
+                            const isSel = selHole == null && selVert === i;
                             const sz = (isSel ? 6.5 : 5.5) / s;
                             return <g key={"h" + i}>
                               {isSel && <circle cx={x} cy={y} r={9 / s} fill="none" stroke="#1f3fc7" strokeWidth={1.2 / s} opacity={0.5} />}
                               <path d={`M${x},${y - sz} L${x + sz},${y} L${x},${y + sz} L${x - sz},${y} Z`}
                                 fill={isSel ? grip : "#1f3fc7"} stroke={isSel ? "#1f3fc7" : "#fff"} strokeWidth={(isSel ? 2 : 1.4) / s} />
                             </g>;
+                          })}
+                          {/* trim-hole grips — interior removal polygons (amber), same edit model */}
+                          {closed && (sel.holes_norm || []).map((hole, hi) => {
+                            const hqs = dn(hole);
+                            const holeCol = "#c47a10";
+                            return (
+                              <g key={`trim-${hi}`}>
+                                {hqs.map((_, i) => {
+                                  const a = hqs[i], b = hqs[(i + 1) % hqs.length];
+                                  const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+                                  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]) * 180 / Math.PI;
+                                  const ew = 12 / s, eh = 5 / s;
+                                  return <rect key={`hm${hi}-${i}`} x={mx - ew / 2} y={my - eh / 2} width={ew} height={eh} rx={eh / 2}
+                                    transform={`rotate(${ang} ${mx} ${my})`} fill={grip} stroke={holeCol} strokeWidth={1.4 / s} />;
+                                })}
+                                {hqs.map(([x, y], i) => {
+                                  const isSel = selHole === hi && selVert === i;
+                                  const sz = (isSel ? 6 : 5) / s;
+                                  return <g key={`hh${hi}-${i}`}>
+                                    {isSel && <circle cx={x} cy={y} r={8 / s} fill="none" stroke={holeCol} strokeWidth={1.2 / s} opacity={0.55} />}
+                                    <path d={`M${x},${y - sz} L${x + sz},${y} L${x},${y + sz} L${x - sz},${y} Z`}
+                                      fill={isSel ? grip : holeCol} stroke={isSel ? holeCol : "#fff"} strokeWidth={(isSel ? 2 : 1.3) / s} />
+                                  </g>;
+                                })}
+                              </g>
+                            );
                           })}
                         </g>
                       );
@@ -6806,6 +7518,30 @@ export default function TakeoffCanvas() {
           />
         )}
 
+        {/* BOQ sidebar — right edge, opposite the Files panel on the left */}
+        <BoqPanel
+          open={showBoq}
+          onClose={() => { setShowBoq(false); setBoqFocusShapeId(null); }}
+          conditions={conditions}
+          shapes={shapes}
+          sheetLabel={tabLabel}
+          sheetLevels={sheetLevels}
+          boqLines={boqLines}
+          onBoqLinesChange={setBoqLines}
+          units={units}
+          projectName={projectName}
+          planSymbols={planSymbols}
+          symbolNotes={symbolNotes}
+          panelImgs={panelImgs}
+          roomLabelsBySheet={roomLabelsBySheet}
+          scheduleKb={scheduleKb}
+          focusShapeId={boqFocusShapeId}
+          activeShapeId={selectedId}
+          onShapeNavigate={flyToShape}
+          onShapeDelete={deleteShapeFromBoq}
+          onClearFocus={() => setBoqFocusShapeId(null)}
+        />
+
         {/* Takeoffs panel — DOCKED in the layout row (reflows the canvas, not an
             overlay): every condition with its running totals, plus the Library,
             Materials, and Columns tabs. Extracted to components/TakeoffsPanel.jsx and
@@ -6878,6 +7614,56 @@ export default function TakeoffCanvas() {
           onCreate={createFromSchedule}
           onClose={() => setImportRows(null)}
         />
+      )}
+
+      {overlapPrompt && (
+        <div
+          onClick={() => resolveOverlapPrompt("cancel")}
+          style={{ position: "absolute", inset: 0, zIndex: 60, background: "rgba(14,26,46,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="overlap-prompt-title"
+            aria-describedby="overlap-prompt-desc"
+            style={{ width: 440, maxWidth: "100%", background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", fontFamily: "var(--f-body)", color: "var(--ink)" }}>
+            <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--ink-faint)" }}>
+              <div id="overlap-prompt-title" style={{ fontFamily: "var(--f-display)", fontSize: 16, fontWeight: 700, marginBottom: 6 }}>
+                Overlapping takeoff detected
+              </div>
+              <p id="overlap-prompt-desc" style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink-secondary)" }}>
+                {overlapPrompt.source === "oneclick"
+                  ? <>The selected area overlaps {overlapPrompt.count === 1 ? "an existing takeoff" : `${overlapPrompt.count} existing takeoffs`} for <strong>{overlapPrompt.tag}</strong>. Choose how to resolve the overlap before creating.</>
+                  : <>This measurement overlaps {overlapPrompt.victims?.length === 1 ? "an existing takeoff" : `${overlapPrompt.victims?.length || 0} existing takeoffs`} for <strong>{overlapPrompt.tag}</strong>. Choose how to resolve the overlap.</>}
+              </p>
+            </div>
+            <div style={{ padding: "14px 18px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => resolveOverlapPrompt("merge")}
+                title="Combine into one takeoff region (Enter)"
+                style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "10px 12px", border: "1px solid var(--cobalt)", background: "rgba(31,63,199,.06)", cursor: "pointer", textAlign: "left" }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--cobalt)" }}>Merge</span>
+                <span style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.4 }}>Combine the overlapping areas into a single takeoff.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveOverlapPrompt("remove")}
+                title="Cut the overlapping portion from the existing takeoff"
+                style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "10px 12px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", textAlign: "left" }}>
+                <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)" }}>Remove overlap</span>
+                <span style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.4 }}>Cut the overlapping portion from the existing takeoff without adding a duplicate.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => resolveOverlapPrompt("cancel")}
+                title="Discard this draw (Esc)"
+                style={{ alignSelf: "flex-start", marginTop: 4, padding: "6px 10px", border: "none", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)", textDecoration: "underline" }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {loadError && (
