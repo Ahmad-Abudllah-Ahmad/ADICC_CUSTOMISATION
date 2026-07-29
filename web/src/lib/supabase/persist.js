@@ -1,0 +1,504 @@
+// Sync OpenTakeoff annotations payload ↔ normalized Supabase tables.
+import { supabase } from "./client.js";
+import { conditionTotals } from "../totals.js";
+import { round2 } from "../totals.js";
+import { ANN_SCHEMA } from "../store.js";
+
+const shapeSnapshot = new Map(); // projectId -> Map(shapeId -> snapshot)
+
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function holesCount(s) {
+  return Array.isArray(s.holes_norm) ? s.holes_norm.length : 0;
+}
+
+function areaOf(s) {
+  return num(s?.computed?.area_sf) ?? 0;
+}
+
+function lfOf(s) {
+  return num(s?.computed?.perimeter_lf) ?? 0;
+}
+
+function markupGeometry(m) {
+  const g = {};
+  for (const k of ["rect", "at", "target", "from", "to", "pts", "path", "vb", "w", "r", "fill", "rev"]) {
+    if (m[k] !== undefined) g[k] = m[k];
+  }
+  return g;
+}
+
+function markupStyle(m) {
+  const s = {};
+  for (const k of ["color", "line_style", "weight"]) {
+    if (m[k] !== undefined) s[k] = m[k];
+  }
+  return s;
+}
+
+function rfiMetadata(r) {
+  const { id, number, subject, question, status, sheet_id, ...rest } = r;
+  return rest;
+}
+
+function computeTotals(conditions, shapes, boqLines) {
+  const condTotals = conditionTotals(conditions, shapes);
+  let floor = 0, wall = 0, border = 0, lf = 0, ea = 0;
+  const byCondition = {};
+  const bySheet = {};
+
+  for (const t of condTotals) {
+    floor += t.floor_sf || 0;
+    wall += t.wall_sf || 0;
+    border += t.border_sf || 0;
+    lf += t.lf || 0;
+    ea += t.ea || 0;
+    byCondition[t.id] = {
+      finish_tag: t.finish_tag,
+      shape_count: t.shape_count,
+      floor_sf: t.floor_sf,
+      wall_sf: t.wall_sf,
+      lf: t.lf,
+      ea: t.ea,
+      total_sf: t.total_sf,
+    };
+  }
+
+  for (const s of shapes) {
+    const sid = s.sheet_id;
+    if (!bySheet[sid]) bySheet[sid] = { shape_count: 0, floor_sf: 0, wall_sf: 0, lf: 0, ea: 0 };
+    bySheet[sid].shape_count += 1;
+    const cp = s.computed || {};
+    switch (s.measure_role) {
+      case "deduct": bySheet[sid].floor_sf -= cp.area_sf || 0; break;
+      case "floor_area": bySheet[sid].floor_sf += cp.area_sf || 0; break;
+      case "surface_area": bySheet[sid].wall_sf += cp.area_sf || 0; break;
+      case "linear":
+        bySheet[sid].lf += cp.perimeter_lf || 0;
+        bySheet[sid].floor_sf += cp.area_sf || 0;
+        break;
+      case "count": bySheet[sid].ea += cp.count || 1; break;
+      default: break;
+    }
+  }
+
+  const byRoom = {};
+  for (const line of boqLines || []) {
+    const room = (line.room || "").trim() || "Unassigned";
+    if (!byRoom[room]) byRoom[room] = { line_count: 0, floor_sf: 0 };
+    byRoom[room].line_count += 1;
+  }
+
+  return {
+    shape_count: shapes.length,
+    floor_sf: round2(floor),
+    wall_sf: round2(wall),
+    border_sf: round2(border),
+    lf: round2(lf),
+    ea,
+    total_sf: round2(floor + wall + border),
+    by_sheet: bySheet,
+    by_condition: byCondition,
+    by_room: byRoom,
+  };
+}
+
+function diffShapeEvents(projectId, shapes) {
+  const prev = shapeSnapshot.get(projectId) || new Map();
+  const next = new Map();
+  const events = [];
+  const nextIds = new Set(shapes.map((s) => s.id));
+
+  for (const s of shapes) {
+    const snap = {
+      area_sf: areaOf(s),
+      perimeter_lf: lfOf(s),
+      holes_count: holesCount(s),
+      sheet_id: s.sheet_id,
+      condition_id: s.condition_id,
+      measure_role: s.measure_role,
+      verts: JSON.stringify(s.verts_norm),
+    };
+    next.set(s.id, snap);
+    const old = prev.get(s.id);
+    if (!old) {
+      events.push({
+        project_id: projectId,
+        event_type: "create",
+        shape_id: s.id,
+        sheet_id: s.sheet_id,
+        condition_id: s.condition_id,
+        measure_role: s.measure_role,
+        area_sf_after: snap.area_sf,
+        perimeter_lf_after: snap.perimeter_lf,
+        holes_count_after: snap.holes_count,
+        payload: { origin: s.origin || {} },
+      });
+    } else if (old.verts !== snap.verts || old.area_sf !== snap.area_sf
+      || old.holes_count !== snap.holes_count || old.condition_id !== snap.condition_id) {
+      const holeDelta = snap.holes_count - old.holes_count;
+      let eventType = "geom";
+      if (old.condition_id !== snap.condition_id) eventType = "reassign";
+      else if (holeDelta > 0) eventType = "hole_add";
+      else if (holeDelta < 0) eventType = "hole_remove";
+      events.push({
+        project_id: projectId,
+        event_type: eventType,
+        shape_id: s.id,
+        sheet_id: s.sheet_id,
+        condition_id: s.condition_id,
+        measure_role: s.measure_role,
+        area_sf_before: old.area_sf,
+        area_sf_after: snap.area_sf,
+        perimeter_lf_before: old.perimeter_lf,
+        perimeter_lf_after: snap.perimeter_lf,
+        holes_count_before: old.holes_count,
+        holes_count_after: snap.holes_count,
+        payload: {},
+      });
+    }
+  }
+
+  for (const [id, old] of prev) {
+    if (!nextIds.has(id)) {
+      events.push({
+        project_id: projectId,
+        event_type: "delete",
+        shape_id: id,
+        sheet_id: old.sheet_id,
+        condition_id: old.condition_id,
+        measure_role: old.measure_role,
+        area_sf_before: old.area_sf,
+        perimeter_lf_before: old.perimeter_lf,
+        holes_count_before: old.holes_count,
+        payload: {},
+      });
+    }
+  }
+
+  shapeSnapshot.set(projectId, next);
+  return events;
+}
+
+async function replaceChildRows(table, projectId, rows, onConflict) {
+  await supabase.from(table).delete().eq("project_id", projectId);
+  if (rows.length) {
+    const { error } = await supabase.from(table).upsert(rows, { onConflict });
+    if (error) throw error;
+  }
+}
+
+/** Load project annotations from Supabase (falls back to stored JSON blob). */
+export async function loadProjectFromSupabase(projectId) {
+  if (!supabase || !projectId) return null;
+
+  const { data: proj, error } = await supabase
+    .from("projects")
+    .select("*")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!proj) return null;
+
+  if (proj.annotations && typeof proj.annotations === "object" && proj.annotations.shapes) {
+    return { payload: { ...proj.annotations, schema: ANN_SCHEMA }, updated_at: proj.updated_at };
+  }
+
+  const [
+    { data: conditions },
+    { data: sheets },
+    { data: shapes },
+    { data: markups },
+    { data: rfis },
+    { data: boqLines },
+  ] = await Promise.all([
+    supabase.from("conditions").select("*").eq("project_id", projectId),
+    supabase.from("project_sheets").select("*").eq("project_id", projectId),
+    supabase.from("shapes").select("*").eq("project_id", projectId).is("deleted_at", null),
+    supabase.from("markups").select("*").eq("project_id", projectId),
+    supabase.from("rfis").select("*").eq("project_id", projectId),
+    supabase.from("boq_lines").select("*").eq("project_id", projectId),
+  ]);
+
+  const { data: holes } = await supabase
+    .from("shape_holes")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("hole_index");
+
+  const holesByShape = {};
+  for (const h of holes || []) {
+    if (!holesByShape[h.shape_id]) holesByShape[h.shape_id] = [];
+    holesByShape[h.shape_id][h.hole_index] = h.verts_norm;
+  }
+
+  const payload = {
+    schema: ANN_SCHEMA,
+    project_name: proj.name,
+    ...(proj.units === "metric" ? { units: "metric" } : {}),
+    client_info: proj.client_info || {},
+    condition_columns: proj.condition_columns || [],
+    shape_labels: proj.shape_labels || [],
+    palette: proj.palette || [],
+    sheet_levels: proj.sheet_levels || {},
+    file_folders: proj.file_folders || {},
+    symbol_notes: proj.symbol_notes || {},
+    provenance_counters: proj.provenance_counters || { shapes_deleted: {} },
+    sheet_group: proj.sheet_group || [],
+    last_group: proj.last_group || [],
+    sheet_tabs: proj.sheet_tabs || [],
+    conditions: (conditions || []).map((c) => ({
+      id: c.id,
+      finish_tag: c.finish_tag,
+      color: c.color,
+      fill: c.fill,
+      hatch: c.hatch,
+      multiplier: Number(c.multiplier) || 1,
+      waste_pct: Number(c.waste_pct) || 0,
+      height_ft: c.height_ft,
+      thickness_in: c.thickness_in,
+      laborType: c.labor_type,
+      subfloorType: c.subfloor_type,
+      description: c.description,
+      spec: c.spec || {},
+      attrs: c.attrs || {},
+      materials: c.materials || [],
+      created_at: c.created_at,
+      updated_at: c.updated_at,
+    })),
+    sheets: (sheets || []).map((s) => ({
+      sheet_id: s.sheet_id,
+      units_per_px: s.units_per_px,
+      ...(s.scale_source ? { scale_source: s.scale_source } : {}),
+    })),
+    shapes: (shapes || []).map((s) => ({
+      id: s.id,
+      sheet_id: s.sheet_id,
+      condition_id: s.condition_id,
+      measure_role: s.measure_role,
+      verts_norm: s.verts_norm,
+      ...(holesByShape[s.id]?.length ? { holes_norm: holesByShape[s.id].filter(Boolean) } : {}),
+      computed: s.computed || {},
+      origin: s.origin || {},
+      label: s.label,
+      height_ft: s.height_ft,
+      height_override: s.height_override,
+      curved: s.curved,
+      created_at: s.created_at,
+      updated_at: s.updated_at,
+    })),
+    markups: (markups || []).map((m) => ({
+      id: m.id,
+      sheet_id: m.sheet_id,
+      type: m.type,
+      text: m.text,
+      rfi_id: m.rfi_id,
+      created_at: m.created_at,
+      ...(m.geometry || {}),
+      ...(m.style || {}),
+    })),
+    rfis: (rfis || []).map((r) => ({
+      id: r.id,
+      number: r.number,
+      subject: r.subject,
+      question: r.question,
+      status: r.status,
+      sheet_id: r.sheet_id,
+      ...(r.metadata || {}),
+      created_at: r.created_at,
+    })),
+    boq_lines: (boqLines || []).map((l) => ({
+      id: l.id,
+      shape_id: l.shape_id,
+      manual: l.manual,
+      sheet_id: l.sheet_id,
+      condition_id: l.condition_id,
+      room: l.room,
+      room_manual: l.room_manual,
+      description: l.description,
+      notes: l.notes,
+      unit: l.unit,
+      qty_override: l.qty_override,
+      rate: l.rate,
+    })),
+  };
+
+  return { payload, updated_at: proj.updated_at };
+}
+
+/** Create a new Supabase project row; returns UUID. */
+export async function createSupabaseProject(name = "Untitled Project") {
+  if (!supabase) throw new Error("Supabase is not configured");
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({ name, annotations: {} })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+/** Sync full annotations payload to normalized Supabase tables. */
+export async function syncProjectToSupabase(projectId, payload) {
+  if (!supabase || !projectId) return;
+
+  const shapes = payload.shapes || [];
+  const conditions = payload.conditions || [];
+  const markups = payload.markups || [];
+  const rfis = payload.rfis || [];
+  const boqLines = payload.boq_lines || [];
+  const sheets = payload.sheets || [];
+
+  const events = diffShapeEvents(projectId, shapes);
+  const totals = computeTotals(conditions, shapes, boqLines);
+
+  const projectRow = {
+    id: projectId,
+    name: payload.project_name || "Untitled Project",
+    units: payload.units === "metric" ? "metric" : "imperial",
+    client_info: payload.client_info || {},
+    condition_columns: payload.condition_columns || [],
+    shape_labels: payload.shape_labels || [],
+    palette: payload.palette || [],
+    sheet_levels: payload.sheet_levels || {},
+    file_folders: payload.file_folders || {},
+    symbol_notes: payload.symbol_notes || {},
+    provenance_counters: payload.provenance_counters || { shapes_deleted: {} },
+    sheet_group: payload.sheet_group || [],
+    last_group: payload.last_group || [],
+    sheet_tabs: payload.sheet_tabs || [],
+    schema_version: ANN_SCHEMA,
+    annotations: payload,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: projErr } = await supabase.from("projects").upsert(projectRow);
+  if (projErr) throw projErr;
+
+  await replaceChildRows("conditions", projectId, conditions.map((c) => ({
+    project_id: projectId,
+    id: c.id,
+    finish_tag: c.finish_tag || "?",
+    color: c.color,
+    fill: c.fill,
+    hatch: c.hatch,
+    multiplier: c.multiplier ?? 1,
+    waste_pct: c.waste_pct ?? 0,
+    height_ft: c.height_ft,
+    thickness_in: c.thickness_in,
+    labor_type: c.laborType,
+    subfloor_type: c.subfloorType,
+    description: c.description || c.spec?.description,
+    spec: c.spec || {},
+    attrs: c.attrs || {},
+    materials: c.materials || [],
+    created_at: c.created_at,
+    updated_at: c.updated_at,
+  })), "project_id,id");
+
+  await replaceChildRows("project_sheets", projectId, sheets.map((s) => ({
+    project_id: projectId,
+    sheet_id: s.sheet_id,
+    units_per_px: s.units_per_px,
+    scale_source: s.scale_source,
+  })), "project_id,sheet_id");
+
+  const shapeRows = shapes.map((s) => ({
+    project_id: projectId,
+    id: s.id,
+    sheet_id: s.sheet_id,
+    condition_id: s.condition_id,
+    measure_role: s.measure_role,
+    verts_norm: s.verts_norm,
+    computed: s.computed || {},
+    origin: s.origin || {},
+    label: s.label,
+    height_ft: s.height_ft,
+    height_override: !!s.height_override,
+    curved: !!s.curved,
+    holes_count: holesCount(s),
+    created_at: s.created_at,
+    updated_at: s.updated_at,
+    deleted_at: null,
+  }));
+  await replaceChildRows("shapes", projectId, shapeRows, "project_id,id");
+
+  const holeRows = [];
+  for (const s of shapes) {
+    const rings = s.holes_norm || [];
+    rings.forEach((ring, hole_index) => {
+      if (!Array.isArray(ring) || ring.length < 3) return;
+      holeRows.push({
+        project_id: projectId,
+        shape_id: s.id,
+        hole_index,
+        verts_norm: ring,
+      });
+    });
+  }
+  await replaceChildRows("shape_holes", projectId, holeRows, "project_id,shape_id,hole_index");
+
+  await replaceChildRows("markups", projectId, markups.map((m) => ({
+    project_id: projectId,
+    id: m.id,
+    sheet_id: m.sheet_id,
+    type: m.type,
+    geometry: markupGeometry(m),
+    text: m.text,
+    style: markupStyle(m),
+    rfi_id: m.rfi_id,
+    created_at: m.created_at,
+  })), "project_id,id");
+
+  await replaceChildRows("rfis", projectId, rfis.map((r) => ({
+    project_id: projectId,
+    id: r.id,
+    number: r.number,
+    subject: r.subject,
+    question: r.question,
+    status: r.status || "open",
+    metadata: rfiMetadata(r),
+    sheet_id: r.sheet_id,
+    created_at: r.created_at,
+  })), "project_id,id");
+
+  await replaceChildRows("boq_lines", projectId, (boqLines || []).map((l) => ({
+    project_id: projectId,
+    id: l.id,
+    shape_id: l.shape_id,
+    manual: !!l.manual,
+    sheet_id: l.sheet_id,
+    condition_id: l.condition_id,
+    room: l.room,
+    room_manual: !!l.room_manual,
+    description: l.description,
+    notes: l.notes,
+    unit: l.unit,
+    qty_override: l.qty_override != null ? String(l.qty_override) : null,
+    rate: l.rate != null ? String(l.rate) : null,
+  })), "project_id,id");
+
+  if (events.length) {
+    const { error: evErr } = await supabase.from("shape_events").insert(events);
+    if (evErr) throw evErr;
+  }
+
+  const { error: totErr } = await supabase.from("project_totals").upsert({
+    project_id: projectId,
+    shape_count: totals.shape_count,
+    floor_sf: totals.floor_sf,
+    wall_sf: totals.wall_sf,
+    border_sf: totals.border_sf,
+    lf: totals.lf,
+    ea: totals.ea,
+    total_sf: totals.total_sf,
+    by_sheet: totals.by_sheet,
+    by_condition: totals.by_condition,
+    by_room: totals.by_room,
+    updated_at: new Date().toISOString(),
+  });
+  if (totErr) throw totErr;
+}

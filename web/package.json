@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "OpenTakeoff \u2014 a free, open-source PDF takeoff canvas for flooring contractors.",
+  "description": "OpenTakeoff — a free, open-source PDF takeoff canvas for flooring contractors.",
   "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-"check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
     "lint": "eslint src netlify/functions"
   },
   "engines": {
@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
+    "@supabase/supabase-js": "^2.111.0",
     "fflate": "^0.8.3",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^4.10.38",

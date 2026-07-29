@@ -7,6 +7,7 @@ import TakeoffCanvas from "./pages/TakeoffCanvas.jsx";
 import ProjectHome from "./components/ProjectHome.jsx";
 import { GoogleAuthProvider, useGoogleAuth } from "./lib/google/AuthContext.jsx";
 import { projectIdFromUrl, setActiveStore } from "./lib/store.js";
+import { isSupabaseConfigured } from "./lib/supabaseStore.js";
 import { isGoogleConfigured, getAccessToken } from "./lib/google/auth.js";
 import { cloudSyncEnabled } from "./lib/prefs.js";
 import { projectHomeFolderId } from "./lib/projectHome.js";
@@ -174,6 +175,31 @@ function ProjectHomeGate() {
   return <ProjectHome />;
 }
 
+function LocalCanvasGate() {
+  const [ready, setReady] = useState(!isSupabaseConfigured());
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!isSupabaseConfigured()) return;
+    let live = true;
+    (async () => {
+      try {
+        const { createSupabaseStore } = await import("./lib/supabaseStore.js");
+        if (!live) return;
+        setActiveStore(createSupabaseStore());
+        setReady(true);
+      } catch (e) {
+        if (live) setError(String(e?.message || e));
+      }
+    })();
+    return () => { live = false; setActiveStore(); };
+  }, []);
+
+  if (error) return <Centered title="Database connection failed" body={error} />;
+  if (!ready) return <Centered title="Connecting to ADICC database…" body="Loading your project from Supabase." />;
+  return <TakeoffCanvas />;
+}
+
 function App() {
   // Subscribe to navigation: react-router bails out of re-rendering the same
   // element on navigate(), so App must watch the location itself. The store.js
@@ -183,6 +209,8 @@ function App() {
   const projectId = projectIdFromUrl();
   // ?project= deep link → the cloud project.
   if (projectId && isGoogleConfigured()) return <ProjectGate projectId={projectId} />;
+  // Supabase-backed persistence when configured (ADICC CUSTOMISATION database).
+  if (isSupabaseConfigured()) return <LocalCanvasGate />;
   // Otherwise the anonymous local canvas is the default landing screen —
   // open the bundled demo plan or drop your own, no sign-in required.
   // Google sign-in (to browse team projects at /projects) is a subtle,
