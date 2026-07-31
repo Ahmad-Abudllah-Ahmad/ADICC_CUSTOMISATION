@@ -1,5 +1,6 @@
 // Supabase-backed store — Postgres is source of truth; IndexedDB is local cache.
 import { createLocalStore, ANN_SCHEMA, emptyAnnotations } from "./store.js";
+import { parseSheetKey } from "./sheetKey";
 import {
   isSupabaseConfigured,
   getSupabaseProjectId,
@@ -22,6 +23,8 @@ import {
   uploadProjectFilesBatch,
   fileFoldersFromProjectFiles,
   sheetListNameFromRow,
+  sheetRelPath,
+  sheetBaseName,
 } from "./supabase/projectFiles.js";
 import { touchProjectOpened, openSupabaseProject } from "./supabase/projects.js";
 import { createSupabaseRecents, browserStorage } from "./supabaseRecents.js";
@@ -33,16 +36,25 @@ let cachedPlanManifestProjectId = null;
 /** Dedupes concurrent manifest fetches (mount listSheets vs loadAnnotations). */
 let manifestFetchPromise = null;
 let manifestFetchProjectId = null;
+/** Resolves with the manifest once the Storage walk has reconciled it. The sheet
+ *  list renders from Postgres alone before this settles; only work that needs to
+ *  know which rows actually have bytes (hydration) waits for it. */
+let manifestReconciled = null;
 
 function invalidatePlanManifestCache() {
   cachedPlanManifest = null;
   cachedPlanManifestProjectId = null;
   manifestFetchPromise = null;
   manifestFetchProjectId = null;
+  manifestReconciled = null;
 }
 
 function mergeRemoteAndLocalSheetNames(localList, rows) {
-  const names = new Set((rows || []).map((r) => sheetListNameFromRow(r)));
+  // Rows the Storage walk proved have no bytes can't be opened — leave them out
+  // rather than listing a sheet that fails the moment it's clicked.
+  const names = new Set((rows || [])
+    .filter((r) => r.in_storage !== false)
+    .map((r) => sheetListNameFromRow(r)));
   for (const s of localList || []) names.add(s.name);
   return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
     .map((name) => ({ name }));
@@ -50,7 +62,13 @@ function mergeRemoteAndLocalSheetNames(localList, rows) {
 
 function findManifestRow(rows, name) {
   if (!rows?.length || !name) return undefined;
-  return rows.find((r) => sheetListNameFromRow(r) === name || r.file_name === name);
+  return rows.find((r) => sheetListNameFromRow(r) === name)
+    || rows.find((r) => r.file_name === name);
+}
+
+function notifyPlanManifestReady() {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("adicc:plan-manifest-ready"));
 }
 
 async function ensurePlanManifest(projectId) {
@@ -61,8 +79,16 @@ async function ensurePlanManifest(projectId) {
   if (manifestFetchProjectId === projectId && manifestFetchPromise) {
     return manifestFetchPromise;
   }
+  let settleReconciled;
+  manifestReconciled = new Promise((resolve) => { settleReconciled = resolve; });
   manifestFetchProjectId = projectId;
-  manifestFetchPromise = listProjectFiles(projectId)
+  manifestFetchPromise = listProjectFiles(projectId, {
+    onReconciled: (rows) => {
+      if (cachedPlanManifestProjectId === projectId) cachedPlanManifest = rows;
+      settleReconciled(rows);
+      notifyPlanManifestReady();
+    },
+  })
     .then((rows) => {
       cachedPlanManifest = rows;
       cachedPlanManifestProjectId = projectId;
@@ -73,9 +99,17 @@ async function ensurePlanManifest(projectId) {
     .catch((e) => {
       manifestFetchPromise = null;
       manifestFetchProjectId = null;
+      settleReconciled([]);
       throw e;
     });
   return manifestFetchPromise;
+}
+
+/** The manifest with `in_storage` resolved — rows the walk proved have no bytes are
+ *  worth skipping rather than downloading. Falls back to whatever is cached. */
+async function planManifestReconciled(fallbackRows) {
+  const rows = manifestReconciled ? await manifestReconciled : null;
+  return rows?.length ? rows : fallbackRows;
 }
 
 async function ensureProjectId() {
@@ -152,18 +186,21 @@ export function createSupabaseStore(projectId = null) {
           row?.folder_path,
         );
         const mime = row?.content_type || "application/pdf";
-        await local.addPdf(new File([bytes], name, { type: mime }));
+        await local.addPdf(new File([bytes], sheetBaseName(name), { type: mime }), { key: name });
         return bytes;
       }
     },
 
+    /** @returns {Promise<{ name: string }>} name is the folder-relative sheet id */
     async addPdf(file, opts = {}) {
-      const res = await local.addPdf(file);
+      const folderPath = opts.folderPath || "";
+      const sheetName = isSupabaseConfigured() ? sheetRelPath(file.name, folderPath) : file.name;
+      const res = await local.addPdf(file, { key: sheetName });
       if (!isSupabaseConfigured() || opts.skipRemote) return res;
       const projectId = await ensureProjectId();
       const bytes = await file.arrayBuffer();
       await upsertProjectFile(projectId, file.name, bytes, {
-        folderPath: opts.folderPath || "",
+        folderPath,
         mimeType: file.type || "application/pdf",
       });
       invalidatePlanManifestCache();
@@ -218,16 +255,17 @@ export function createSupabaseStore(projectId = null) {
             file_folders: { ...fileFolders, ...(payload.file_folders || {}) },
           };
         }
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent("adicc:plan-manifest-ready"));
-        }
-        void hydrateLocalPlansFromDb(projectIdForPlans, local, { rows })
+        notifyPlanManifestReady();
+        // The sheets the user left open are the ones about to render — fetch those
+        // bytes before the rest of a 1000-plan set.
+        const priority = (Array.isArray(payload.sheet_tabs) ? payload.sheet_tabs : [])
+          .map((key) => parseSheetKey(key).file);
+        void planManifestReconciled(rows)
+          .then((full) => hydrateLocalPlansFromDb(projectIdForPlans, local, { rows: full, priority }))
           .then((result) => {
             cachedPlanManifest = result.rows;
             cachedPlanManifestProjectId = projectIdForPlans;
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent("adicc:plan-manifest-ready"));
-            }
+            notifyPlanManifestReady();
           })
           .catch((e) => {
             console.warn("[ADICC] background plan hydrate", e);

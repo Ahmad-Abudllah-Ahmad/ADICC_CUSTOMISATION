@@ -156,13 +156,16 @@ export const localStore = {
     return new Uint8Array(rec.bytes);
   },
 
-  async addPdf(file) {
+  // `key` overrides the cache key when the caller identifies sheets by their
+  // folder-relative path (two folders may hold the same basename).
+  async addPdf(file, { key } = {}) {
     // read the bytes BEFORE opening — don't hold a connection across an
     // unrelated (possibly slow, file-sized) await
     const bytes = await file.arrayBuffer();
+    const name = key || file.name;
     // de-dupe by name: a re-dropped file replaces the old bytes
-    await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: file.name, bytes })));
-    return { name: file.name };
+    await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name, bytes })));
+    return { name };
   },
 
   async removePdf(name) {
@@ -352,10 +355,11 @@ export function createLocalStore(folderId = null) {
       if (!rec) throw new Error(`PDF not found in local store: ${name}`);
       return new Uint8Array(rec.bytes);
     },
-    async addPdf(file) {
+    async addPdf(file, { key } = {}) {
       const bytes = await file.arrayBuffer();
-      await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: scopedPdfStorageName(scope, file.name), bytes })));
-      return { name: file.name };
+      const name = key || file.name;
+      await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: scopedPdfStorageName(scope, name), bytes })));
+      return { name };
     },
     async removePdf(name) {
       await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.delete(scopedPdfStorageName(scope, name))));

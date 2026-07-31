@@ -258,7 +258,8 @@ export default function PlanNavigator({
   const labelOf = (key) => {
     if (labels[key]) return labels[key];
     const t = parseSheetKey(key);
-    const base = t.file.replace(/\.pdf$/i, "");
+    // Foldered sheets carry their relative path as an id — label the sheet, not the path.
+    const base = t.file.split("/").pop().replace(/\.pdf$/i, "");
     return t.page > 1 ? `${base} · ${t.page}` : base;
   };
   // multi-floor: group by assigned level (natural sort), unassigned last; within a

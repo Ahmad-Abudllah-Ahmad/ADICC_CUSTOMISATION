@@ -697,7 +697,8 @@ export default function TakeoffCanvas() {
     if (galleryLabels[k]) return lvl + galleryLabels[k];
     const t = parseSheetKey(k);
     if (t.file === active && pageLabels[t.page]) return lvl + pageLabels[t.page];
-    const base = t.file.replace(/\.pdf$/i, "");
+    // Foldered sheets carry their relative path as an id — label the sheet, not the path.
+    const base = t.file.split("/").pop().replace(/\.pdf$/i, "");
     return lvl + (t.page > 1 ? `${base} · ${t.page}` : base);
   };
 
@@ -881,9 +882,13 @@ export default function TakeoffCanvas() {
       return hint?.folder || "";
     };
     const batchRemote = pdfs.length > 1 && typeof store.persistPlansBatch === "function";
+    // The store returns the sheet id it stored under — folder-relative when a
+    // folder upload put two same-named sheets in different directories.
+    const sheetNameOf = new Map();
     for (const f of pdfs) {
       try {
-        await store.addPdf(f, { folderPath: folderForPdf(f), skipRemote: batchRemote });
+        const res = await store.addPdf(f, { folderPath: folderForPdf(f), skipRemote: batchRemote });
+        sheetNameOf.set(f, res?.name || f.name);
       } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); }
     }
     if (batchRemote) {
@@ -898,7 +903,7 @@ export default function TakeoffCanvas() {
         const next = { ...prev };
         for (const pdf of pdfs) {
           const folder = folderForPdf(pdf);
-          if (folder) next[pdf.name] = folder;
+          if (folder) next[sheetNameOf.get(pdf) || pdf.name] = folder;
         }
         return next;
       });
@@ -914,7 +919,7 @@ export default function TakeoffCanvas() {
       });
     }
     await refreshSheets();
-    const names = pdfs.map((f) => f.name);
+    const names = pdfs.map((f) => sheetNameOf.get(f) || f.name);
     const tail = skipped.length ? ` · ${skipped.length} skipped` : "";
     if (names.length === 1) {
       setOpenTabs((t) => (t.includes(names[0]) ? t : [...t, names[0]]));
@@ -6462,7 +6467,7 @@ export default function TakeoffCanvas() {
                          <button type="button" onClick={() => { openSheets([s.name]); setLeftTab("files"); }}
                            title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}
                            style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
-                           <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{s.name}</span>
+                           <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{s.name.split("/").pop()}</span>
                            <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{open ? "open" : "in project"}{on ? " · viewing" : ""}</span>
                          </button>
                          <button type="button" onClick={() => closePdf(s.name)} title={`Remove ${s.name} from this project`}
