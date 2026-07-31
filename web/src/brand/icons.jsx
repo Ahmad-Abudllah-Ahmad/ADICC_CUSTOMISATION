@@ -15,6 +15,7 @@ export const icons = {
   product: (s) => <I size={s}><rect x="3" y="7" width="18" height="13" /><path d="M3 7 L 12 3 L 21 7" /><line x1="12" y1="3" x2="12" y2="20" /></I>,
   takeoff: (s) => <I size={s}><rect x="3" y="3" width="18" height="18" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="3" x2="9" y2="21" /><circle cx="15" cy="15" r="1.2" fill="currentColor" /></I>,
   plus: (s) => <I size={s}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></I>,
+  search: (s) => <I size={s}><circle cx="11" cy="11" r="6.5" /><line x1="16" y1="16" x2="20.5" y2="20.5" /></I>,
 
   // ── takeoff canvas set — drafting monoline, vertex-dot motif on measure tools ──
   pan: (s) => <I size={s}><path d="M12 2 V 22 M2 12 H 22" /><path d="M12 2 L 9.6 4.4 M12 2 L 14.4 4.4 M12 22 L 9.6 19.6 M12 22 L 14.4 19.6 M2 12 L 4.4 9.6 M2 12 L 4.4 14.4 M22 12 L 19.6 9.6 M22 12 L 19.6 14.4" /></I>,

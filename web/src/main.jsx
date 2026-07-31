@@ -5,9 +5,10 @@ import "./styles/tokens.css";
 import "./styles/app.css";
 import TakeoffCanvas from "./pages/TakeoffCanvas.jsx";
 import ProjectHome from "./components/ProjectHome.jsx";
+import SupabaseHome from "./components/SupabaseHome.jsx";
 import { GoogleAuthProvider, useGoogleAuth } from "./lib/google/AuthContext.jsx";
+import { isSupabaseConfigured, getSupabaseProjectId, getSupabaseProjectIdFromUrl } from "./lib/supabase/client.js";
 import { projectIdFromUrl, setActiveStore } from "./lib/store.js";
-import { isSupabaseConfigured } from "./lib/supabaseStore.js";
 import { isGoogleConfigured, getAccessToken } from "./lib/google/auth.js";
 import { cloudSyncEnabled } from "./lib/prefs.js";
 import { projectHomeFolderId } from "./lib/projectHome.js";
@@ -175,29 +176,50 @@ function ProjectHomeGate() {
   return <ProjectHome />;
 }
 
+const WORKSPACE_RESET_KEY = "adicc_workspace_reset_v1";
+
 function LocalCanvasGate() {
-  const [ready, setReady] = useState(!isSupabaseConfigured());
+  useLocation();
+  const projectId = getSupabaseProjectIdFromUrl() || getSupabaseProjectId() || "";
+  const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!isSupabaseConfigured()) return;
+    if (!isSupabaseConfigured() || !projectId) return;
     let live = true;
+    setReady(false);
+    setError("");
     (async () => {
       try {
         const { createSupabaseStore } = await import("./lib/supabaseStore.js");
         if (!live) return;
-        setActiveStore(createSupabaseStore());
-        setReady(true);
+        const next = createSupabaseStore(projectId);
+        // One-time local-only legacy wipe (never delete remote plan bytes on a new browser).
+        try {
+          if (!localStorage.getItem(WORKSPACE_RESET_KEY)) {
+            if (typeof next.clearProjectWorkspace === "function") {
+              await next.clearProjectWorkspace();
+            }
+            localStorage.setItem(WORKSPACE_RESET_KEY, "1");
+          }
+        } catch (e) {
+          console.error("[ADICC workspace reset]", e);
+        }
+        if (typeof next.prefetchPlanManifest === "function") {
+          await next.prefetchPlanManifest();
+        }
+        setActiveStore(next);
+        if (live) setReady(true);
       } catch (e) {
         if (live) setError(String(e?.message || e));
       }
     })();
     return () => { live = false; setActiveStore(); };
-  }, []);
+  }, [projectId]);
 
   if (error) return <Centered title="Database connection failed" body={error} />;
   if (!ready) return <Centered title="Connecting to ADICC database…" body="Loading your project from Supabase." />;
-  return <TakeoffCanvas />;
+  return <TakeoffCanvas key={projectId} />;
 }
 
 function App() {
@@ -209,8 +231,11 @@ function App() {
   const projectId = projectIdFromUrl();
   // ?project= deep link → the cloud project.
   if (projectId && isGoogleConfigured()) return <ProjectGate projectId={projectId} />;
-  // Supabase-backed persistence when configured (ADICC CUSTOMISATION database).
-  if (isSupabaseConfigured()) return <LocalCanvasGate />;
+  // Supabase: home at / (recent projects), canvas at /?db=<uuid>.
+  if (isSupabaseConfigured()) {
+    if (!getSupabaseProjectIdFromUrl()) return <SupabaseHome />;
+    return <LocalCanvasGate />;
+  }
   // Otherwise the anonymous local canvas is the default landing screen —
   // open the bundled demo plan or drop your own, no sign-in required.
   // Google sign-in (to browse team projects at /projects) is a subtle,

@@ -8,17 +8,23 @@ PostgreSQL schema for real-time takeoff persistence (masks, holes, merges, BOQ, 
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_ANON_KEY`
 
-2. Apply the schema in **Supabase Dashboard → SQL Editor**:
-   - Paste contents of `supabase/migrations/001_adicc_takeoff_schema.sql`
-   - Run
+2. Apply migrations in **Supabase Dashboard → SQL Editor** (in order):
+   - `supabase/migrations/001_adicc_takeoff_schema.sql`
+   - `supabase/migrations/002_project_recents.sql` (adds `last_opened_at` for the Plan set recents list)
 
 3. Start the app: `cd web && npm run dev`
+
+## Past projects (Plan set screen)
+
+When Supabase is configured, the empty Plan set view lists **past projects** from the `projects` table with a search bar. Projects are sorted by `last_opened_at` (falling back to `updated_at`). Opening a project sets `?db=<uuid>` and reloads the canvas with that project's data.
+
+Browser-local recents (`adicc_recent_supabase_projects` in localStorage) supplement DB ordering for instant reorder within this browser.
 
 ## Schema overview
 
 | Table | Purpose |
 |-------|---------|
-| `projects` | Project metadata + full `annotations` JSON backup |
+| `projects` | Project metadata + full `annotations` JSON backup; `last_opened_at` for recents |
 | `conditions` | Finish tags / takeoff types |
 | `project_sheets` | Per-sheet scale (`units_per_px`) |
 | `shapes` | Mask polygons (parent) with computed areas |

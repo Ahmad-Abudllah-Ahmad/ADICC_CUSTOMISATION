@@ -15,9 +15,18 @@ export function isSupabaseConfigured() {
 
 export const SUPABASE_PROJECT_KEY = "adicc_supabase_project_id";
 
+/** Project id from the URL only — used to decide home vs canvas routing. */
+export function getSupabaseProjectIdFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get("db") || "";
+  } catch {
+    return "";
+  }
+}
+
 export function getSupabaseProjectId() {
   try {
-    const fromUrl = new URLSearchParams(window.location.search).get("db");
+    const fromUrl = getSupabaseProjectIdFromUrl();
     if (fromUrl) return fromUrl;
     return localStorage.getItem(SUPABASE_PROJECT_KEY) || "";
   } catch {

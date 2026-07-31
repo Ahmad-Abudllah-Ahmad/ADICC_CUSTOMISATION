@@ -18,6 +18,10 @@ import { Link, useNavigate } from "react-router-dom";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { store, isStaleTabError, STALE_TAB_MESSAGE, projectIdFromUrl } from "../lib/store.js";
+import { isSupabaseConfigured } from "../lib/supabaseStore.js";
+import { goSupabaseHome } from "../lib/supabase/projects.js";
+import { consumePendingIngest } from "../lib/pendingIngest.js";
+import { isDefaultProjectName, projectNameFromFiles } from "../lib/projectNaming.js";
 import { seedStampLibrary, instantiateStamp, markupToStampElement } from "../lib/stamps.js";
 import { extractSvgPrimitives, svgToStamp } from "../lib/svgImport.js";
 import { transformPath, svgPlacedBox } from "../lib/svgpath.js";
@@ -166,6 +170,7 @@ export default function TakeoffCanvas() {
   // PDF in the folder (spec books, as-builts). Stable per mount (store is swapped
   // in before the canvas mounts).
   const cloudMode = typeof store.listFolder === "function";
+  const supabaseMode = isSupabaseConfigured();
   // Reactive sign-in state: the "browse team projects" toolbar link is a
   // convenience shortcut for someone ALREADY signed in — it must never appear
   // while signed out, or it'd be a second OAuth entry point (a /projects
@@ -862,20 +867,48 @@ export default function TakeoffCanvas() {
     catch (e) { setCommitMsg(`Couldn't read those files: ${e.message || e}`); return; }
     if (!pdfs.length) {
       setCommitMsg(skipped.length
-        ? `Nothing to open — ${skipped.length} file${skipped.length === 1 ? "" : "s"} skipped. OpenTakeoff reads PDFs, images, and .zip plan sets.`
-        : "No supported files found. Drop a PDF, an image, or a .zip plan set.");
+        ? `Nothing to open — ${skipped.length} file${skipped.length === 1 ? "" : "s"} skipped. ADICC reads PDF, DWG, images, and .zip plan sets.`
+        : "No supported files found. Drop a PDF, DWG, an image, or a .zip plan set.");
       return;
     }
-    for (const f of pdfs) { try { await store.addPdf(f); } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); } }
+    const folderForPdf = (pdf) => {
+      if (!pathHints.length) return "";
+      const bn = pdf.name.toLowerCase();
+      const stem = pdf.name.replace(/\.pdf$/i, "").replace(/ \(\d+\)$/i, "").toLowerCase();
+      const hint = pathHints.find((h) => h.base === bn || h.stem === stem
+        || h.base.replace(/\.[^.]+$/, "") === stem
+        || h.base.replace(/\.dwg$/i, ".pdf") === bn);
+      return hint?.folder || "";
+    };
+    const batchRemote = pdfs.length > 1 && typeof store.persistPlansBatch === "function";
+    for (const f of pdfs) {
+      try {
+        await store.addPdf(f, { folderPath: folderForPdf(f), skipRemote: batchRemote });
+      } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); }
+    }
+    if (batchRemote) {
+      try {
+        await store.persistPlansBatch(pdfs, folderForPdf, setCommitMsg);
+      } catch (e) {
+        setCommitMsg(`Plans opened locally; database save incomplete: ${e.message || e}`);
+      }
+    }
     if (pathHints.length) {
       setFileFolders((prev) => {
         const next = { ...prev };
         for (const pdf of pdfs) {
-          const bn = pdf.name.toLowerCase();
-          const stem = pdf.name.replace(/\.pdf$/i, "").replace(/ \(\d+\)$/i, "").toLowerCase();
-          const hint = pathHints.find((h) => h.base === bn || h.stem === stem
-            || h.base.replace(/\.[^.]+$/, "") === stem);
-          if (hint?.folder) next[pdf.name] = hint.folder;
+          const folder = folderForPdf(pdf);
+          if (folder) next[pdf.name] = folder;
+        }
+        return next;
+      });
+      setOpenFolderPaths((prev) => {
+        const next = { ...prev };
+        for (const pdf of pdfs) {
+          const folder = folderForPdf(pdf);
+          if (!folder) continue;
+          const segs = folder.split("/").filter(Boolean);
+          for (let i = 1; i <= segs.length; i++) next[segs.slice(0, i).join("/")] = true;
         }
         return next;
       });
@@ -891,7 +924,21 @@ export default function TakeoffCanvas() {
       setView("gallery");   // a plan set → land in the gallery to pick sheets
     }
     setCommitMsg(`Opened ${names.length} sheet${names.length === 1 ? "" : "s"}${tail}.`);
+    const suggested = projectNameFromFiles(incoming);
+    if (suggested && isDefaultProjectName(projectName)) setProjectName(suggested);
   }
+  // Plans picked on the home screen before navigation — ingest once the canvas mounts.
+  const pendingIngestRef = useRef(false);
+  useEffect(() => {
+    if (!supabaseMode || pendingIngestRef.current) return;
+    const pending = consumePendingIngest();
+    if (!pending?.files?.length) return;
+    pendingIngestRef.current = true;
+    if (pending.projectName) setProjectName(pending.projectName);
+    handleFiles(pending.files);
+  // handleFiles closes over store + state setters; run once on mount only.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabaseMode]);
   // The empty-project landing view (the Drive picker for an empty cloud project,
   // else the gallery) depends on BOTH the sheet list and the annotations (open
   // tabs), which load in two racing mount effects. These flags let whichever
@@ -916,7 +963,16 @@ export default function TakeoffCanvas() {
         if (noTabsRef.current) setView(cloudMode && !hasSheetsRef.current ? "picker" : "gallery");
       })
       .catch((e) => !off && (setErr(String(e.message || e)), setStatus("error")));
-    return () => { off = true; };
+    const onManifest = () => {
+      if (off) return;
+      store.listSheets().then((list) => {
+        if (off) return;
+        hasSheetsRef.current = list.length > 0;
+        setSheets(list);
+      }).catch(() => {});
+    };
+    window.addEventListener("adicc:plan-manifest-ready", onManifest);
+    return () => { off = true; window.removeEventListener("adicc:plan-manifest-ready", onManifest); };
   }, [cloudMode]);
   // Keep hasSheetsRef current so a later re-hydration (a revision Restore after the
   // working set changed) reads the LIVE sheet count, not the mount-time value.
@@ -5887,7 +5943,17 @@ export default function TakeoffCanvas() {
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
       <div style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 14px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", whiteSpace: "nowrap" }}>
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)", letterSpacing: "-0.02em" }}>open<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>takeoff</span></strong>
+        <button type="button" onClick={supabaseMode ? goSupabaseHome : undefined} disabled={!supabaseMode}
+          title={supabaseMode ? "Home — recent projects" : undefined}
+          style={{ border: "none", background: "transparent", padding: 0, cursor: supabaseMode ? "pointer" : "default" }}>
+          <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)", letterSpacing: "-0.02em" }}>ADI<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>CC</span></strong>
+        </button>
+        {supabaseMode && (
+          <button type="button" onClick={goSupabaseHome} title="Back to recent projects"
+            style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12.5, lineHeight: 1 }}>
+            Home
+          </button>
+        )}
         {/* team cloud mode: always a way to leave this project, plus a way to
             browse the rest of the team's projects when the build names a root
             — fixed presence for the whole session (cloudMode is set before the
@@ -5904,7 +5970,7 @@ export default function TakeoffCanvas() {
             Projects
           </button>
         )}
-        <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed" multiple style={{ display: "none" }}
+        <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }}
           onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
           onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
@@ -6368,7 +6434,7 @@ export default function TakeoffCanvas() {
                    </button>
                  </div>
                  <div style={{ padding: "8px 12px", fontSize: 11.5, color: "var(--ink-muted)", borderBottom: "1px solid var(--ink-faint)" }}>
-                   Upload a <b>Folder</b> to keep the directory tree — click a folder row to expand or collapse its contents.
+                   Upload a <b>Folder</b> to keep the directory tree — PDF and DWG files are supported. Click a folder row to expand or collapse its contents.
                  </div>
                  {sheets.length === 0 ? (
                    <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
@@ -7487,8 +7553,6 @@ export default function TakeoffCanvas() {
           {panelBtn(() => setLeftTab((t) => (t === "stamp" ? null : "stamp")), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
           {panelBtn(() => setLeftTab((t) => (t === "rfi" ? null : "rfi")), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
           {panelBtn(toggleTakeoffs, "takeoffs", "Takeoffs — conditions + running totals", takeoffsOpen, visibleShapes.length)}
-          {panelBtn(() => setAgentOpen((o) => !o), "target", "Agent — describe a takeoff; it stages dashed proposals you accept or reject (bring your own AI key)", agentOpen, agentProposals.length)}
-          {panelBtn(() => setShowRevisions(true), "revisions", "Revisions — save the takeoff at each bid revision, compare what moved", showRevisions)}
         </div>
 
        </div>

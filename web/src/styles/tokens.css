@@ -1,54 +1,52 @@
 /* OpenTakeoff design tokens — single source of truth. Change the look here. */
 
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
 :root {
   /* paper substrates */
-  --paper-cream: #ece5d2;        /* default warm paper */
-  --paper-bright: #f4efe0;       /* brighter, money-paper alt */
-  --paper-shadow: #d8d1bd;       /* deeper fold tone */
+  --paper-cream: #f2f1ed;
+  --paper-bright: #fafaf8;
+  --paper-shadow: #e5e4df;
 
   /* ink */
-  --ink:        #0e1a2e;         /* primary ink-navy */
-  --ink-soft:   #2a3346;
-  --ink-muted:  #6c6a5e;         /* mono labels */
-  --ink-faint:  #a39e8d;         /* hairlines */
+  --ink:        #1c2833;
+  --ink-soft:   #34495e;
+  --ink-muted:  #5d6d7e;
+  --ink-faint:  #aeb6bf;
 
   /* primary accent */
-  --cobalt:     #1f3fc7;
-  --cobalt-deep:#152a8c;
+  --cobalt:     #1a5276;
+  --cobalt-deep:#154360;
 
   /* terrazzo confetti — substrate variant only */
-  --fleck-rust:  #c4502a;
-  --fleck-ochre: #d99a2a;
-  --fleck-moss:  #1f6b4a;
-  --fleck-blue:  #1f3fc7;
+  --fleck-rust:  #a0402a;
+  --fleck-ochre: #b8860b;
+  --fleck-moss:  #1e6b4a;
+  --fleck-blue:  #1a5276;
 
   /* semantic */
-  --c-positive: #1f6b4a;
-  --c-warning:  #c47a10;
-  --c-danger:   #b03a26;
+  --c-positive: #1e6b4a;
+  --c-warning:  #b8860b;
+  --c-danger:   #922b21;
 
   /* chrome theming — novel colors pulled out of inline styles */
-  --ink-secondary: #5b544a;      /* secondary readout text */
-  --text-faint:    #a39e8d;      /* faint text/fills — --ink-faint stays hairline-only */
-  --tint-select:   #e8eefc;      /* checked-row cobalt tint */
-  --tint-active:   #f3f8f4;      /* active-row green tint */
-  --surface-pop:   #ffffff;      /* active chip / lifted fills */
-  --well:          #ffffff;      /* media wells (PDF thumbs, stamp previews) — light in ALL themes */
-  --accent-contrast: #ffffff;    /* text/rules on cobalt surfaces */
-  --hairline-warm: #f0d9c0;      /* calibration-prompt border */
-  --divider-soft:  #eee6d8;      /* readout divider fill */
-  --scrim:         rgba(14, 26, 46, .45);
-  --shadow-pop:    0 6px 22px rgba(0, 0, 0, .16);
-  --grain-rgb:     0, 0, 0;      /* paper-grain channel triplet */
+  --ink-secondary: #4a5568;
+  --text-faint:    #9aa5b1;
+  --tint-select:   #e8eef5;
+  --tint-active:   #edf4ef;
+  --surface-pop:   #ffffff;
+  --well:          #ffffff;
+  --accent-contrast: #ffffff;
+  --hairline-warm: #ddd5c8;
+  --divider-soft:  #ebe8e2;
+  --scrim:         rgba(28, 40, 51, .45);
+  --shadow-pop:    0 6px 22px rgba(0, 0, 0, .14);
+  --grain-rgb:     0, 0, 0;
   --grain-inverse-rgb: 255, 255, 255;
 
-  /* type */
-  --f-display: "Bricolage Grotesque", "Inter", system-ui, sans-serif;
-  --f-body:    "Inter", system-ui, sans-serif;
-  --f-mono:    "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
-  --f-mono-draft: "Space Mono", "JetBrains Mono", ui-monospace, monospace;
+  /* type — Times New Roman sitewide */
+  --f-display: "Times New Roman", Times, serif;
+  --f-body:    "Times New Roman", Times, serif;
+  --f-mono:    "Times New Roman", Times, serif;
+  --f-mono-draft: "Times New Roman", Times, serif;
 
   /* hairlines */
   --rule: 1px solid var(--ink);
@@ -62,11 +60,16 @@
   --ease:   cubic-bezier(.4, 0, .2, 1);
 
   /* depth — kept subtle so it reads "paper", not "SaaS card" */
-  --shadow-1: 0 1px 2px rgba(14, 26, 46, .06), 0 2px 8px rgba(14, 26, 46, .06);
-  --shadow-2: 0 12px 36px rgba(14, 26, 46, .20);
+  --shadow-1: 0 1px 2px rgba(28, 40, 51, .06), 0 2px 8px rgba(28, 40, 51, .06);
+  --shadow-2: 0 12px 36px rgba(28, 40, 51, .18);
 
   /* focus ring — translucent cobalt, sits outside the border */
-  --ring: 0 0 0 3px rgba(31, 63, 199, .18);
+  --ring: 0 0 0 3px rgba(26, 82, 118, .18);
+
+  /* corner radius — professional rounded boxes sitewide */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 
 /* ── themes ──────────────────────────────────────────────────────────────────
@@ -81,43 +84,36 @@
   :root[data-theme="dark"] {
     color-scheme: dark;
 
-    /* paper → dark drafting navy — deliberately warmer/lighter than the
-       canvas dark stage (#0b0e14) so an inverted sheet still reads as
-       "the work area" inside dark chrome */
-    --paper-bright: #121c2c;
-    --paper-cream:  #1a2536;
-    --paper-shadow: #263449;
+    --paper-bright: #1a2332;
+    --paper-cream:  #222d3f;
+    --paper-shadow: #2c3a52;
 
-    /* ink → cream */
-    --ink:        #e9e3d1;
-    --ink-soft:   #c9c4b3;
-    --ink-muted:  #9d9a8c;
-    --ink-faint:  #3c4a63;     /* hairlines only — fails contrast as text */
-    --text-faint: #8a93a8;
+    --ink:        #ecf0f1;
+    --ink-soft:   #bdc3c7;
+    --ink-muted:  #95a5a6;
+    --ink-faint:  #3d5166;
+    --text-faint: #7f8c8d;
 
-    /* accent, lifted for dark contrast */
-    --cobalt:      #6d87f2;
-    --cobalt-deep: #8ea4f6;
+    --cobalt:      #5dade2;
+    --cobalt-deep: #85c1e9;
 
-    /* semantics, lifted (mirrors boostForDark's intent) */
-    --c-positive: #55b083;
-    --c-warning:  #e0a04a;
-    --c-danger:   #e0705c;
+    --c-positive: #58d68d;
+    --c-warning:  #f4d03f;
+    --c-danger:   #ec7063;
 
-    --ink-secondary:   #aba490;
-    --tint-select:     #19243f;   /* dark enough that 11px cobalt/danger text clears 4.5:1 */
-    --tint-active:     #1b2f2a;
-    --surface-pop:     #253352;
-    /* --well stays white: PDF thumbnails and stamp previews are light media */
-    --accent-contrast: #0e1a2e;
-    --hairline-warm:   #2e3c54;
-    --divider-soft:    #263449;
+    --ink-secondary:   #aab7b8;
+    --tint-select:     #1c2a3d;
+    --tint-active:     #1e332c;
+    --surface-pop:     #2a3850;
+    --accent-contrast: #1c2833;
+    --hairline-warm:   #354a63;
+    --divider-soft:    #2c3a52;
     --scrim:           rgba(0, 0, 0, .55);
 
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .35);
-    --shadow-2: 0 12px 36px rgba(0, 0, 0, .6);
-    --shadow-pop: 0 6px 22px rgba(0, 0, 0, .5);
-    --ring: 0 0 0 3px rgba(109, 135, 242, .7);   /* .3 blends to 1.6:1 on the dark page — the ring is the only focus indicator */
+    --shadow-2: 0 12px 36px rgba(0, 0, 0, .55);
+    --shadow-pop: 0 6px 22px rgba(0, 0, 0, .45);
+    --ring: 0 0 0 3px rgba(93, 173, 226, .65);
 
     --grain-rgb: 255, 255, 255;
     --grain-inverse-rgb: 0, 0, 0;

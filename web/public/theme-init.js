@@ -15,5 +15,5 @@
     t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", t);
   document.querySelector('meta[name="theme-color"]')
-    .setAttribute("content", t === "dark" ? "#121c2c" : "#f4efe0");
+    .setAttribute("content", t === "dark" ? "#1a2332" : "#fafaf8");
 })();

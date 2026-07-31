@@ -131,6 +131,7 @@ export default function PlanNavigator({
   // ══ PLAN (gallery) state + thumbnail worker ══════════════════════════════
   const fileRef = useRef(null);
   const folderRef = useRef(null);   // directory picker — whole project folder upload
+  const addBtnRef = useRef(null);
   const [pages, setPages] = useState({});   // file -> numPages (as discovered)
   const [sel, setSel] = useState([]);
   const [planQ, setPlanQ] = useState("");                 // Plan-set search (folder view + grid)
@@ -374,14 +375,14 @@ export default function PlanNavigator({
     : `${allKeys.length || "…"} sheets · pick one or several — the order you pick is the left-to-right order`;
 
   const header = (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)", flexWrap: "wrap" }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)", flexWrap: "nowrap", flexShrink: 0, position: "relative", zIndex: 50, isolation: "isolate", overflowX: "auto" }}>
       {/* LEFT up-chain: back + title + (cloud) Projects crumb + (browse) breadcrumb */}
       <button onClick={back} disabled={!canGoBack} title={mode === "browse" ? "Back" : "Back to the canvas (Esc)"}
         style={{ ...ctrlBtn, padding: "6px 8px", opacity: canGoBack ? 1 : 0.35, cursor: canGoBack ? "pointer" : "default" }}>
         <Icon name="chevronLeft" size={14} />
       </button>
       <Icon name="sheets" size={18} />
-      <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>{title}</strong>
+      <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)", whiteSpace: "nowrap", flexShrink: 0 }}>{title}</strong>
       {onBrowseProjects && (
         <button onClick={onBrowseProjects} title="Back to your team's projects"
           style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 12, padding: "2px 4px" }}>
@@ -401,10 +402,10 @@ export default function PlanNavigator({
           ))}
         </div>
       ) : (
-        <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--ink-muted)" }}>{subtitle}</span>
+        <span style={{ fontFamily: "var(--f-mono)", fontSize: 9, letterSpacing: "0.05em", textTransform: "uppercase", color: "var(--ink-muted)", whiteSpace: "nowrap", flexShrink: 0 }}>{subtitle}</span>
       )}
 
-      <div style={{ flex: 1 }} />
+      <div style={{ flex: "1 1 12px", minWidth: 12 }} />
 
       {/* RIGHT: source toggle · browse filters · add plans · account */}
       {browseEnabled && (
@@ -415,7 +416,7 @@ export default function PlanNavigator({
       )}
       {mode === "plan" && sheets.length > 0 && (
         <input name="plan-filter" value={planQ} onChange={(e) => setPlanQ(e.target.value)} placeholder="Search sheets or folders…"
-          style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", fontSize: 12.5, minWidth: 180 }} />
+          style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", fontSize: 11.5, minWidth: 120, width: 130, flexShrink: 1 }} />
       )}
       {mode === "browse" && (
         <>
@@ -429,36 +430,51 @@ export default function PlanNavigator({
           </select>
         </>
       )}
-      {mode === "plan" && onAddFiles && (
-        <div style={{ position: "relative" }}>
-          <button onClick={() => setAddMenu((v) => !v)}
-            title="Add plans — files, a whole folder, or Google Drive"
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5 }}>
-            <Icon name="plus" size={13} />Add plans<Icon name="chevronDown" size={12} />
-          </button>
-          {addMenu && (
-            <>
-              <div onClick={() => setAddMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 1 }} />
-              <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 2, minWidth: 230, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)" }}>
-                <button onClick={() => { setAddMenu(false); fileRef.current?.click(); }} style={{ ...ctrlBtn, width: "100%", border: "none", borderBottom: "1px solid var(--ink-faint)", justifyContent: "flex-start", padding: "10px 12px" }}>
-                  <Icon name="document" size={14} />Upload files
-                </button>
-                <button onClick={() => { setAddMenu(false); folderRef.current?.click(); }} style={{ ...ctrlBtn, width: "100%", border: "none", borderBottom: browseEnabled ? "1px solid var(--ink-faint)" : "none", justifyContent: "flex-start", padding: "10px 12px" }}>
-                  <Icon name="sheets" size={14} />Upload folder
-                </button>
-                {browseEnabled && (
-                  <button onClick={() => { setAddMenu(false); setMode("browse"); }} style={{ ...ctrlBtn, width: "100%", border: "none", justifyContent: "flex-start", padding: "10px 12px" }}>
-                    <Icon name="cloud" size={14} />From Google Drive
+      {(mode === "plan" && onAddFiles) || canClose ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          {mode === "plan" && onAddFiles && (
+          <div style={{ position: "relative", zIndex: 60 }}>
+            <button ref={addBtnRef} onClick={() => setAddMenu((v) => !v)}
+              title="Add plans — files, a whole folder, or Google Drive"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 11.5, whiteSpace: "nowrap", flexShrink: 0 }}>
+              <Icon name="plus" size={13} />Add plans<Icon name="chevronDown" size={12} />
+            </button>
+            {addMenu && (
+              <>
+                <div onClick={() => setAddMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 200 }} />
+                <div style={{ position: "fixed", top: addBtnRef.current ? addBtnRef.current.getBoundingClientRect().bottom + 4 : 0, right: addBtnRef.current ? window.innerWidth - addBtnRef.current.getBoundingClientRect().right : 0, zIndex: 201, minWidth: 230, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)" }}>
+                  <button onClick={() => { setAddMenu(false); fileRef.current?.click(); }} style={{ ...ctrlBtn, width: "100%", border: "none", borderBottom: "1px solid var(--ink-faint)", justifyContent: "flex-start", padding: "10px 12px" }}>
+                    <Icon name="document" size={14} />Upload files
                   </button>
-                )}
-              </div>
-            </>
+                  <button onClick={() => { setAddMenu(false); folderRef.current?.click(); }} style={{ ...ctrlBtn, width: "100%", border: "none", borderBottom: browseEnabled ? "1px solid var(--ink-faint)" : "none", justifyContent: "flex-start", padding: "10px 12px" }}>
+                    <Icon name="sheets" size={14} />Upload folder
+                  </button>
+                  {browseEnabled && (
+                    <button onClick={() => { setAddMenu(false); setMode("browse"); }} style={{ ...ctrlBtn, width: "100%", border: "none", justifyContent: "flex-start", padding: "10px 12px" }}>
+                      <Icon name="cloud" size={14} />From Google Drive
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
           )}
-        </div>
-      )}
+          {mode === "plan" && onAddFiles && (
+          <button type="button" onClick={loadSample} disabled={sampleBusy} title="Open a real floor finish plan and try a takeoff"
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--cobalt)", background: "transparent", color: "var(--cobalt)", cursor: sampleBusy ? "default" : "pointer", opacity: sampleBusy ? 0.65 : 1, fontWeight: 600, fontSize: 11.5, whiteSpace: "nowrap", flexShrink: 0 }}>
+            <Icon name="takeoff" size={14} />{sampleBusy ? "Loading sample…" : "Load sample plan"}
+          </button>
+          )}
+          {canClose && (
+            <button onClick={onExit} title="Back to the canvas (Esc)" style={{ ...ctrlBtn, whiteSpace: "nowrap", flexShrink: 0, fontSize: 11.5 }}>
+              <Icon name="close" size={12} />Close
+            </button>
+          )}
+        </span>
+      ) : null}
       {onAddFiles && (
         <>
-          <input name="sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed" multiple style={{ display: "none" }}
+          <input name="sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }}
             onChange={(e) => { onAddFiles(e.target.files); e.target.value = ""; }} />
           <input name="sheet-folder" ref={folderRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
             onChange={(e) => { onAddFiles(e.target.files); e.target.value = ""; }} />
@@ -467,11 +483,6 @@ export default function PlanNavigator({
       <AuthChip />
       {onCloseProject && (
         <button onClick={onCloseProject} title="Close this project and return to the local canvas" style={{ ...ctrlBtn, color: "var(--ink-muted)" }}>Close project</button>
-      )}
-      {canClose && (
-        <button onClick={onExit} title="Back to the canvas (Esc)" style={ctrlBtn}>
-          <Icon name="close" size={12} />Close
-        </button>
       )}
     </div>
   );
@@ -488,8 +499,8 @@ export default function PlanNavigator({
     });
 
   const browseBody = (
-    <>
-      <div style={{ flex: 1, overflow: "auto" }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {bLoading ? (
           <div style={{ padding: 40, textAlign: "center", color: "var(--ink-muted)", fontSize: 13 }}>Reading folder…</div>
         ) : bErr ? (
@@ -543,7 +554,7 @@ export default function PlanNavigator({
           <Icon name="plus" size={13} />{adding ? "Adding…" : `Add ${picked.length || ""} sheet${picked.length === 1 ? "" : "s"}`}
         </button>
       </div>
-    </>
+    </div>
   );
 
   // ── PLAN body + footer ──────────────────────────────────────────────────
@@ -629,8 +640,8 @@ export default function PlanNavigator({
     );
   };
   const planBody = (
-    <>
-      <div style={{ flex: 1, overflow: "auto", padding: 18 }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden", position: "relative", zIndex: 1 }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 18 }}>
         {folderTree ? (
           countTreeSheets(folderTree) === 0 && allKeys.length > 0 ? (
             <div style={{ padding: 40, textAlign: "center", color: "var(--ink-muted)", fontSize: 13 }}>Nothing matches “{planQ.trim()}”.</div>
@@ -661,7 +672,7 @@ export default function PlanNavigator({
                 <div style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--cobalt)", marginBottom: 6 }}>People &amp; agents · one engine</div>
                 <div style={{ fontFamily: "var(--f-display)", fontSize: 18, color: "var(--ink)", lineHeight: 1.32, marginBottom: 5 }}>Measure a plan by hand — or point an AI&nbsp;agent at the same engine.</div>
                 <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.55, marginBottom: 20 }}>Every measurement keeps its scale and how it was made — a person, one click, or an agent.</div>
-                <div style={{ display: "block", width: "100%", margin: "24px auto 0", padding: "36px 24px", border: "2px dashed var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink-muted)", fontFamily: "var(--f-body)", fontSize: 13.5, lineHeight: 1.7, boxSizing: "border-box" }}>
+                <div style={{ display: "block", width: "100%", margin: "0 auto", padding: "36px 24px", border: "2px dashed var(--ink-faint)", background: "var(--paper-bright)", color: "var(--ink-muted)", fontFamily: "var(--f-body)", fontSize: 13.5, lineHeight: 1.7, boxSizing: "border-box" }}>
                   <div style={{ fontFamily: "var(--f-display)", fontSize: 20, color: "var(--ink)", marginBottom: 8 }}>Open your plans</div>
                   <div style={{ marginBottom: 18 }}>Drag a PDF, image, .zip, or folder here — or choose below. Nothing leaves your browser.</div>
                   <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
@@ -693,17 +704,6 @@ export default function PlanNavigator({
                     )}
                   </div>
                 )}
-                <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "18px auto 16px", color: "var(--text-faint)", fontFamily: "var(--f-mono)", fontSize: 10.5, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-                  <span style={{ flex: 1, height: 1, background: "var(--ink-faint)" }} />new here?<span style={{ flex: 1, height: 1, background: "var(--ink-faint)" }} />
-                </div>
-                <button onClick={loadSample} disabled={sampleBusy} title="Open a real floor finish plan and try a takeoff"
-                  style={{ display: "inline-flex", alignItems: "center", gap: 9, padding: "13px 22px", border: "1px solid var(--ink)", background: "var(--cobalt)", color: "var(--paper-bright)", cursor: sampleBusy ? "default" : "pointer", opacity: sampleBusy ? 0.65 : 1, fontWeight: 700, fontSize: 14, fontFamily: "var(--f-body)" }}>
-                  <Icon name="takeoff" size={16} />{sampleBusy ? "Loading sample…" : "Load sample plan"}
-                </button>
-                <div style={{ fontFamily: "var(--f-body)", fontSize: 12.5, color: "var(--ink-muted)", marginTop: 11, lineHeight: 1.6 }}>
-                  A real medical-center <strong style={{ color: "var(--ink)" }}>floor finish plan</strong> — the scale auto-detects;
-                  pick a finish and trace a flooring takeoff in seconds.
-                </div>
               </div>
             ) : enumerated ? (
               <>
@@ -736,7 +736,7 @@ export default function PlanNavigator({
           </button>
         </div>
       )}
-    </>
+    </div>
   );
 
   // ── close/remove confirmation ───────────────────────────────────────────
@@ -774,7 +774,7 @@ export default function PlanNavigator({
       onDrop={(e) => { if (onAddFiles) { e.preventDefault(); onAddFiles(e.dataTransfer?.files); } }}
       style={canClose
         ? { position: "relative", width: "min(1100px, 92vw)", height: "85vh", display: "flex", flexDirection: "column", background: "var(--paper-cream)", boxShadow: "var(--shadow-2)", overflow: "hidden" }
-        : { position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
+        : { position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: "var(--paper-cream)", overflow: "hidden", minHeight: 0 }}>
       {header}
       {mode === "browse" ? browseBody : planBody}
       {confirmDialog}

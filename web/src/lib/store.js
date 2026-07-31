@@ -178,6 +178,14 @@ export const localStore = {
     await withDb((db) => tx(db, META_STORE, "readwrite", (os) => os.put({ ...payload, schema: ANN_SCHEMA }, ANN_KEY)));
   },
 
+  /** Wipe project takeoff state and uploaded plan bytes; keeps templates/libraries/snapshots. */
+  async clearProjectWorkspace() {
+    await withDb(async (db) => {
+      await tx(db, META_STORE, "readwrite", (os) => os.delete(ANN_KEY));
+      await tx(db, PDF_STORE, "readwrite", (os) => os.clear());
+    });
+  },
+
   async loadTemplates() {
     // sanitize on load, not just save: the record is browser-global, so a
     // corrupt item (any writer, any past version) would otherwise throw inside
@@ -311,21 +319,63 @@ export const localStore = {
 //     pass the scope), so they are untouched here.
 // Spreading `localStore` is safe: none of its methods use `this` (they close over
 // module scope), so the copied methods keep working and we override just two.
-/** @param {string|null} [folderId] Drive project folder id; null/"" = the global anonymous store */
+const PDF_SCOPE_SEP = "::";
+
+function scopedPdfStorageName(scope, fileName) {
+  return `${scope}${PDF_SCOPE_SEP}${fileName}`;
+}
+
+function unscopedPdfFileName(scope, storageName) {
+  const prefix = `${scope}${PDF_SCOPE_SEP}`;
+  return storageName.startsWith(prefix) ? storageName.slice(prefix.length) : storageName;
+}
+
+/** @param {string|null} [folderId] Drive/Supabase project scope; null/"" = the global anonymous store */
 export function createLocalStore(folderId = null) {
   // Treat empty string like null: projectIdFromUrl() returns "" for anonymous
   // mode, so a caller threading it through here must land on the global
   // "annotations" blob, NOT a distinct "annotations:" scope.
   if (folderId == null || folderId === "") return localStore;
   const annKey = ANN_KEY + ":" + folderId;
+  const scope = folderId;
+  const pdfPrefix = `${scope}${PDF_SCOPE_SEP}`;
   return {
     ...localStore,
+    async listSheets() {
+      const all = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.getAll()));
+      return (all || [])
+        .filter((rec) => rec?.name?.startsWith(pdfPrefix))
+        .map((rec) => ({ name: unscopedPdfFileName(scope, rec.name) }));
+    },
+    async loadPdfData(name) {
+      const rec = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.get(scopedPdfStorageName(scope, name))));
+      if (!rec) throw new Error(`PDF not found in local store: ${name}`);
+      return new Uint8Array(rec.bytes);
+    },
+    async addPdf(file) {
+      const bytes = await file.arrayBuffer();
+      await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: scopedPdfStorageName(scope, file.name), bytes })));
+      return { name: file.name };
+    },
+    async removePdf(name) {
+      await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.delete(scopedPdfStorageName(scope, name))));
+    },
     async loadAnnotations() {
       const a = await withDb((db) => tx(db, META_STORE, "readonly", (os) => os.get(annKey)));
       return a || emptyAnnotations();
     },
     async saveAnnotations(payload) {
       await withDb((db) => tx(db, META_STORE, "readwrite", (os) => os.put({ ...payload, schema: ANN_SCHEMA }, annKey)));
+    },
+    async clearProjectWorkspace() {
+      await withDb(async (db) => {
+        await tx(db, META_STORE, "readwrite", (os) => os.delete(annKey));
+        const keys = await tx(db, PDF_STORE, "readonly", (os) => os.getAllKeys());
+        const scoped = (keys || []).filter((k) => typeof k === "string" && k.startsWith(pdfPrefix));
+        if (scoped.length) {
+          await tx(db, PDF_STORE, "readwrite", (os) => { for (const k of scoped) os.delete(k); });
+        }
+      });
     },
   };
 }

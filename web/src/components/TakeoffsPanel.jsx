@@ -634,26 +634,37 @@ function TakeoffsPanel({
   };
 
   if (!open) return null;
+  const panelTabs = [
+    ["takeoffs", `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`],
+    ["library", `Library${templates.length ? ` (${templates.length})` : ""}`],
+    ["materials", `Materials${matLib.length ? ` (${matLib.length})` : ""}`],
+    ["columns", `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`],
+  ];
+  const activeTabLabel = panelTabs.find(([id]) => id === panelTab)?.[1] || "Takeoffs";
   return (
     <div ref={rootRef} style={{ width, flexShrink: 0, display: "flex", background: "var(--paper-bright)", borderLeft: "1px solid var(--ink-faint)", fontSize: 12.5 }}>
       <div onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeEnd}
         onPointerCancel={onResizeEnd} onLostPointerCapture={onResizeEnd}
         title="Drag to resize"
         style={{ width: 5, flexShrink: 0, cursor: "col-resize", touchAction: "none", background: "transparent", borderRight: "1px solid var(--ink-faint)" }} />
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "row" }}>
+        <nav aria-label="Takeoffs panel sections" style={{ width: 76, flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--ink)", borderRight: "1px solid var(--ink-faint)" }}>
+          {panelTabs.map(([id, label]) => (
+            <button key={id} type="button" onClick={() => setPanelTab(id)} title={label}
+              style={{ display: "block", width: "100%", padding: "10px 8px", border: "none", borderLeft: panelTab === id ? "3px solid var(--paper-cream)" : "3px solid transparent", background: panelTab === id ? "rgba(255,255,255,0.08)" : "transparent", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: panelTab === id ? 700 : 500, fontSize: 10.5, fontFamily: "var(--f-mono)", letterSpacing: "0.05em", textAlign: "left", lineHeight: 1.35 }}>
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", background: "var(--ink)", color: "var(--paper-cream)", flexShrink: 0 }}>
-          <span style={{ display: "inline-flex", gap: 2 }}>
-            {[["takeoffs", `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`], ["library", `Library${templates.length ? ` (${templates.length})` : ""}`], ["materials", `Materials${matLib.length ? ` (${matLib.length})` : ""}`], ["columns", `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`]].map(([id, label]) => (
-              <button key={id} onClick={() => setPanelTab(id)}
-                style={{ padding: "3px 8px", border: "none", borderBottom: panelTab === id ? "2px solid var(--paper-cream)" : "2px solid transparent", background: "none", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: 700, fontSize: 12.5 }}>{label}</button>
-            ))}
-          </span>
+          <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.06em", fontWeight: 700, lineHeight: 1.35 }}>{activeTabLabel}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <button onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
               title="Compact strip — also show the conditions as a horizontal strip above the canvas (handy on small projects with the panel collapsed)"
               style={{ background: panelPrefs.strip ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.strip ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>strip</button>
-            <button onClick={onToggleCollapse} title="Collapse the panel (the ☰ button on the canvas edge brings it back)"
-              style={{ background: "none", border: "none", color: "var(--paper-cream)", fontSize: 15, cursor: "pointer", lineHeight: 1 }}>»</button>
+            <button type="button" onClick={onToggleCollapse} title="Close panel"
+              style={{ background: "none", border: "none", color: "var(--paper-cream)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
         </div>
         {panelTab === "takeoffs" && <>
@@ -872,6 +883,7 @@ function TakeoffsPanel({
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

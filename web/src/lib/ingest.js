@@ -15,8 +15,9 @@
 const PDF_EXT = /\.pdf$/i;
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp)$/i;
 const ZIP_EXT = /\.zip$/i;
+const DWG_EXT = /\.dwg$/i;
 
-// Guardrails against hostile archives (zip bombs and self-nesting "zip quines").
+// Guardrails against hostile archives
 // Everything here runs in the user's browser tab, so an unbounded archive is a
 // local denial-of-service — a wedged or OOM-killed tab. Three caps bound one
 // ingest: recursion depth into nested zips, total decompressed bytes, and total
@@ -31,8 +32,19 @@ const MAX_TOTAL_ENTRIES = 10_000;               // files expanded across one ing
 const isPdf = (name, type = "") => PDF_EXT.test(name) || type === "application/pdf";
 const isImage = (name, type = "") => IMAGE_EXT.test(name) || (type || "").startsWith("image/");
 const isZip = (name, type = "") => ZIP_EXT.test(name) || /zip/i.test(type);
+const isDwg = (name, type = "") => DWG_EXT.test(name) || type === "image/vnd.dwg" || type === "application/acad" || type === "application/x-acad";
 
 const baseName = (path) => path.split("/").pop() || path;
+
+// DWG files begin with "AC10…" (R2000+) even when the extension is missing/wrong.
+async function looksLikeDwg(file) {
+  try {
+    const head = new Uint8Array(await file.slice(0, 6).arrayBuffer());
+    if (head.length < 4) return false;
+    const sig = String.fromCharCode(head[0], head[1], head[2], head[3]);
+    return sig.startsWith("AC10") || sig.startsWith("AC1");
+  } catch { return false; }
+}
 
 // macOS / Windows archive cruft and hidden files inside zips
 const isJunk = (path) =>
@@ -70,7 +82,7 @@ async function unzipBytes(bytes, onSkip, budget) {
       filter: (f) => {
         if (isJunk(f.name)) return false;
         const bn = baseName(f.name);
-        if (!(isPdf(bn) || isImage(bn) || isZip(bn))) { onSkip?.(bn, "unsupported type"); return false; }
+        if (!(isPdf(bn) || isImage(bn) || isZip(bn) || isDwg(bn))) { onSkip?.(bn, "unsupported type"); return false; }
         if (budget.entries <= 0) { onSkip?.(bn, "too many files"); return false; }
         const size = f.originalSize || 0;
         if (size > budget.bytes) { onSkip?.(bn, "archive too large"); return false; }
@@ -105,6 +117,215 @@ async function imageToPdf(file) {
   doc.addPage([w, h]).drawImage(img, { x: 0, y: 0, width: w, height: h });
   const name = baseName(file.name).replace(IMAGE_EXT, "") + ".pdf";
   return new File([await doc.save()], name, { type: "application/pdf" });
+}
+
+let libredwgPromise = null;
+async function getLibreDwg() {
+  if (!libredwgPromise) {
+    libredwgPromise = (async () => {
+      const { LibreDwg } = await import("@mlightcad/libredwg-web");
+      const root = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
+      return LibreDwg.create(`${root}libredwg/`);
+    })().catch((e) => {
+      libredwgPromise = null;
+      throw e;
+    });
+  }
+  return libredwgPromise;
+}
+
+// LibreDWG returns a DIB (no 'BM' header); browsers need a full BMP container to decode it.
+function dibToBmp(dib) {
+  const view = new DataView(dib.buffer, dib.byteOffset, dib.byteLength);
+  const biSize = view.getUint32(0, true);
+  const biBitCount = view.getUint16(14, true);
+  const colorTableSize = biBitCount <= 8 ? (4 * (1 << biBitCount)) : 0;
+  const pixelOffset = 14 + biSize + colorTableSize;
+  const fileSize = 14 + dib.length;
+  const header = new Uint8Array(14);
+  header[0] = 0x42; header[1] = 0x4D;
+  header[2] = fileSize & 0xff; header[3] = (fileSize >> 8) & 0xff;
+  header[4] = (fileSize >> 16) & 0xff; header[5] = (fileSize >> 24) & 0xff;
+  header[10] = pixelOffset & 0xff; header[11] = (pixelOffset >> 8) & 0xff;
+  header[12] = (pixelOffset >> 16) & 0xff; header[13] = (pixelOffset >> 24) & 0xff;
+  const out = new Uint8Array(fileSize);
+  out.set(header, 0);
+  out.set(dib, 14);
+  return out;
+}
+
+function collectDwgEntities(db) {
+  const out = [...(db?.entities || [])];
+  if (out.length) return out;
+  for (const br of db?.tables?.BLOCK_RECORD?.entries || []) {
+    if (br.name === "*Model_Space" && br.entities?.length) return br.entities;
+  }
+  for (const br of db?.tables?.BLOCK_RECORD?.entries || []) {
+    if (br.entities?.length) out.push(...br.entities);
+  }
+  return out;
+}
+
+function dwgEntityBounds(entities) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const add = (x, y) => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  };
+  for (const e of entities) {
+    if (e.isVisible === false) continue;
+    switch (e.type) {
+      case "LINE":
+        add(e.startPoint?.x, e.startPoint?.y); add(e.endPoint?.x, e.endPoint?.y);
+        break;
+      case "CIRCLE":
+      case "ARC":
+        add(e.center?.x - e.radius, e.center?.y - e.radius);
+        add(e.center?.x + e.radius, e.center?.y + e.radius);
+        break;
+      case "LWPOLYLINE":
+      case "POLYLINE":
+        for (const v of e.vertices || []) add(v.x, v.y);
+        break;
+      case "ELLIPSE":
+        add(e.center?.x - (e.majorAxis?.x || 0), e.center?.y - (e.majorAxis?.y || 0));
+        add(e.center?.x + (e.majorAxis?.x || 0), e.center?.y + (e.majorAxis?.y || 0));
+        break;
+      case "SPLINE":
+        for (const p of e.controlPoints || e.fitPoints || []) add(p.x, p.y);
+        break;
+      default:
+        break;
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  const pad = Math.max(maxX - minX, maxY - minY, 1) * 0.05;
+  return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad };
+}
+
+// Minimal vector fallback when libredwg's SVG converter chokes on complex entities.
+function entitiesToSvg(db) {
+  const entities = collectDwgEntities(db);
+  if (!entities.length) return null;
+  const b = dwgEntityBounds(entities);
+  if (!b) return null;
+  const w = b.maxX - b.minX, h = b.maxY - b.minY;
+  const map = (x, y) => `${x - b.minX},${b.maxY - y}`;
+  const parts = [];
+  for (const e of entities) {
+    if (e.isVisible === false) continue;
+    const stroke = "#111827";
+    switch (e.type) {
+      case "LINE":
+        if (e.startPoint && e.endPoint) {
+          parts.push(`<line x1="${e.startPoint.x - b.minX}" y1="${b.maxY - e.startPoint.y}" x2="${e.endPoint.x - b.minX}" y2="${b.maxY - e.endPoint.y}" stroke="${stroke}" stroke-width="1"/>`);
+        }
+        break;
+      case "CIRCLE":
+        if (e.center && e.radius) {
+          parts.push(`<circle cx="${e.center.x - b.minX}" cy="${b.maxY - e.center.y}" r="${e.radius}" fill="none" stroke="${stroke}" stroke-width="1"/>`);
+        }
+        break;
+      case "ARC":
+        if (e.center && e.radius != null && e.startAngle != null && e.endAngle != null) {
+          const cx = e.center.x - b.minX, cy = b.maxY - e.center.y, r = e.radius;
+          const x1 = cx + r * Math.cos(e.startAngle), y1 = cy - r * Math.sin(e.startAngle);
+          const x2 = cx + r * Math.cos(e.endAngle), y2 = cy - r * Math.sin(e.endAngle);
+          let delta = e.endAngle - e.startAngle;
+          while (delta <= 0) delta += Math.PI * 2;
+          const large = delta > Math.PI ? 1 : 0;
+          parts.push(`<path d="M ${x1} ${y1} A ${r} ${r} 0 ${large} 0 ${x2} ${y2}" fill="none" stroke="${stroke}" stroke-width="1"/>`);
+        }
+        break;
+      case "LWPOLYLINE":
+      case "POLYLINE": {
+        const verts = e.vertices || [];
+        if (verts.length >= 2) {
+          const d = verts.map((v, i) => `${i ? "L" : "M"} ${map(v.x, v.y)}`).join(" ");
+          parts.push(`<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1"/>`);
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  if (!parts.length) return null;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}"><rect width="100%" height="100%" fill="#fff"/>${parts.join("")}</svg>`;
+}
+
+async function svgStringToPdf(svg, outName) {
+  const { PDFDocument } = await import("pdf-lib");
+  let w = 2400, h = 1800;
+  const vb = svg.match(/viewBox=["']([^"']+)["']/);
+  if (vb) {
+    const p = vb[1].trim().split(/[\s,]+/).map(Number);
+    if (p.length >= 4 && p[2] > 0 && p[3] > 0) { w = p[2]; h = p[3]; }
+  } else {
+    const wm = svg.match(/\bwidth=["']([\d.]+)/), hm = svg.match(/\bheight=["']([\d.]+)/);
+    if (wm) w = parseFloat(wm[1]);
+    if (hm) h = parseFloat(hm[1]);
+  }
+  const maxPx = 8192;
+  const scale = Math.min(1, maxPx / Math.max(w, h));
+  const cw = Math.max(1, Math.ceil(w * scale)), ch = Math.max(1, Math.ceil(h * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = cw; canvas.height = ch;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, cw, ch);
+  const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    ctx.drawImage(img, 0, 0, cw, ch);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  const pngBlob = await new Promise((res) => canvas.toBlob(res, "image/png"));
+  if (!pngBlob) throw new Error("Could not rasterize the drawing");
+  const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+  const doc = await PDFDocument.create();
+  const embedded = await doc.embedPng(pngBytes);
+  doc.addPage([w, h]).drawImage(embedded, { x: 0, y: 0, width: w, height: h });
+  const base = baseName(outName);
+  const pdfName = PDF_EXT.test(base) ? base : `${base.replace(DWG_EXT, "")}.pdf`;
+  return new File([await doc.save()], pdfName, { type: "application/pdf" });
+}
+
+async function thumbToPdf(thumb, outName) {
+  if (!thumb?.data?.length) return null;
+  // DwgThumbnailImageType: BMP=2, WMF=3, PNG=6
+  let wrapped;
+  if (thumb.type === 6) wrapped = await imageToPdf(new File([thumb.data], "preview.png", { type: "image/png" }));
+  else wrapped = await imageToPdf(new File([dibToBmp(thumb.data)], "preview.bmp", { type: "image/bmp" }));
+  return new File([await wrapped.arrayBuffer()], outName, { type: "application/pdf" });
+}
+
+// AutoCAD DWG → SVG (LibreDWG/wasm) → raster PDF so the existing pdf.js canvas path opens it.
+// SVG conversion can throw on complex entities (tables, multileaders, etc.); fall back to the
+// embedded DWG preview bitmap when available.
+async function dwgToPdf(file) {
+  const { Dwg_File_Type } = await import("@mlightcad/libredwg-web");
+  const libredwg = await getLibreDwg();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const dwgPtr = libredwg.dwg_read_data(bytes, Dwg_File_Type.DWG);
+  if (!dwgPtr) throw new Error("Could not read this DWG file");
+  const outName = baseName(file.name).replace(DWG_EXT, "") + ".pdf";
+  try {
+    const db = libredwg.convert(dwgPtr);
+    let svg = null;
+    try { svg = libredwg.dwg_to_svg(db); } catch { /* fall through to preview bitmap */ }
+    if (svg && svg.length > 80) return svgStringToPdf(svg, outName);
+    svg = entitiesToSvg(db);
+    if (svg && svg.length > 80) return svgStringToPdf(svg, outName);
+    const thumbPdf = await thumbToPdf(libredwg.dwg_bmp(dwgPtr), outName);
+    if (thumbPdf) return thumbPdf;
+    throw new Error("Drawing is empty or uses unsupported entities");
+  } finally {
+    libredwg.dwg_free(dwgPtr);
+  }
 }
 
 export async function ingestFiles(
@@ -144,6 +365,7 @@ export async function ingestFiles(
     const name = file.name || "file";
     try {
       if (isPdf(name, file.type)) { pushPdf(file); return; }
+      if (isDwg(name, file.type) || (await looksLikeDwg(file))) { onProgress?.(`Converting ${baseName(name)}…`); pushPdf(await dwgToPdf(file)); return; }
       if (isImage(name, file.type)) { onProgress?.(`Converting ${baseName(name)}…`); pushPdf(await imageToPdf(file)); return; }
       if (isZip(name, file.type) || (await looksLikeZip(file))) {
         // Stop runaway recursion from self-nesting archives before we even read
@@ -157,6 +379,7 @@ export async function ingestFiles(
         for (const path of paths) {
           const bn = baseName(path);
           if (isPdf(bn)) pushPdf(new File([entries[path]], bn, { type: "application/pdf" }));
+          else if (isDwg(bn)) { onProgress?.(`Converting ${bn}…`); pushPdf(await dwgToPdf(new File([entries[path]], bn))); }
           else if (isImage(bn)) { onProgress?.(`Converting ${bn}…`); pushPdf(await imageToPdf(new File([entries[path]], bn))); }
           else if (isZip(bn)) await process(new File([entries[path]], bn, { type: "application/zip" }), depth + 1);
         }

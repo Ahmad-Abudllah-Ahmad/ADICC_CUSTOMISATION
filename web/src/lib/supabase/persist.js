@@ -1,8 +1,9 @@
 // Sync OpenTakeoff annotations payload ↔ normalized Supabase tables.
 import { supabase } from "./client.js";
+import { deleteAllProjectFiles } from "./projectFiles.js";
 import { conditionTotals } from "../totals.js";
 import { round2 } from "../totals.js";
-import { ANN_SCHEMA } from "../store.js";
+import { ANN_SCHEMA, emptyAnnotations } from "../store.js";
 
 const shapeSnapshot = new Map(); // projectId -> Map(shapeId -> snapshot)
 
@@ -183,6 +184,23 @@ function diffShapeEvents(projectId, shapes) {
   return events;
 }
 
+/** Seed diff baseline after load so the first save does not re-log every shape as create. */
+export function seedShapeSnapshot(projectId, shapes) {
+  const next = new Map();
+  for (const s of shapes || []) {
+    next.set(s.id, {
+      area_sf: areaOf(s),
+      perimeter_lf: lfOf(s),
+      holes_count: holesCount(s),
+      sheet_id: s.sheet_id,
+      condition_id: s.condition_id,
+      measure_role: s.measure_role,
+      verts: JSON.stringify(s.verts_norm),
+    });
+  }
+  shapeSnapshot.set(projectId, next);
+}
+
 async function replaceChildRows(table, projectId, rows, onConflict) {
   await supabase.from(table).delete().eq("project_id", projectId);
   if (rows.length) {
@@ -203,8 +221,14 @@ export async function loadProjectFromSupabase(projectId) {
   if (error) throw error;
   if (!proj) return null;
 
-  if (proj.annotations && typeof proj.annotations === "object" && proj.annotations.shapes) {
-    return { payload: { ...proj.annotations, schema: ANN_SCHEMA }, updated_at: proj.updated_at };
+  const ann = proj.annotations;
+  if (ann && typeof ann === "object" && ann.schema === ANN_SCHEMA) {
+    const payload = { ...ann, schema: ANN_SCHEMA };
+    // Prefer column file_folders when the JSON blob lacks it (older saves).
+    if ((!payload.file_folders || !Object.keys(payload.file_folders).length) && proj.file_folders) {
+      payload.file_folders = proj.file_folders;
+    }
+    return { payload, updated_at: proj.updated_at };
   }
 
   const [
@@ -329,16 +353,102 @@ export async function loadProjectFromSupabase(projectId) {
   return { payload, updated_at: proj.updated_at };
 }
 
+/** Remove all takeoff data for a project (shapes, BOQ, sheets, audit log). */
+export async function clearProjectDataInSupabase(projectId) {
+  if (!supabase || !projectId) return;
+
+  const childTables = [
+    "shape_events",
+    "shape_holes",
+    "shapes",
+    "boq_lines",
+    "markups",
+    "rfis",
+    "conditions",
+    "project_sheets",
+  ];
+  for (const table of childTables) {
+    const { error } = await supabase.from(table).delete().eq("project_id", projectId);
+    if (error) throw error;
+  }
+  const { error: totErr } = await supabase.from("project_totals").delete().eq("project_id", projectId);
+  if (totErr) throw totErr;
+
+  await deleteAllProjectFiles(projectId);
+
+  const empty = { ...emptyAnnotations(), project_name: "ADICC Project" };
+  seedShapeSnapshot(projectId, []);
+  await syncProjectToSupabase(projectId, empty);
+}
+
 /** Create a new Supabase project row; returns UUID. */
 export async function createSupabaseProject(name = "Untitled Project") {
   if (!supabase) throw new Error("Supabase is not configured");
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("projects")
-    .insert({ name, annotations: {} })
+    .insert({ name, annotations: {}, last_opened_at: new Date().toISOString() })
     .select("id")
     .single();
+  // Graceful fallback when migration 002 hasn't been applied yet.
+  if (error?.message?.includes("last_opened_at")) {
+    ({ data, error } = await supabase
+      .from("projects")
+      .insert({ name, annotations: {} })
+      .select("id")
+      .single());
+  }
   if (error) throw error;
   return data.id;
+}
+
+/** Permanently delete a project and all related rows. */
+export async function deleteSupabaseProject(projectId) {
+  if (!supabase || !projectId) return;
+
+  const childTables = [
+    "shape_events",
+    "shape_holes",
+    "shapes",
+    "boq_lines",
+    "markups",
+    "rfis",
+    "conditions",
+    "project_sheets",
+  ];
+  for (const table of childTables) {
+    const { error } = await supabase.from(table).delete().eq("project_id", projectId);
+    if (error) throw error;
+  }
+  const { error: totErr } = await supabase.from("project_totals").delete().eq("project_id", projectId);
+  if (totErr) throw totErr;
+  await deleteAllProjectFiles(projectId);
+  shapeSnapshot.delete(projectId);
+  const { error: projErr } = await supabase.from("projects").delete().eq("id", projectId);
+  if (projErr) throw projErr;
+}
+
+/** Rename a project in the database (name + annotations.project_name). */
+export async function renameSupabaseProject(projectId, name) {
+  if (!supabase || !projectId) throw new Error("Missing project");
+  const trimmed = String(name || "").trim();
+  if (!trimmed) throw new Error("Project name cannot be empty");
+
+  const { data: proj, error: loadErr } = await supabase
+    .from("projects")
+    .select("annotations")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (loadErr) throw loadErr;
+
+  const ann = (proj?.annotations && typeof proj.annotations === "object")
+    ? { ...proj.annotations, project_name: trimmed }
+    : { project_name: trimmed };
+
+  const { error } = await supabase
+    .from("projects")
+    .update({ name: trimmed, annotations: ann, updated_at: new Date().toISOString() })
+    .eq("id", projectId);
+  if (error) throw error;
 }
 
 /** Sync full annotations payload to normalized Supabase tables. */
@@ -375,7 +485,7 @@ export async function syncProjectToSupabase(projectId, payload) {
     updated_at: new Date().toISOString(),
   };
 
-  const { error: projErr } = await supabase.from("projects").upsert(projectRow);
+  const { error: projErr } = await supabase.from("projects").upsert(projectRow, { onConflict: "id" });
   if (projErr) throw projErr;
 
   await replaceChildRows("conditions", projectId, conditions.map((c) => ({
@@ -499,6 +609,6 @@ export async function syncProjectToSupabase(projectId, payload) {
     by_condition: totals.by_condition,
     by_room: totals.by_room,
     updated_at: new Date().toISOString(),
-  });
+  }, { onConflict: "project_id" });
   if (totErr) throw totErr;
 }

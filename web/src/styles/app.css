@@ -23,10 +23,45 @@ input[type="submit"],
 input[type="reset"] {
   font-family: var(--f-mono);
   cursor: pointer;
-  border-radius: 8px !important;
+  border-radius: var(--radius-md) !important;
 }
 a { color: inherit; text-decoration: none; }
-input, textarea { font-family: var(--f-body); }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+select,
+textarea {
+  font-family: var(--f-body);
+  border-radius: var(--radius-md) !important;
+}
+
+/* ── rounded boxes (sitewide) ─────────────────────────────────────────────── */
+
+.card,
+.panel,
+.badge,
+.tag,
+.text-input,
+.field-input,
+[role="dialog"] {
+  border-radius: var(--radius-lg) !important;
+}
+
+.badge,
+.tag {
+  border-radius: var(--radius-sm) !important;
+}
+
+#root div[style*="border: 1px"],
+#root div[style*="border:1px"],
+#root div[style*="border: 1.5px"],
+#root div[style*="border:1.5px"],
+#root div[style*="border: 2px"],
+#root div[style*="border:2px"] {
+  border-radius: var(--radius-lg) !important;
+}
+
+#root span[style*="border:"] {
+  border-radius: var(--radius-sm) !important;
+}
 
 /* ── buttons (the global lift) ────────────────────────────────────────────── */
 
@@ -84,6 +119,7 @@ input, textarea { font-family: var(--f-body); }
   width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--ink-faint);
+  border-radius: var(--radius-md);
   background: var(--paper-cream);
   font-size: 14px;
   color: var(--ink);
@@ -100,12 +136,13 @@ input, textarea { font-family: var(--f-body); }
 .card {
   background: var(--paper-cream);
   border: 1px solid var(--ink-faint);
+  border-radius: var(--radius-lg);
   transition: border-color var(--t) var(--ease), box-shadow var(--t) var(--ease), transform var(--t) var(--ease);
 }
 .card.is-clickable:hover { border-color: var(--ink-muted); box-shadow: var(--shadow-1); }
 .card.is-clickable:active { transform: translateY(1px); }
 
-.panel { background: var(--paper-bright); border: 1px solid var(--ink-faint); }
+.panel { background: var(--paper-bright); border: 1px solid var(--ink-faint); border-radius: var(--radius-lg); }
 
 .row {
   transition: background var(--t-fast) var(--ease);

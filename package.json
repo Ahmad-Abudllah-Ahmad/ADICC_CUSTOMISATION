@@ -1,0 +1,24 @@
+{
+  "name": "opentakeoff",
+  "version": "1.0.0",
+  "description": "<div align=\"center\">",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kentucky-ai/opentakeoff.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Kentucky-ai/opentakeoff/issues"
+  },
+  "homepage": "https://github.com/Kentucky-ai/opentakeoff#readme"
+}

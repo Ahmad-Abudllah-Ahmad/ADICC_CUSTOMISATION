@@ -23,6 +23,10 @@ export default defineConfig({
   // which needs code-splitting inside the worker bundle — only the ES format
   // supports that (Vite's default iife errors on split worker builds).
   worker: { format: "es" },
+  optimizeDeps: {
+    exclude: ["@mlightcad/libredwg-web"],
+  },
+  assetsInclude: ["**/*.wasm"],
   server: {
     port: 5173,
     proxy: {

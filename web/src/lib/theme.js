@@ -10,7 +10,7 @@ const EVT = "opentakeoff:theme";
 function apply(t) {
   document.documentElement.setAttribute("data-theme", t);
   document.querySelector('meta[name="theme-color"]')
-    ?.setAttribute("content", t === "dark" ? "#121c2c" : "#f4efe0");
+    ?.setAttribute("content", t === "dark" ? "#1a2332" : "#fafaf8");
   window.dispatchEvent(new CustomEvent(EVT, { detail: t }));
 }
 
