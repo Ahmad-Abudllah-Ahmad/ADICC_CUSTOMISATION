@@ -15,6 +15,7 @@
 
 import { GETTERS, colGetter, applyUnits, METRIC_CSV_LABELS } from "./reportColumns.js";
 import { grandTotals, materialsSummary, roundSheetRow, hasMultipliers, BY_SHEET_BASE_NOTE } from "./totals.js";
+import { pricedConditionTotals, pricedGrandTotals } from "./pricing.js";
 import { round2 } from "./num.js";
 import { M_PER_FT, M2_PER_SF } from "./units";
 
@@ -168,7 +169,7 @@ export async function buildXlsx(sheets) {
  *   its note line says so. "imperial" (default) is byte-identical.
  * @returns {Array<{name: string, rows: any[][]}>}
  */
-export function reportWorkbook({ rows = [], bySheet = [], shapeRows = [], cols = null, ctx = null, sheetLabel = null, units = "imperial" }) {
+export function reportWorkbook({ rows = [], bySheet = [], shapeRows = [], cols = null, ctx = null, sheetLabel = null, units = "imperial", materialRates = [], projectSettings = {} }) {
   const columns = applyUnits(cols || [], units, METRIC_CSV_LABELS);
   const label = (id) => (sheetLabel ? sheetLabel(id) : id);
   const M = units === "metric";
@@ -230,5 +231,33 @@ export function reportWorkbook({ rows = [], bySheet = [], shapeRows = [], cols =
     { name: "By sheet", rows: bySheetRows },
     { name: "Materials", rows: materials },
     { name: "Shapes", rows: shapesTab },
+    ...(materialRates.length ? [{
+      name: "Estimate",
+      rows: buildEstimateSheet(rows, materialRates, units, projectSettings),
+    }] : []),
   ];
+}
+
+function buildEstimateSheet(rows, materialRates, displayUnits, projectSettings) {
+  const priced = pricedConditionTotals(rows, materialRates, displayUnits, projectSettings);
+  const grand = pricedGrandTotals(priced, projectSettings);
+  const out = [
+    ["Finish", "Material", "Qty", "Unit", "Mat Rate", "Mat Ext", "Lab Rate", "Lab Ext", "Line Total"],
+  ];
+  for (const r of priced) {
+    if (!(r.materials || []).length) {
+      out.push([r.finish_tag, "", "", "", "", r.material_ext || 0, "", r.labour_ext || 0, r.line_total || 0]);
+      continue;
+    }
+    for (const m of r.materials) {
+      out.push([
+        r.finish_tag, m.name, m.qty, m.unit,
+        m.rate_row?.rate_material || "", m.material_ext || 0,
+        m.rate_row?.rate_labour || "", m.labour_ext || 0,
+        m.line_total || 0,
+      ]);
+    }
+  }
+  out.push([], ["GRAND TOTAL", "", "", "", "", grand.material_cost, "", grand.labour_cost, grand.grand_total]);
+  return out;
 }

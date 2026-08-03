@@ -313,7 +313,7 @@ export function buildShapeRows(shapes, conditions, detectCtx) {
 }
 
 /** Resolve display BOQ fields for one shape (hover card, filtered panel). */
-export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], units = "imperial") {
+export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], units = "imperial", pricingCtx = null) {
   const rows = buildShapeRows([shape], conditions, detectCtx);
   if (!rows.length) return null;
   const r = rows[0];
@@ -322,6 +322,18 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
   const qty = meta.qty_override !== "" && meta.qty_override != null ? Number(meta.qty_override) : pq.qty;
   const primaryRef = r.schedule_refs?.find((x) => x.tag === r.finish_tag) || r.schedule_refs?.[0];
   const autoDesc = primaryRef?.description || "";
+
+  let pricing = {};
+  if (pricingCtx?.priceRow) {
+    pricing = pricingCtx.priceRow({
+      qty,
+      unit: meta.unit || pq.unit,
+      finish_tag: r.finish_tag,
+      description: meta.description || autoDesc,
+      waste_pct: conditions.find((c) => c.id === r.condition_id)?.waste_pct,
+    });
+  }
+
   return {
     ...r,
     room: meta.room || r.room_detected || "",
@@ -329,5 +341,12 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
     unit: meta.unit || pq.unit,
     description: meta.description || autoDesc,
     schedule_refs: r.schedule_refs || [],
+    rate: meta.rate_material != null
+      ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0) + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
+      : (pricing.rate ?? null),
+    amount: meta.amount != null ? Number(meta.amount) : (pricing.amount ?? null),
+    currency: pricing.currency || pricingCtx?.currency || "AED",
+    priced_from: pricing.priced_from || null,
+    material_rate_id: meta.material_rate_id || pricing.material_rate_id || null,
   };
 }

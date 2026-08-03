@@ -31,6 +31,11 @@ export const GETTERS = {
   // never waste-adjusted, never in grand totals. ×N multiplies like every other
   // quantity (the verticalWallSf convention).
   perimeter_ref: (r, ctx) => round2((ctx?.perimByCond?.get(r.id) || 0) * (r.multiplier || 1)),
+  rate_material: (r, ctx) => ctx?.pricedByCond?.get(r.id)?.rate_material ?? "",
+  rate_labour: (r, ctx) => ctx?.pricedByCond?.get(r.id)?.rate_labour ?? "",
+  material_ext: (r, ctx) => ctx?.pricedByCond?.get(r.id)?.material_ext ?? "",
+  labour_ext: (r, ctx) => ctx?.pricedByCond?.get(r.id)?.labour_ext ?? "",
+  line_total: (r, ctx) => ctx?.pricedByCond?.get(r.id)?.line_total ?? "",
 };
 
 // Table columns: order + header + default visibility. foot(g) fills the tfoot
@@ -52,6 +57,11 @@ export const TABLE_PROFILE = [
   { key: "waste_sf",      header: "Waste SF",   defaultVisible: false, foot: (g) => GETTERS.waste_sf(g) },
   { key: "waste_lf",      header: "Waste LF",   defaultVisible: false, foot: (g) => GETTERS.waste_lf(g) },
   { key: "perimeter_ref", header: "Perim LF (ref)", defaultVisible: false, ref: true },
+  { key: "rate_material", header: "Mat Rate", defaultVisible: false },
+  { key: "rate_labour", header: "Lab Rate", defaultVisible: false },
+  { key: "material_ext", header: "Mat Ext", defaultVisible: false, foot: (g) => g.material_cost },
+  { key: "labour_ext", header: "Lab Ext", defaultVisible: false, foot: (g) => g.labour_cost },
+  { key: "line_total", header: "Line Total", defaultVisible: false, foot: (g) => g.grand_total },
 ];
 
 // CSV columns. The first 13 are the frozen v1 export (byte-stable, golden-
@@ -73,6 +83,11 @@ export const CSV_PROFILE = [
   { key: "waste_sf",      header: "Waste SF", defaultVisible: false },
   { key: "waste_lf",      header: "Waste LF", defaultVisible: false },
   { key: "perimeter_ref", header: "Perimeter LF (ref, incl. openings)", defaultVisible: false },
+  { key: "rate_material", header: "Material Rate (AED)", defaultVisible: false },
+  { key: "rate_labour", header: "Labour Rate (AED)", defaultVisible: false },
+  { key: "material_ext", header: "Material Ext (AED)", defaultVisible: false },
+  { key: "labour_ext", header: "Labour Ext (AED)", defaultVisible: false },
+  { key: "line_total", header: "Line Total (AED)", defaultVisible: false },
 ];
 
 // The one getter-resolution rule for a column descriptor: custom columns

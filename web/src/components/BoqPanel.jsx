@@ -6,6 +6,7 @@ import { conditionTotals, round2 } from "../lib/totals.js";
 import { areaUnit } from "../lib/units";
 import { csvEsc } from "../lib/csv.js";
 import { rowKey, buildShapeRows, primaryQty } from "../lib/boqDetect.js";
+import { money } from "../lib/num.js";
 
 const num = (v, d = 2) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
 
@@ -102,6 +103,9 @@ export default function BoqPanel({
   onShapeNavigate,
   onShapeDelete,
   onClearFocus,
+  materialRates = [],
+  projectSettings = {},
+  pricingCtx = null,
 }) {
   const detectCtx = useMemo(() => ({
     planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb,
@@ -298,8 +302,16 @@ export default function BoqPanel({
     const qty = meta.qty_override !== "" && meta.qty_override != null && meta.qty_override !== undefined
       ? Number(meta.qty_override) : pq.qty;
     const unit = meta.unit || pq.unit;
-    const rate = Number(meta.rate) || 0;
-    const amount = round2(qty * rate);
+    const priced = pricingCtx?.priceRow?.({
+      qty, unit,
+      finish_tag: r.finish_tag,
+      description: displayDesc,
+      waste_pct: conditions.find((c) => c.id === r.condition_id)?.waste_pct,
+    }) || {};
+    const rate = meta.rate_material != null
+      ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0) + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
+      : (Number(meta.rate) || priced.rate || 0);
+    const amount = meta.amount != null ? Number(meta.amount) : (priced.amount ?? round2(qty * rate));
     const active = activeShapeId === r.shape_id;
     const colSpan = onShapeDelete ? 12 : 11;
     return (
@@ -355,7 +367,12 @@ export default function BoqPanel({
             onClick={(e) => e.stopPropagation()}
             onChange={(e) => upsertLine(key, { rate: e.target.value, sheet_id: g.sheet_id, condition_id: r.condition_id, shape_id: r.shape_id })} />
         </td>
-        <td style={{ ...td, fontFamily: "var(--f-mono)", textAlign: "right", fontWeight: 600 }}>{amount ? num(amount) : dash}</td>
+        <td style={{ ...td, fontFamily: "var(--f-mono)", textAlign: "right", fontWeight: 600 }}>
+          {amount ? money(amount, projectSettings.currency || "AED") : dash}
+          {priced.priced_from && !meta.rate && (
+            <div style={{ fontSize: 9, color: "var(--ink-muted)", fontWeight: 400 }}>{priced.priced_from}</div>
+          )}
+        </td>
         <td style={td}>
           <input style={inp} value={meta.notes || ""} placeholder="Notes"
             onClick={(e) => e.stopPropagation()}

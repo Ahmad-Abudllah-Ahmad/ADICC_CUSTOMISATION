@@ -73,6 +73,15 @@ export default function ShapeBoqHoverCard({
         <BoqField label="LF" value={data.lf ? `${num(data.lf)} ${lU}` : null} />
         <BoqField label="EA" value={data.ea ? num(data.ea, 0) : null} />
         <BoqField label="Qty" value={`${num(data.qty)} ${data.unit}`} />
+        {data.rate != null && data.rate > 0 && (
+          <BoqField label="Rate" value={`${num(data.rate)} ${data.currency || "AED"}`} />
+        )}
+        {data.amount != null && data.amount > 0 && (
+          <BoqField label="Amount" value={`${num(data.amount)} ${data.currency || "AED"}`} />
+        )}
+        {data.priced_from && (
+          <div style={{ fontSize: 9.5, color: "var(--ink-muted)", fontStyle: "italic" }}>{data.priced_from}</div>
+        )}
       </div>
       {data.schedule_refs?.length > 0 && (
         <div style={{ padding: "6px 12px 4px", borderTop: "1px solid var(--ink-faint)", maxHeight: 120, overflowY: "auto" }}>

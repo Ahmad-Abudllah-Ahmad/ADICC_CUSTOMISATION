@@ -201,6 +201,17 @@ export const AGENT_TOOL_DEFS = [
       required: ["shapes"],
     },
   },
+  {
+    name: "ask_drawings",
+    description: "Ask the ADICC Volume 4 drawings corpus a question (specs, schedules, sheet locations, materials). Returns a citation-grounded answer from the ingested drawing set. Use when you need project documentation not visible on the open canvas.",
+    input_schema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The question to ask the drawings assistant." },
+      },
+      required: ["question"],
+    },
+  },
 ];
 
 const DEFS_BY_NAME = Object.fromEntries(AGENT_TOOL_DEFS.map((d) => [d.name, d]));
@@ -288,6 +299,12 @@ export async function executeAgentTool(ctx, name, args) {
         }
         const staged = clean.length ? ctx.proposeShapes(clean) : { staged: 0 };
         return { staged: staged.staged, ...(rejected.length ? { rejected } : {}) };
+      }
+      case "ask_drawings": {
+        if (!ctx.askDrawings) return { error: "Drawings Q&A is not configured on this canvas." };
+        const question = String(args.question || "").trim();
+        if (!question) return { error: "question must be a non-empty string." };
+        return await ctx.askDrawings(question);
       }
     }
   } catch (e) {

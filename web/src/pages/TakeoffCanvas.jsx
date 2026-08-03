@@ -67,8 +67,15 @@ import RfiPanel from "../components/RfiPanel.jsx";
 import StampPanel from "../components/StampPanel.jsx";
 import ImportSchedulePanel from "../components/ImportSchedulePanel.jsx";
 import BoqPanel from "../components/BoqPanel.jsx";
+import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
+import RatesPanel from "../components/RatesPanel.jsx";
+import EstimatePanel from "../components/EstimatePanel.jsx";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
-import { resolveShapeBoq, rowKey } from "../lib/boqDetect.js";
+import { resolveShapeBoq, rowKey, detectRoomName } from "../lib/boqDetect.js";
+import { queryChat, finishForRoom } from "../lib/rag.js";
+import { priceMaskRow, pricedGrandTotals, pricedConditionTotals } from "../lib/pricing.js";
+import { money } from "../lib/num.js";
+import { listMaterialRates } from "../lib/supabase/pricing.js";
 // In-canvas takeoff agent — BYO-key tool-use loop (lib/agentLoop) aiming the
 // registry of deterministic tools (lib/agentTools); this file provides the
 // CAPABILITIES those tools close over and the review gate their proposals
@@ -400,7 +407,48 @@ export default function TakeoffCanvas() {
       undoStackRef.current = st.undo;
       redoStackRef.current = st.redo;   // a new command discards the redone future
     }
+    if (cmd.type === "add" && cmd.shapes?.length) {
+      suggestFinishForNewShapes(cmd.shapes, res.shapes);
+    }
     return res;
+  }
+
+  async function suggestFinishForNewShapes(added, allShapes) {
+    for (const s of added) {
+      if (s.measure_role !== "floor_area") continue;
+      const room = detectRoomName(s, boqDetectCtx);
+      if (!room) continue;
+      try {
+        const result = await finishForRoom(room);
+        if (result.abstained || !result.finish_codes?.length) continue;
+        const flooring = result.finish_codes.find((f) => /floor|carpet|tile|vinyl|lvt|finish/i.test(f.category || "")) || result.finish_codes[0];
+        const key = rowKey(s.id);
+        setBoqLines((prev) => {
+          const i = prev.findIndex((l) => l.id === key);
+          const patch = {
+            id: key,
+            shape_id: s.id,
+            manual: false,
+            sheet_id: s.sheet_id,
+            condition_id: s.condition_id,
+            room: result.matched_room || room,
+            description: flooring.material || flooring.description || flooring.code,
+            notes: `Finish schedule: ${flooring.code}`,
+          };
+          if (i >= 0) {
+            const next = prev.slice();
+            next[i] = { ...next[i], ...patch };
+            return next;
+          }
+          return [...prev, { ...patch, unit: "", qty_override: "", rate: "" }];
+        });
+        if (flooring.code && flooring.code !== "-") {
+          setCommitMsg(`Schedule match for ${room}: ${flooring.code}${flooring.material ? ` — ${flooring.material}` : ""}`);
+        }
+      } catch {
+        /* RAG backend optional — ignore when offline */
+      }
+    }
   }
   // ⌘Z / ⇧⌘Z — apply the recorded inverse (undo) or the exact-restore command
   // (redo). Undoing swaps the entry's cmd for the inverse-of-the-undo before
@@ -472,6 +520,13 @@ export default function TakeoffCanvas() {
   }, [commitMsgState]);
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
   const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
+  const [showDrawingsChat, setShowDrawingsChat] = useState(false);
+  const [showRates, setShowRates] = useState(false);
+  const [showEstimate, setShowEstimate] = useState(false);
+  const [materialRates, setMaterialRates] = useState([]);
+  const [projectCurrency, setProjectCurrency] = useState("AED");
+  const [markupPct, setMarkupPct] = useState(0);
+  const [overheadPct, setOverheadPct] = useState(0);
   const [boqFocusShapeId, setBoqFocusShapeId] = useState(null); // filtered BOQ view — one mask
   const [shapeBoqHover, setShapeBoqHover] = useState(null);     // { id, cx, cy } canvas-local hover card
   const [shapeBoqFocus, setShapeBoqFocus] = useState(null);     // pinned shape id — static BOQ card
@@ -1666,6 +1721,32 @@ export default function TakeoffCanvas() {
     planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb,
   }), [planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb]);
 
+  const projectSettings = useMemo(() => ({
+    currency: projectCurrency,
+    markup_pct: markupPct,
+    overhead_pct: overheadPct,
+  }), [projectCurrency, markupPct, overheadPct]);
+
+  const pricingCtx = useMemo(() => ({
+    catalog: materialRates,
+    currency: projectCurrency,
+    priceRow: (row) => priceMaskRow(row, materialRates, units, projectSettings),
+  }), [materialRates, projectCurrency, units, projectSettings]);
+
+  const projectEstimateTotal = useMemo(() => {
+    const rows = pricedConditionTotals(
+      conditionTotals(conditions, shapes).filter((r) => r.shape_count > 0),
+      materialRates,
+      units,
+      projectSettings,
+    );
+    return pricedGrandTotals(rows, projectSettings).grand_total;
+  }, [conditions, shapes, materialRates, units, projectSettings]);
+
+  useEffect(() => {
+    listMaterialRates().then(setMaterialRates).catch(() => {});
+  }, [showRates]);
+
   // ── autosave (debounced) ──────────────────────────────────────────────────
   // buildPayload is the single serializer — autosave and snapshots must write
   // identical records for the same state (byte-stability matters downstream).
@@ -1677,7 +1758,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -4839,6 +4920,18 @@ export default function TakeoffCanvas() {
       getConditions: () => agentStateRef.current.conditions.map((c) => ({ id: c.id, finish_tag: c.finish_tag, hatch: c.hatch, waste_pct: c.waste_pct })),
       createCondition: (tag) => { const c = mintCondition(tag); return { id: c.id, finish_tag: c.finish_tag }; },
       proposeShapes: stageAgentProposals,
+      askDrawings: async (question) => {
+        const result = await queryChat(question);
+        return {
+          answer: result.answer,
+          abstained: result.abstained,
+          citations: (result.citations || []).map((c) => ({
+            sheet_id: c.sheet_id,
+            quote: c.quote,
+            source: c.source,
+          })),
+        };
+      },
     };
   }
 
@@ -6008,6 +6101,11 @@ export default function TakeoffCanvas() {
         )}
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: "var(--ink-muted)", minWidth: 44, fontFamily: "var(--f-mono)" }}>{saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : ""}</span>
+        {materialRates.length > 0 && projectEstimateTotal > 0 && (
+          <span title="Running project estimate (priced conditions)" style={{ fontSize: 11, fontWeight: 700, color: "var(--cobalt)", fontFamily: "var(--f-mono)", padding: "4px 8px", border: "1px solid var(--cobalt)", borderRadius: 4 }}>
+            {money(projectEstimateTotal, projectCurrency)}
+          </span>
+        )}
         <button onClick={toggleTheme} title="App theme — light / dark chrome (sheets unaffected; use ☾ on the canvas to invert the print)"
           aria-label="App theme — light / dark chrome" aria-pressed={theme === "dark"}
           style={{ display: "inline-flex", alignItems: "center", padding: "6px 9px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>
@@ -6021,6 +6119,15 @@ export default function TakeoffCanvas() {
         <button onClick={() => setShowBoq((v) => !v)} disabled={!shapes.length && !conditions.length}
           title="Bill of Quantities — floor-plan masked takeoff by sheet, with editable line details"
           style={{ padding: "8px 14px", border: `1px solid ${showBoq ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showBoq ? "var(--cobalt)" : "transparent", color: showBoq ? "var(--paper-bright)" : "var(--ink)", cursor: shapes.length || conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: shapes.length || conditions.length ? 1 : 0.5 }}>BOQ</button>
+        <button onClick={() => setShowEstimate((v) => !v)} disabled={!conditions.length}
+          title="Unit-cost estimate worksheet — material and labour breakdown"
+          style={{ padding: "8px 14px", border: `1px solid ${showEstimate ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showEstimate ? "var(--cobalt)" : "transparent", color: showEstimate ? "var(--paper-bright)" : "var(--ink)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: conditions.length ? 1 : 0.5 }}>Estimate</button>
+        <button onClick={() => setShowRates((v) => !v)}
+          title="Material rates catalog — AED per m² / m / EA"
+          style={{ padding: "8px 14px", border: `1px solid ${showRates ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showRates ? "var(--cobalt)" : "transparent", color: showRates ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Rates</button>
+        <button onClick={() => setShowDrawingsChat((v) => !v)}
+          title="Ask the Volume 4 drawings corpus — citation-grounded Q&A"
+          style={{ padding: "8px 14px", border: `1px solid ${showDrawingsChat ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showDrawingsChat ? "var(--cobalt)" : "transparent", color: showDrawingsChat ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Drawings</button>
         <button onClick={() => setShowReport(true)} disabled={!conditions.length} title="Open the takeoff report — per-condition breakdown with waste, plus CSV / JSON export."
           style={{ padding: "8px 14px", border: "none", background: conditions.length ? "var(--ink)" : "var(--text-faint)", color: "var(--paper-bright)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Report</button>
         {/* Deliberately subtle, not a button: local-first app, cloud mode is an
@@ -6669,7 +6776,7 @@ export default function TakeoffCanvas() {
             const cardId = shapeBoqFocus || shapeBoqHover?.id;
             const s = shapes.find((x) => x.id === cardId);
             if (!s || !shapeBoqHover) return null;
-            const data = resolveShapeBoq(s, conditions, boqDetectCtx, boqLines, units);
+            const data = resolveShapeBoq(s, conditions, boqDetectCtx, boqLines, units, pricingCtx);
             if (!data) return null;
             const pinned = !!shapeBoqFocus;
             return (
@@ -7587,6 +7694,27 @@ export default function TakeoffCanvas() {
           />
         )}
 
+        {showDrawingsChat && (
+          <DrawingsChatPanel onClose={() => setShowDrawingsChat(false)} />
+        )}
+
+        {showRates && (
+          <RatesPanel open={showRates} onClose={() => setShowRates(false)} onRatesChange={setMaterialRates} />
+        )}
+
+        {showEstimate && (
+          <EstimatePanel
+            open={showEstimate}
+            onClose={() => setShowEstimate(false)}
+            conditions={conditions}
+            shapes={shapes}
+            materialRates={materialRates}
+            units={units}
+            projectSettings={projectSettings}
+            projectName={projectName}
+          />
+        )}
+
         {/* BOQ sidebar — right edge, opposite the Files panel on the left */}
         <BoqPanel
           open={showBoq}
@@ -7609,6 +7737,9 @@ export default function TakeoffCanvas() {
           onShapeNavigate={flyToShape}
           onShapeDelete={deleteShapeFromBoq}
           onClearFocus={() => setBoqFocusShapeId(null)}
+          materialRates={materialRates}
+          projectSettings={projectSettings}
+          pricingCtx={pricingCtx}
         />
 
         {/* Takeoffs panel — DOCKED in the layout row (reflows the canvas, not an

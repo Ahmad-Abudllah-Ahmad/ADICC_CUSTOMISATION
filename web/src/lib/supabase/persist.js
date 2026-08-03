@@ -3,6 +3,7 @@ import { supabase } from "./client.js";
 import { deleteAllProjectFiles } from "./projectFiles.js";
 import { conditionTotals } from "../totals.js";
 import { round2 } from "../totals.js";
+import { pricedConditionTotals, pricedGrandTotals } from "../pricing.js";
 import { ANN_SCHEMA, emptyAnnotations } from "../store.js";
 
 const shapeSnapshot = new Map(); // projectId -> Map(shapeId -> snapshot)
@@ -45,8 +46,24 @@ function rfiMetadata(r) {
   return rest;
 }
 
-function computeTotals(conditions, shapes, boqLines) {
+function computeTotals(conditions, shapes, boqLines, pricingOpts = {}) {
   const condTotals = conditionTotals(conditions, shapes);
+  const { materialRates = [], projectSettings = {}, displayUnits = "metric" } = pricingOpts;
+  const priced = materialRates.length
+    ? pricedConditionTotals(condTotals, materialRates, displayUnits, projectSettings)
+    : condTotals;
+  const costGrand = materialRates.length ? pricedGrandTotals(priced, projectSettings) : null;
+  const byConditionCost = {};
+  if (materialRates.length) {
+    for (const t of priced) {
+      byConditionCost[t.id] = {
+        finish_tag: t.finish_tag,
+        material_ext: t.material_ext || 0,
+        labour_ext: t.labour_ext || 0,
+        line_total: t.line_total || 0,
+      };
+    }
+  }
   let floor = 0, wall = 0, border = 0, lf = 0, ea = 0;
   const byCondition = {};
   const bySheet = {};
@@ -104,6 +121,16 @@ function computeTotals(conditions, shapes, boqLines) {
     by_sheet: bySheet,
     by_condition: byCondition,
     by_room: byRoom,
+    ...(costGrand ? {
+      material_cost: costGrand.material_cost,
+      labour_cost: costGrand.labour_cost,
+      equipment_cost: costGrand.equipment_cost,
+      sub_cost: costGrand.sub_cost,
+      subtotal: costGrand.subtotal,
+      markup_amount: costGrand.markup_amount,
+      grand_total: costGrand.grand_total,
+      by_condition_cost: byConditionCost,
+    } : {}),
   };
 }
 
@@ -347,6 +374,12 @@ export async function loadProjectFromSupabase(projectId) {
       unit: l.unit,
       qty_override: l.qty_override,
       rate: l.rate,
+      rate_material: l.rate_material,
+      rate_labour: l.rate_labour,
+      rate_equipment: l.rate_equipment,
+      rate_sub: l.rate_sub,
+      material_rate_id: l.material_rate_id,
+      amount: l.amount,
     })),
   };
 
@@ -452,7 +485,7 @@ export async function renameSupabaseProject(projectId, name) {
 }
 
 /** Sync full annotations payload to normalized Supabase tables. */
-export async function syncProjectToSupabase(projectId, payload) {
+export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}) {
   if (!supabase || !projectId) return;
 
   const shapes = payload.shapes || [];
@@ -463,12 +496,15 @@ export async function syncProjectToSupabase(projectId, payload) {
   const sheets = payload.sheets || [];
 
   const events = diffShapeEvents(projectId, shapes);
-  const totals = computeTotals(conditions, shapes, boqLines);
+  const totals = computeTotals(conditions, shapes, boqLines, pricingOpts);
 
   const projectRow = {
     id: projectId,
     name: payload.project_name || "Untitled Project",
     units: payload.units === "metric" ? "metric" : "imperial",
+    currency: payload.currency || pricingOpts.projectSettings?.currency || "AED",
+    markup_pct: Number(payload.markup_pct ?? pricingOpts.projectSettings?.markup_pct) || 0,
+    overhead_pct: Number(payload.overhead_pct ?? pricingOpts.projectSettings?.overhead_pct) || 0,
     client_info: payload.client_info || {},
     condition_columns: payload.condition_columns || [],
     shape_labels: payload.shape_labels || [],
@@ -589,6 +625,12 @@ export async function syncProjectToSupabase(projectId, payload) {
     unit: l.unit,
     qty_override: l.qty_override != null ? String(l.qty_override) : null,
     rate: l.rate != null ? String(l.rate) : null,
+    rate_material: l.rate_material != null ? Number(l.rate_material) : null,
+    rate_labour: l.rate_labour != null ? Number(l.rate_labour) : null,
+    rate_equipment: l.rate_equipment != null ? Number(l.rate_equipment) : null,
+    rate_sub: l.rate_sub != null ? Number(l.rate_sub) : null,
+    material_rate_id: l.material_rate_id || null,
+    amount: l.amount != null ? Number(l.amount) : null,
   })), "project_id,id");
 
   if (events.length) {
@@ -608,6 +650,14 @@ export async function syncProjectToSupabase(projectId, payload) {
     by_sheet: totals.by_sheet,
     by_condition: totals.by_condition,
     by_room: totals.by_room,
+    material_cost: totals.material_cost ?? 0,
+    labour_cost: totals.labour_cost ?? 0,
+    equipment_cost: totals.equipment_cost ?? 0,
+    sub_cost: totals.sub_cost ?? 0,
+    subtotal: totals.subtotal ?? 0,
+    markup_amount: totals.markup_amount ?? 0,
+    grand_total: totals.grand_total ?? 0,
+    by_condition_cost: totals.by_condition_cost ?? {},
     updated_at: new Date().toISOString(),
   }, { onConflict: "project_id" });
   if (totErr) throw totErr;
