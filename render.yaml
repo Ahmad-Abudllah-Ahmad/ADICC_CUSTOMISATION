@@ -11,7 +11,7 @@
 services:
   - type: web
     runtime: static
-    name: opentakeoff
+    name: adicc
     # The web app lives in the web/ subdirectory of the monorepo.
     rootDir: web
     # Build: tolerant voice-model fetch (optional, degrades gracefully) + Vite build.
