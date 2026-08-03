@@ -66,6 +66,74 @@ export function citationImageUrl(chunkId) {
 }
 
 /**
+ * URL that serves the original source file (PDF opens in browser; Word/Excel download → OS app).
+ * @param {{ chunk_id?: number, doc_path?: string, page_no?: number }} citation
+ * @param {{ download?: boolean }} [opts]
+ */
+export function citationFileUrl(citation, opts = {}) {
+  if (citation?.chunk_id > 0) {
+    const q = opts.download ? "?download=true" : "";
+    return `${RAG_BASE}/citation/${citation.chunk_id}/file${q}`;
+  }
+  if (citation?.doc_path) {
+    const q = new URLSearchParams({ path: citation.doc_path });
+    if (opts.download) q.set("download", "true");
+    return `${RAG_BASE}/file?${q.toString()}`;
+  }
+  return null;
+}
+
+/**
+ * Open the citation's source file.
+ * PDFs: fetch → blob URL in a new tab (more reliable than proxy navigation), with #page=N.
+ * Word/Excel/etc.: fetch → download so the OS opens the default app.
+ * @param {{ chunk_id?: number, doc_path?: string, page_no?: number }} citation
+ */
+export async function openCitationFile(citation) {
+  const url = citationFileUrl(citation);
+  if (!url) throw new Error("No file path on this citation");
+
+  const path = (citation.doc_path || "").toLowerCase();
+  const isPdf = path.endsWith(".pdf");
+  const name = (citation.doc_path || "document").replace(/^.*[/\\]/, "") || "document";
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    let detail = `Could not open file (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+
+  if (isPdf) {
+    const page = citation.page_no != null && citation.page_no >= 0 ? `#page=${citation.page_no + 1}` : "";
+    const win = window.open(objectUrl + page, "_blank", "noopener,noreferrer");
+    if (!win) {
+      // Popup blocked — fall back to download
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = name;
+      a.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    return;
+  }
+
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+}
+
+/**
  * Deterministic room → finish schedule lookup (no LLM).
  * @param {string} room
  * @returns {Promise<FinishForRoomResponse>}

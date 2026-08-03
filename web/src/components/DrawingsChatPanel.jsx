@@ -1,7 +1,7 @@
 // Drawings Q&A — integrated Volume 4 RAG chat.
 // Citations are compact buttons; tapping one opens a dedicated Source sidebar.
 import React, { useMemo, useState } from "react";
-import { citationImageUrl, queryChat } from "../lib/rag.js";
+import { citationImageUrl, openCitationFile, queryChat } from "../lib/rag.js";
 
 function hasImagePreview(citation) {
   return citation?.chunk_id > 0 && citation.doc_path?.toLowerCase().endsWith(".pdf");
@@ -100,11 +100,44 @@ function SourceSidebar({ citation, onClose }) {
         <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 4 }}>
           File
         </div>
-        <div style={{ fontSize: 11.5, wordBreak: "break-all", fontFamily: "var(--f-mono)", color: "var(--ink)" }}>
-          {fileName(citation.doc_path) || "—"}
-        </div>
+        {citation.doc_path ? (
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await openCitationFile(citation);
+              } catch (err) {
+                // eslint-disable-next-line no-alert
+                alert(err instanceof Error ? err.message : "Could not open file");
+              }
+            }}
+            title="Open in PDF viewer / Word / Excel / default app"
+            style={{
+              display: "block",
+              width: "100%",
+              textAlign: "left",
+              padding: "8px 10px",
+              border: "1px solid var(--cobalt)",
+              borderRadius: 4,
+              background: "var(--paper-bright)",
+              color: "var(--cobalt)",
+              cursor: "pointer",
+              fontFamily: "var(--f-mono)",
+              fontSize: 11.5,
+              fontWeight: 600,
+              wordBreak: "break-all",
+            }}
+          >
+            {fileName(citation.doc_path)}
+            <span style={{ display: "block", marginTop: 4, fontSize: 10, fontWeight: 500, color: "var(--ink-muted)", fontFamily: "var(--f-body)" }}>
+              Click to open · PDF in browser · Word/Excel downloads to your app
+            </span>
+          </button>
+        ) : (
+          <div style={{ fontSize: 11.5, color: "var(--ink-muted)" }}>—</div>
+        )}
         {citation.doc_path && fileName(citation.doc_path) !== citation.doc_path && (
-          <div style={{ fontSize: 10, color: "var(--ink-faint)", marginTop: 4, wordBreak: "break-all" }}>{citation.doc_path}</div>
+          <div style={{ fontSize: 10, color: "var(--ink-faint)", marginTop: 6, wordBreak: "break-all" }}>{citation.doc_path}</div>
         )}
       </div>
 
