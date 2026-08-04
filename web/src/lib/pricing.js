@@ -1,7 +1,7 @@
 // ADICC pricing engine — pure functions for rate resolution and cost rollups.
 // Imports only num.js and units.ts to stay cycle-free and unit-testable.
 import { round2 } from "./num.js";
-import { M2_PER_SF, M_PER_FT } from "./units";
+import { M2_PER_SF, M_PER_FT, M3_PER_CF } from "./units";
 
 /** Normalize a material/finish name for fuzzy catalog lookup. */
 export function normalizeRateKey(name) {
@@ -27,6 +27,12 @@ export function qtyToDisplayUnit(qty, unit, displayUnits = "metric") {
   }
   if (u === "lf" || u === "lm") {
     return displayUnits === "metric" ? n * M_PER_FT : n;
+  }
+  if (u === "m³" || u === "m3" || u === "cum" || u === "cu m") {
+    return displayUnits === "metric" ? n * M3_PER_CF : n;
+  }
+  if (u === "cf" || u === "cu ft" || u === "cuft" || u === "ft3" || u === "ft³") {
+    return displayUnits === "metric" ? n * M3_PER_CF : n;
   }
   // SY → m²
   if (u === "sy") return displayUnits === "metric" ? n * 9 * M2_PER_SF : n * 9;

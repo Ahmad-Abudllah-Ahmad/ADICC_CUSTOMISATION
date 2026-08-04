@@ -1,7 +1,7 @@
 // Drawings Q&A — integrated Volume 4 RAG chat.
 // Citations are compact buttons; tapping one opens a dedicated Source sidebar.
 import React, { useMemo, useState } from "react";
-import { citationImageUrl, queryChat } from "../lib/rag.js";
+import { citationImageUrl, openCitationFile, sheetKeyForCitation, queryChat } from "../lib/rag.js";
 
 function hasImagePreview(citation) {
   return citation?.chunk_id > 0 && citation.doc_path?.toLowerCase().endsWith(".pdf");
@@ -13,12 +13,15 @@ function fileName(path) {
   return parts[parts.length - 1] || path;
 }
 
-function CitationChip({ citation, index, active, onSelect }) {
+function CitationChip({ citation, index, active, onSelect, onOpenInWorkspace }) {
   const label = citation.sheet_id || citation.sheet_title || `Source ${index + 1}`;
   return (
     <button
       type="button"
-      onClick={() => onSelect(citation)}
+      onClick={() => {
+        onSelect(citation);
+        onOpenInWorkspace?.(citation);
+      }}
       title={citation.quote || label}
       style={{
         display: "inline-flex",
@@ -46,14 +49,15 @@ function CitationChip({ citation, index, active, onSelect }) {
         {index + 1}
       </span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-      <span style={{ fontSize: 9.5, color: "var(--ink-muted)", fontWeight: 500, flexShrink: 0 }}>View</span>
+      <span style={{ fontSize: 9.5, color: "var(--ink-muted)", fontWeight: 500, flexShrink: 0 }}>Open</span>
     </button>
   );
 }
 
-function SourceSidebar({ citation, onClose }) {
+function SourceSidebar({ citation, onClose, onOpenInWorkspace, sheetNames, galleryLabels }) {
   if (!citation) return null;
   const preview = hasImagePreview(citation);
+  const inProject = sheetNames?.length ? sheetKeyForCitation(citation, sheetNames, galleryLabels) : null;
 
   return (
     <aside
@@ -100,11 +104,55 @@ function SourceSidebar({ citation, onClose }) {
         <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 4 }}>
           File
         </div>
-        <div style={{ fontSize: 11.5, wordBreak: "break-all", fontFamily: "var(--f-mono)", color: "var(--ink)" }}>
-          {fileName(citation.doc_path) || "—"}
-        </div>
+        {citation.doc_path ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {inProject ? (
+              <button
+                type="button"
+                onClick={() => onOpenInWorkspace?.(citation)}
+                title="Open this drawing in the workspace tab bar at the cited page"
+                style={{
+                  display: "block", width: "100%", textAlign: "left", padding: "8px 10px",
+                  border: "1px solid var(--cobalt)", borderRadius: 4, background: "var(--cobalt)",
+                  color: "var(--paper-bright)", cursor: "pointer", fontFamily: "var(--f-mono)",
+                  fontSize: 11.5, fontWeight: 600, wordBreak: "break-all",
+                }}
+              >
+                Open in workspace
+                <span style={{ display: "block", marginTop: 4, fontSize: 10, fontWeight: 500, opacity: 0.85, fontFamily: "var(--f-body)" }}>
+                  {fileName(citation.doc_path)}{citation.page_no != null ? ` · page ${citation.page_no + 1}` : ""}
+                </span>
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await openCitationFile(citation);
+                } catch (err) {
+                  // eslint-disable-next-line no-alert
+                  alert(err instanceof Error ? err.message : "Could not open file");
+                }
+              }}
+              title={inProject ? "Download / open in external viewer" : "File not in project — opens from Volume 4 corpus"}
+              style={{
+                display: "block", width: "100%", textAlign: "left", padding: "8px 10px",
+                border: "1px solid var(--ink-faint)", borderRadius: 4, background: "var(--paper-bright)",
+                color: "var(--ink)", cursor: "pointer", fontFamily: "var(--f-mono)",
+                fontSize: 11.5, fontWeight: 600, wordBreak: "break-all",
+              }}
+            >
+              {fileName(citation.doc_path)}
+              <span style={{ display: "block", marginTop: 4, fontSize: 10, fontWeight: 500, color: "var(--ink-muted)", fontFamily: "var(--f-body)" }}>
+                {inProject ? "External viewer / download" : "Not in project Files — external open"}
+              </span>
+            </button>
+          </div>
+        ) : (
+          <div style={{ fontSize: 11.5, color: "var(--ink-muted)" }}>—</div>
+        )}
         {citation.doc_path && fileName(citation.doc_path) !== citation.doc_path && (
-          <div style={{ fontSize: 10, color: "var(--ink-faint)", marginTop: 4, wordBreak: "break-all" }}>{citation.doc_path}</div>
+          <div style={{ fontSize: 10, color: "var(--ink-faint)", marginTop: 6, wordBreak: "break-all" }}>{citation.doc_path}</div>
         )}
       </div>
 
@@ -159,7 +207,7 @@ function SourceSidebar({ citation, onClose }) {
   );
 }
 
-export default function DrawingsChatPanel({ onClose }) {
+export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNames = [], galleryLabels = {} }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -220,7 +268,7 @@ export default function DrawingsChatPanel({ onClose }) {
         <header style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Drawings Q&A</div>
-            <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>Ask Volume 4 — tap a citation to preview</div>
+            <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>Tap a citation to open it in the workspace</div>
           </div>
           <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "var(--ink-muted)" }}>×</button>
         </header>
@@ -264,7 +312,7 @@ export default function DrawingsChatPanel({ onClose }) {
               {message.citations?.length > 0 && (
                 <div style={{ marginTop: 10 }}>
                   <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 6 }}>
-                    Citations · tap to open source
+                    Citations · tap to open in workspace
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                     {message.citations.map((citation, ci) => (
@@ -274,6 +322,7 @@ export default function DrawingsChatPanel({ onClose }) {
                         index={ci}
                         active={activeCitation?.id === citation.id}
                         onSelect={setActiveCitation}
+                        onOpenInWorkspace={onOpenInWorkspace}
                       />
                     ))}
                   </div>
@@ -303,7 +352,13 @@ export default function DrawingsChatPanel({ onClose }) {
         </form>
       </aside>
 
-      <SourceSidebar citation={activeCitation} onClose={() => setActiveCitation(null)} />
+      <SourceSidebar
+        citation={activeCitation}
+        onClose={() => setActiveCitation(null)}
+        onOpenInWorkspace={onOpenInWorkspace}
+        sheetNames={sheetNames}
+        galleryLabels={galleryLabels}
+      />
     </div>
   );
 }

@@ -1,5 +1,7 @@
 // ADICC Volume 4 RAG client — talks to the FastAPI backend via the /rag proxy.
 
+import { parseSheetKey } from "./sheetKey";
+
 /** @typedef {{ id: string, chunk_id: number, doc_path: string, page_no: number, sheet_id?: string|null, sheet_title?: string|null, discipline?: string|null, bbox?: number[]|null, quote: string, source: string, verified: boolean }} Citation */
 
 /** @typedef {{ answer: string, citations: Citation[], abstained: boolean, candidates?: Array<Record<string, unknown>>|null }} QueryResponse */
@@ -63,6 +65,129 @@ export async function queryChatStream(question, handlers = {}) {
 /** @param {number} chunkId */
 export function citationImageUrl(chunkId) {
   return `${RAG_BASE}/citation/${chunkId}/image`;
+}
+
+/**
+ * URL that serves the original source file (PDF opens in browser; Word/Excel download → OS app).
+ * @param {{ chunk_id?: number, doc_path?: string, page_no?: number }} citation
+ * @param {{ download?: boolean }} [opts]
+ */
+export function citationFileUrl(citation, opts = {}) {
+  if (citation?.chunk_id > 0) {
+    const q = opts.download ? "?download=true" : "";
+    return `${RAG_BASE}/citation/${citation.chunk_id}/file${q}`;
+  }
+  if (citation?.doc_path) {
+    const q = new URLSearchParams({ path: citation.doc_path });
+    if (opts.download) q.set("download", "true");
+    return `${RAG_BASE}/file?${q.toString()}`;
+  }
+  return null;
+}
+
+/**
+ * Open the citation's source file.
+ * PDFs: fetch → blob URL in a new tab (more reliable than proxy navigation), with #page=N.
+ * Word/Excel/etc.: fetch → download so the OS opens the default app.
+ * @param {{ chunk_id?: number, doc_path?: string, page_no?: number }} citation
+ */
+function normPath(p) {
+  return (p || "").replace(/\\/g, "/").toLowerCase();
+}
+
+function canonSheetId(s) {
+  return (s || "").toUpperCase().replace(/[\s.-]/g, "");
+}
+
+/**
+ * Map a RAG citation to a takeoff sheet key (`file` or `file#page`) if the PDF
+ * is already in the project Files list.
+ * @param {Citation|{ doc_path?: string, page_no?: number, sheet_id?: string|null }} citation
+ * @param {string[]} sheetNames — project sheet file paths (`sheets[].name`)
+ * @param {Record<string, string>} [galleryLabels] — sheetKey → title-block id (A1105…)
+ * @returns {string|null}
+ */
+export function sheetKeyForCitation(citation, sheetNames, galleryLabels = {}) {
+  if (!citation) return null;
+  const pageNo = citation.page_no != null && citation.page_no >= 0 ? citation.page_no + 1 : 1;
+  const withPage = (name) => (pageNo > 1 ? `${name}#${pageNo}` : name);
+
+  if (citation.sheet_id) {
+    const sid = canonSheetId(citation.sheet_id);
+    for (const [key, label] of Object.entries(galleryLabels)) {
+      if (!label) continue;
+      const lbl = canonSheetId(label);
+      if (lbl === sid || lbl.includes(sid) || sid.includes(lbl)) {
+        const { file } = parseSheetKey(key);
+        if (sheetNames.includes(file)) return withPage(file);
+      }
+    }
+    for (const name of sheetNames) {
+      const base = canonSheetId(name.split("/").pop() || "");
+      if (base.includes(sid)) return withPage(name);
+    }
+  }
+
+  const docPath = normPath(citation.doc_path);
+  if (docPath) {
+    for (const name of sheetNames) {
+      const n = normPath(name);
+      if (n === docPath || docPath.endsWith(n) || n.endsWith(docPath)) return withPage(name);
+    }
+    const base = docPath.split("/").pop();
+    if (base) {
+      for (const name of sheetNames) {
+        const nameBase = normPath(name.split("/").pop());
+        if (nameBase === base) return withPage(name);
+      }
+    }
+  }
+  return null;
+}
+
+export async function openCitationFile(citation) {
+
+  const url = citationFileUrl(citation);
+  if (!url) throw new Error("No file path on this citation");
+
+  const path = (citation.doc_path || "").toLowerCase();
+  const isPdf = path.endsWith(".pdf");
+  const name = (citation.doc_path || "document").replace(/^.*[/\\]/, "") || "document";
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    let detail = `Could not open file (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+
+  if (isPdf) {
+    const page = citation.page_no != null && citation.page_no >= 0 ? `#page=${citation.page_no + 1}` : "";
+    const win = window.open(objectUrl + page, "_blank", "noopener,noreferrer");
+    if (!win) {
+      // Popup blocked — fall back to download
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = name;
+      a.click();
+    }
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    return;
+  }
+
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 /**

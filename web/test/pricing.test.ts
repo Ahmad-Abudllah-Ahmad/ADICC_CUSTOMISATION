@@ -43,6 +43,11 @@ describe("pricing.js", () => {
     assert.ok(q > 9 && q < 10);
   });
 
+  it("qtyToDisplayUnit converts CF to m³ in metric mode", () => {
+    const q = qtyToDisplayUnit(100, "CF", "metric");
+    assert.ok(q > 2.8 && q < 2.9);
+  });
+
   it("pricedGrandTotals rolls up condition rows", () => {
     const rows = [{ material_ext: 100, labour_ext: 50, equipment_ext: 0, sub_ext: 0, line_total: 150 }];
     const g = pricedGrandTotals(rows, { markup_pct: 0, overhead_pct: 0 });

@@ -94,6 +94,9 @@ function computeTotals(conditions, shapes, boqLines, pricingOpts = {}) {
       case "deduct": bySheet[sid].floor_sf -= cp.area_sf || 0; break;
       case "floor_area": bySheet[sid].floor_sf += cp.area_sf || 0; break;
       case "surface_area": bySheet[sid].wall_sf += cp.area_sf || 0; break;
+      case "wall_area":
+        bySheet[sid].wall_sf += cp.wall_face_sf || cp.area_sf || 0;
+        break;
       case "linear":
         bySheet[sid].lf += cp.perimeter_lf || 0;
         bySheet[sid].floor_sf += cp.area_sf || 0;
@@ -106,8 +109,22 @@ function computeTotals(conditions, shapes, boqLines, pricingOpts = {}) {
   const byRoom = {};
   for (const line of boqLines || []) {
     const room = (line.room || "").trim() || "Unassigned";
-    if (!byRoom[room]) byRoom[room] = { line_count: 0, floor_sf: 0 };
+    if (!byRoom[room]) byRoom[room] = { line_count: 0, floor_sf: 0, wall_sf: 0 };
     byRoom[room].line_count += 1;
+  }
+  for (const s of shapes) {
+    const cp = s.computed || {};
+    const key = `shape::${s.id}`;
+    const line = (boqLines || []).find((l) => l.id === key || l.shape_id === s.id);
+    const room = (line?.room || "").trim() || "Unassigned";
+    if (!byRoom[room]) byRoom[room] = { line_count: 0, floor_sf: 0, wall_sf: 0 };
+    switch (s.measure_role) {
+      case "deduct": byRoom[room].floor_sf -= cp.area_sf || 0; break;
+      case "floor_area": byRoom[room].floor_sf += cp.area_sf || 0; break;
+      case "surface_area": byRoom[room].wall_sf += cp.area_sf || 0; break;
+      case "wall_area": byRoom[room].wall_sf += cp.wall_face_sf || cp.area_sf || 0; break;
+      default: break;
+    }
   }
 
   return {
