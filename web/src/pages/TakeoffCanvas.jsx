@@ -49,6 +49,7 @@ import {
 import SymbolSourceViewer from "../components/SymbolSourceViewer.jsx";
 import { isGoogleConfigured, isSignedIn, isAllowedDomain, getAccessToken, orgDomainHint } from "../lib/google/auth.js";
 import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons, differencePolygons, intersectPolygons, subtractPolygonsToPolys } from "../lib/oneclick";
+import { buildWallMaskFromSegs, wallTraceAtPoint } from "../lib/walltrace";
 import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS } from "../lib/rastermask";
 import { conditionTotals, verticalWallSf } from "../lib/totals.js";
 import { shapesInZone } from "../lib/zone.js";
@@ -71,8 +72,8 @@ import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
 import EstimatePanel from "../components/EstimatePanel.jsx";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
-import { resolveShapeBoq, rowKey, detectRoomName } from "../lib/boqDetect.js";
-import { queryChat, finishForRoom } from "../lib/rag.js";
+import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty } from "../lib/boqDetect.js";
+import { queryChat, finishForRoom, sheetKeyForCitation } from "../lib/rag.js";
 import { priceMaskRow, pricedGrandTotals, pricedConditionTotals } from "../lib/pricing.js";
 import { money } from "../lib/num.js";
 import { listMaterialRates } from "../lib/supabase/pricing.js";
@@ -414,41 +415,81 @@ export default function TakeoffCanvas() {
   }
 
   async function suggestFinishForNewShapes(added, allShapes) {
+    const msgs = [];
     for (const s of added) {
-      if (s.measure_role !== "floor_area") continue;
-      const room = detectRoomName(s, boqDetectCtx);
-      if (!room) continue;
-      try {
-        const result = await finishForRoom(room);
-        if (result.abstained || !result.finish_codes?.length) continue;
-        const flooring = result.finish_codes.find((f) => /floor|carpet|tile|vinyl|lvt|finish/i.test(f.category || "")) || result.finish_codes[0];
-        const key = rowKey(s.id);
-        setBoqLines((prev) => {
-          const i = prev.findIndex((l) => l.id === key);
-          const patch = {
-            id: key,
-            shape_id: s.id,
-            manual: false,
-            sheet_id: s.sheet_id,
-            condition_id: s.condition_id,
-            room: result.matched_room || room,
-            description: flooring.material || flooring.description || flooring.code,
-            notes: `Finish schedule: ${flooring.code}`,
-          };
-          if (i >= 0) {
-            const next = prev.slice();
-            next[i] = { ...next[i], ...patch };
-            return next;
+      const isFloor = s.measure_role === "floor_area";
+      const isWall = s.measure_role === "wall_area";
+      if (!isFloor && !isWall) continue;
+
+      const cond = conditions.find((c) => c.id === s.condition_id);
+      const finishTag = (cond?.finish_tag || "").trim();
+      const room = detectRoomName(s, boqDetectCtx, allShapes);
+      const pq = primaryQty(shapeQuantities(s), units);
+
+      const scheduleRefs = gatherShapeScheduleRefs(s, cond, boqDetectCtx, room);
+      const primaryRef = scheduleRefs[0];
+      let description = primaryRef?.description || cond?.description || "";
+      let notes = primaryRef
+        ? `${primaryRef.source}: ${primaryRef.tag}${primaryRef.description ? ` — ${primaryRef.description}` : ""}`
+        : "";
+      let matchedRoom = room;
+
+      if (room) {
+        try {
+          const result = await finishForRoom(room);
+          if (!result.abstained && result.finish_codes?.length) {
+            matchedRoom = result.matched_room || room;
+            const pick = isWall
+              ? (result.finish_codes.find((f) => /wall|paint|plaster|tile|finish|coating|wallpaper/i.test(f.category || "")) || result.finish_codes[0])
+              : (result.finish_codes.find((f) => /floor|carpet|tile|vinyl|lvt|finish/i.test(f.category || "")) || result.finish_codes[0]);
+            if (pick.material || pick.description) description = pick.material || pick.description;
+            notes = `Finish schedule: ${pick.code}${pick.material ? ` — ${pick.material}` : ""}`;
           }
-          return [...prev, { ...patch, unit: "", qty_override: "", rate: "" }];
-        });
-        if (flooring.code && flooring.code !== "-") {
-          setCommitMsg(`Schedule match for ${room}: ${flooring.code}${flooring.material ? ` — ${flooring.material}` : ""}`);
+        } catch {
+          /* RAG backend optional — ignore when offline */
         }
-      } catch {
-        /* RAG backend optional — ignore when offline */
       }
+
+      const priced = priceMaskRow({
+        qty: pq.qty,
+        unit: pq.unit,
+        finish_tag: finishTag,
+        description,
+        waste_pct: cond?.waste_pct,
+      }, materialRates, units, projectSettings);
+
+      const key = rowKey(s.id);
+      setBoqLines((prev) => {
+        const i = prev.findIndex((l) => l.id === key);
+        const patch = {
+          id: key,
+          shape_id: s.id,
+          manual: false,
+          sheet_id: s.sheet_id,
+          condition_id: s.condition_id,
+          room: matchedRoom || "",
+          description,
+          notes,
+          unit: pq.unit,
+        };
+        if (priced.material_rate_id && !(i >= 0 && prev[i]?.rate)) {
+          patch.rate = priced.rate;
+          patch.material_rate_id = priced.material_rate_id;
+        }
+        if (i >= 0) {
+          const next = prev.slice();
+          next[i] = { ...next[i], ...patch };
+          return next;
+        }
+        return [...prev, { ...patch, qty_override: "", rate: patch.rate ?? "" }];
+      });
+
+      const label = isWall ? "Wall" : "Room";
+      if (matchedRoom) msgs.push(`${label}: ${matchedRoom}`);
+      if (priced.priced_from) msgs.push(`Rate: ${priced.priced_from}`);
+      else if (finishTag || description) msgs.push(`No rate for ${finishTag || description} — set in Rates or BOQ`);
     }
+    if (msgs.length) setCommitMsg(msgs.join(" · "));
   }
   // ⌘Z / ⇧⌘Z — apply the recorded inverse (undo) or the exact-restore command
   // (redo). Undoing swaps the entry's cmd for the inverse-of-the-undo before
@@ -493,6 +534,11 @@ export default function TakeoffCanvas() {
     try { const v = parseFloat(localStorage.getItem("opentakeoff_fill_sens")); return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : SENS_BALANCED; } catch { return SENS_BALANCED; }
   });
   useEffect(() => { try { localStorage.setItem("opentakeoff_fill_sens", String(fillSens)); } catch { /* private mode */ } }, [fillSens]);
+  const [wallSens, setWallSens] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem("opentakeoff_wall_sens")); return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : SENS_BALANCED; } catch { return SENS_BALANCED; }
+  });
+  useEffect(() => { try { localStorage.setItem("opentakeoff_wall_sens", String(wallSens)); } catch { /* private mode */ } }, [wallSens]);
+  const [wallProposal, setWallProposal] = useState(null); // { key, regions: [{ seed, outer, holes, ...qty }] }
   const [saveState, setSaveState] = useState("idle");
   const [loadError, setLoadError] = useState("");   // annotations load failed — autosave stays disarmed
   // internal state is { text }, minted FRESH on every setCommitMsg call — a
@@ -576,6 +622,7 @@ export default function TakeoffCanvas() {
   const vectorSegsRef = useRef(new Map()); // sheetKey → flat [x1,y1,x2,y2,…] linework segments (One-Click boundary source)
   const segMetaRef = useRef(new Map());    // sheetKey → per-segment meta bytes (hatch classification input)
   const maskCacheRef = useRef(new Map());  // sheetKey → built boundary mask (lazy, dropped on re-render)
+  const wallMaskCacheRef = useRef(new Map()); // sheetKey:sens → wall-weight mask
   const sheetStatsRef = useRef(new Map()); // sheetKey → {segCount, imageFrac} — raster-fallback trigger signals
   const rasterMaskCacheRef = useRef(new Map()); // sheetKey → Promise<MaskObj|null> — scan-pixel mask (lazy, shared across clicks)
   const snapMarkRef = useRef(null);    // SVG snap indicator
@@ -738,6 +785,19 @@ export default function TakeoffCanvas() {
       goToSheet(sheetKey);
     }
     setView("canvas");
+  }
+  function openCitationInWorkspace(citation) {
+    if (!citation) return;
+    const names = sheets.map((s) => s.name);
+    const key = sheetKeyForCitation(citation, names, galleryLabels);
+    if (!key) {
+      const hint = (citation.doc_path || "").split(/[/\\]/).pop() || citation.sheet_id || "source";
+      setCommitMsg(`"${hint}" isn't in this project — add the PDF from Files (Volume 4 drawings), then tap the citation again.`);
+      return;
+    }
+    revealSheetInFilesSidebar(key);
+    const page = citation.page_no != null && citation.page_no >= 0 ? citation.page_no + 1 : 1;
+    setCommitMsg(`Opened ${tabLabel(key)}${page > 1 ? ` (page ${page})` : ""} in workspace.`);
   }
   function closeTab(key) {
     const i = openTabs.indexOf(key);
@@ -1269,11 +1329,16 @@ export default function TakeoffCanvas() {
   // leaving the stamp tool disarms the pending stamp — a stray click under a
   // measure/select tool must never drop a stamp
   useEffect(() => { if (tool !== "stamp") setArmedStamp(null); }, [tool]);
-  // A One-Click proposal is only actionable while One-Click is armed (Enter
-  // already requires it) — discard it on tool switch, like the stamp above.
-  // Also keeps Create out of the ACTION slot while Finish occupies it, so the
-  // slot's reserved width always fits its content (issue #61).
-  useEffect(() => { if (tool !== "oneclick") setProposal(null); }, [tool]);
+  // One-Click + Wall Trace proposals persist across each other — estimate
+  // workflows trace walls then rooms on the same sheet without losing previews.
+  // Leaving both tools (or switching to a draw tool) clears pending work.
+  const TRACE_PROPOSAL_TOOLS = new Set(["oneclick", "walltrace"]);
+  useEffect(() => {
+    if (!TRACE_PROPOSAL_TOOLS.has(tool)) {
+      setProposal(null);
+      setWallProposal(null);
+    }
+  }, [tool]);
   // Proposal gone (created, discarded, sheet changed) ⇒ drop any handle selection/hover.
   useEffect(() => { if (!proposal) { setOcSel(null); ocHoverRef.current = -1; setOcHover(-1); } }, [proposal]);
   // Switching to a different shape (or clearing the selection) drops the vertex pick.
@@ -1365,13 +1430,14 @@ export default function TakeoffCanvas() {
     if (!active) return;
     const seq = ++renderSeqRef.current;
     const stale = () => seq !== renderSeqRef.current;
-    setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); resetZone();
+    setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
     for (const [, rt] of renderTasksRef.current) { try { rt.cancel(); } catch { /* done */ } }
     renderTasksRef.current.clear();
     snapGridsRef.current.clear();
     vectorSegsRef.current.clear();
     segMetaRef.current.clear();
     maskCacheRef.current.clear();
+    wallMaskCacheRef.current.clear();
     sheetStatsRef.current.clear();
     rasterMaskCacheRef.current.clear();
     canvasInvertedRef.current.clear();
@@ -1745,6 +1811,10 @@ export default function TakeoffCanvas() {
 
   useEffect(() => {
     listMaterialRates().then(setMaterialRates).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (showRates) listMaterialRates().then(setMaterialRates).catch(() => {});
   }, [showRates]);
 
   // ── autosave (debounced) ──────────────────────────────────────────────────
@@ -2050,7 +2120,8 @@ export default function TakeoffCanvas() {
         if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("merge"); return; }
         if (agentOfferFnsRef.current?.pending()) { e.preventDefault(); agentOfferFnsRef.current.confirm(); return; }
         if (tool === "oneclick" && proposal?.regions.length) { e.preventDefault(); createProposal(); return; }
-        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
+        if (tool === "walltrace" && wallProposal?.regions.length) { e.preventDefault(); createWallProposal(); return; }
+        const ok = ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
         if (ok) { e.preventDefault(); finishShape(); return; }
         // ⏎ with agent proposals pending on a visible sheet = accept them all —
         // the agent's analogue of one-click's Create gate. Only fires when no
@@ -2062,7 +2133,7 @@ export default function TakeoffCanvas() {
       if (viewRef.current === "gallery") return;
       if (lower === "g") { setView("gallery"); return; }
       if (e.key === "D" && e.shiftKey) { setTool("deduct-rect"); return; }
-      const map = { p: "pan", v: "select", a: "area", r: "rect", l: "linear", q: "curve", s: "surface", c: "count", d: "deduct", o: "oneclick", k: "check", h: "highlighter" };
+      const map = { p: "pan", v: "select", a: "area", r: "rect", l: "linear", q: "curve", s: "surface", c: "count", d: "deduct", o: "oneclick", w: "walltrace", u: "wallarea", k: "check", h: "highlighter" };
       const t = map[lower];
       if (t) setTool(t);
     };
@@ -2120,7 +2191,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -2233,7 +2304,8 @@ export default function TakeoffCanvas() {
     if (tool === "calibrate") setCalib((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "check") setCheck((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "oneclick") oneClickAt(p, !!(ev && ev.altKey));
-    else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") setPoly((q) => [...q, p]);
+    else if (tool === "walltrace") wallTraceAt(p);
+    else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") setPoly((q) => [...q, p]);
     else if (tool === "count") commitCount(p);
     else if (tool === "rect" || tool === "deduct-rect") {
       if (poly.length === 0) setPoly([p]);
@@ -2536,6 +2608,33 @@ export default function TakeoffCanvas() {
       const LF = openLen(pts) * u;
       return { area_sf: +(LF * h).toFixed(2), perimeter_lf: +LF.toFixed(2) };
     }
+    if (s.measure_role === "wall_area") {
+      const h = s.height_override === true
+        ? Number(s.height_ft) || 0
+        : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
+      const met = closedMetrics(pts);
+      let areaPx = met.area;
+      let perimPx = met.perim;
+      if (Array.isArray(s.holes_norm) && s.holes_norm.length) {
+        for (const hole of s.holes_norm) {
+          const hp = hole.map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+          areaPx -= ringArea(hp);
+          perimPx += closedMetrics(hp).perim;
+        }
+        areaPx = Math.max(0, areaPx);
+      }
+      const footprint_sf = +(areaPx * u * u).toFixed(2);
+      const perimeter_lf = +(perimPx * u).toFixed(2);
+      const wall_face_sf = +(perimeter_lf * h).toFixed(2);
+      const volume_cf = +(footprint_sf * h).toFixed(2);
+      return {
+        area_sf: wall_face_sf,
+        footprint_sf,
+        wall_face_sf,
+        volume_cf,
+        perimeter_lf,
+      };
+    }
     if (s.measure_role === "linear") {
       const LF = openLen(s.curved ? flattenCurve(pts) : pts) * u;
       const tIn = Number(condById[s.condition_id]?.thickness_in) || 0;
@@ -2573,7 +2672,7 @@ export default function TakeoffCanvas() {
     }
 
     // rubber-band preview: last point → cur (area/deduct/zone); rect preview: corner → cur
-    const drawing = (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone");
+    const drawing = (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone");
 
     // polar tracking: endpoint snap wins (osnap beats polar); otherwise pull the
     // rubber band onto the 45° family. ⇧ forces the lock at any angle. The click
@@ -2727,6 +2826,14 @@ export default function TakeoffCanvas() {
         ? Number(s.height_ft) || 0
         : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
       return `${tag} · ${fa(a)} wall (${fl(lf)} × ${num(h, 2)}′)`;
+    }
+    if (s.measure_role === "wall_area") {
+      const h = s.height_override === true
+        ? Number(s.height_ft) || 0
+        : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
+      const fp = s.computed?.footprint_sf || 0;
+      const vol = s.computed?.volume_cf || 0;
+      return `${tag} · ${fa(a)} face · ${fa(fp)} footprint · ${num(vol, 1)} CF (${num(h, 2)}′)`;
     }
     if (s.measure_role === "linear") return `${tag} · ${fl(lf)}${a > 0 ? ` · ${fa(a)} border` : ""}`;
     return `${tag} · ${faSY(a)}`;
@@ -3616,6 +3723,32 @@ export default function TakeoffCanvas() {
       origin: { method: "manual" },
     }] });
   }
+  function commitWallPoly(points) {
+    if (points.length < 3) return;
+    const tp = panelAt(points[0][0]);
+    const upp = uppFor(tp.key);
+    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
+    if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
+    const h = Number(aCond?.height_ft) || 0;
+    if (!(h > 0)) {
+      setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Wall Area needs height for face area and volume.`);
+      return;
+    }
+    const poly = points.map(([x, y]) => [x - tp.xOffset, y]);
+    const met = closedMetrics(poly);
+    const footprint_sf = +(met.area * upp * upp).toFixed(2);
+    const perimeter_lf = +(met.perim * upp).toFixed(2);
+    const wall_face_sf = +(perimeter_lf * h).toFixed(2);
+    const volume_cf = +(footprint_sf * h).toFixed(2);
+    dispatchShape({ type: "add", shapes: [{
+      sheet_id: tp.key, condition_id: activeCond, measure_role: "wall_area", height_ft: h,
+      verts_norm: poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
+      computed: { area_sf: wall_face_sf, footprint_sf, wall_face_sf, volume_cf, perimeter_lf },
+      ...(activeLabel ? { label: activeLabel } : {}),
+      origin: { method: "manual", reviewed: true },
+    }] });
+    setCommitMsg(`Wall area — ${fa(wall_face_sf)} face · ${fa(footprint_sf)} footprint · ${num(volume_cf, 1)} CF. Use Deduct on a selected wall to carve room holes.`);
+  }
   function commitCount(p) {
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
     const tp = panelAt(p[0]);
@@ -3747,10 +3880,27 @@ export default function TakeoffCanvas() {
   // The propose tail (physical clicks): stage the region(s) for the Create (⏎)
   // gate. Duplicate/carve checks run inside a FUNCTIONAL setProposal so a
   // click racing the first raster render can't clobber state.
+  function committedFloorAt(tp, local, condId, negative) {
+    const role = negative ? "deduct" : "floor_area";
+    const w = tp.img.w, h = tp.img.h;
+    if (!(w > 0 && h > 0)) return false;
+    const toPx = (norm) => norm.map(([nx, ny]) => [nx * w, ny * h]);
+    return shapesRef.current.some((s) => {
+      if (s.sheet_id !== tp.key || s.condition_id !== condId || s.measure_role !== role) return false;
+      const outer = toPx(s.verts_norm);
+      if (!pointInPoly(local[0], local[1], outer)) return false;
+      if (s.holes_norm?.some((hole) => pointInPoly(local[0], local[1], toPx(hole)))) return false;
+      return true;
+    });
+  }
   function proposeRegion(f, tp, local, negative, raster) {
     const regions = buildOneClickRegions(f, tp, local, negative, raster);
     if (!regions || !regions.length) {
       if (uppFor(tp.key)) setCommitMsg("Couldn't trace that space — trace it with Area (A).");
+      return;
+    }
+    if (!negative && committedFloorAt(tp, local, activeCond, false)) {
+      setCommitMsg("That room is already masked on this condition — pick another space or a different finish.");
       return;
     }
     // Decide accept/dup/carve-reject INSIDE the functional updater, against
@@ -4023,6 +4173,105 @@ export default function TakeoffCanvas() {
     const res = commitOneClickRegions(proposal);
     if (res?.pending) return; // wait for merge / remove-overlap dialog
     setProposal(null);
+  }
+
+  // ── Wall Trace — click wall ink; flood connected network; rooms become holes ─
+  function ensureWallMask(key, sensitivity = wallSens) {
+    const cacheKey = `${key}:${sensitivity}`;
+    let mo = wallMaskCacheRef.current.get(cacheKey);
+    if (!mo) {
+      const segs = vectorSegsRef.current.get(key);
+      const dims = panelImgs[key];
+      if (!segs || !segs.length || !dims?.w) return null;
+      mo = buildWallMaskFromSegs(segs, dims.w, dims.h, segMetaRef.current.get(key), sensitivity);
+      wallMaskCacheRef.current.set(cacheKey, mo);
+    }
+    return mo;
+  }
+  function wallNearest(key) {
+    const grid = snapGridsRef.current.get(key);
+    return (x, y, d) => (grid ? nearestSnap(grid, x, y, d) : null);
+  }
+  function wallTraceAt(p) {
+    const tp = panelAt(p[0]);
+    const local = [p[0] - tp.xOffset, p[1]];
+    const upp = uppFor(tp.key);
+    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
+    if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
+    const h = Number(aCond?.height_ft) || 0;
+    if (!(h > 0)) {
+      setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Wall Trace needs height for face area and volume.`);
+      return;
+    }
+    const mo = ensureWallMask(tp.key, wallSens);
+    if (!mo) { setCommitMsg("No vector linework on this sheet — trace walls with Surface Area (S)."); return; }
+    const gap = openingGapPx(upp, mo.ws);
+    const traced = wallTraceAtPoint(mo, local[0], local[1], {
+      upp,
+      heightFt: h,
+      sensitivity: wallSens,
+      nearest: wallNearest(tp.key),
+      maxGapMaskPx: gap,
+    });
+    if (traced.status !== "ok") {
+      setCommitMsg(traced.message);
+      return;
+    }
+    const region = {
+      seed: local,
+      outer: traced.outer,
+      holes: traced.holes,
+      footprint_sf: traced.quantities.footprint_sf,
+      wall_face_sf: traced.quantities.wall_face_sf,
+      volume_cf: traced.quantities.volume_cf,
+      perimeter_lf: traced.quantities.perimeter_lf,
+      hf: !!traced.hatchFiltered,
+    };
+    setWallProposal((prev) => {
+      if (prev && prev.key === tp.key) return { key: tp.key, regions: [...prev.regions, region] };
+      return { key: tp.key, regions: [region] };
+    });
+    setCommitMsg(`Wall network traced — ${fa(region.wall_face_sf)} face · ${fa(region.footprint_sf)} footprint · ${num(region.volume_cf, 1)} CF. ⏎ Create or click another wall island.`);
+  }
+  function commitWallTrace(prop) {
+    const tp = panelByKey(prop.key);
+    const condId = activeCond;
+    const label = activeLabel || undefined;
+    const h = Number(aCond?.height_ft) || 0;
+    const made = [];
+    for (const r of prop.regions) {
+      made.push({
+        sheet_id: tp.key,
+        condition_id: condId,
+        measure_role: "wall_area",
+        height_ft: h,
+        verts_norm: r.outer.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
+        ...(r.holes?.length ? { holes_norm: r.holes.map((hole) => hole.map(([x, y]) => [x / tp.img.w, y / tp.img.h])) } : {}),
+        computed: {
+          area_sf: r.wall_face_sf,
+          footprint_sf: r.footprint_sf,
+          wall_face_sf: r.wall_face_sf,
+          volume_cf: r.volume_cf,
+          perimeter_lf: r.perimeter_lf,
+        },
+        ...(label ? { label } : {}),
+        origin: {
+          method: "wall_trace_v1",
+          seed_norm: [r.seed[0] / tp.img.w, r.seed[1] / tp.img.h],
+          reviewed: true,
+          ...(r.hf ? { hatch_filtered: true } : {}),
+        },
+      });
+    }
+    if (made.length) dispatchShape({ type: "add", shapes: made });
+    const tag = condById[condId]?.finish_tag || "";
+    const face = prop.regions.reduce((n, r) => n + r.wall_face_sf, 0);
+    setCommitMsg(`Created ${made.length} wall takeoff${made.length === 1 ? "" : "s"} — ${fa(face)} face ${tag}. Click the next wall network.`);
+  }
+  function createWallProposal() {
+    if (!wallProposal || !wallProposal.regions.length) return;
+    commitWallTrace(wallProposal);
+    setWallProposal(null);
   }
 
   // ── One-Click proposal geometry editing — correct a fill BEFORE Create ──────
@@ -4678,7 +4927,12 @@ export default function TakeoffCanvas() {
       setPoly([]);
       return;
     }
-    if (tool === "surface") commitSurface(poly); else if (tool === "linear") commitLinear(poly); else if (tool === "curve") commitLinear(poly, true); else commitPoly(poly, tool === "deduct"); setPoly([]);
+    if (tool === "surface") commitSurface(poly);
+    else if (tool === "wallarea") commitWallPoly(poly);
+    else if (tool === "linear") commitLinear(poly);
+    else if (tool === "curve") commitLinear(poly, true);
+    else commitPoly(poly, tool === "deduct");
+    setPoly([]);
   }
   function deleteSelected() { if (selectedId) { dispatchShape({ type: "delete", ids: [selectedId] }); setSelectedId(null); } }
   function reassignSelected(condId) { if (selectedId) dispatchShape({ type: "reassign", ids: [selectedId], condition_id: condId }); }
@@ -5628,6 +5882,8 @@ export default function TakeoffCanvas() {
   const countTotal = condRow?.ea || 0;
   const wallTotal = condRow?.wall_sf || 0;
   const borderTotal = condRow?.border_sf || 0;
+  const sheetFloorSf = visRows.reduce((n, r) => n + r.floor_sf, 0);
+  const sheetWallSf = visRows.reduce((n, r) => n + r.wall_sf, 0);
   // display-only Kreo-style derived metric: floor-area perimeters × the condition height
   const condH = Number(aCond?.height_ft) || 0; // the live-readout JSX below still reads this
   const vertTotal = verticalWallSf(visibleShapes, activeCond, aCond?.height_ft, condMult);
@@ -5665,7 +5921,7 @@ export default function TakeoffCanvas() {
   };
   const measureActive = MEASURE_TOOLS.some((t) => t.id === tool);
   const faceTool = MEASURE_TOOLS.find((t) => t.id === (measureActive ? tool : lastMeasureRef.current)) || MEASURE_TOOLS[0];
-  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
+  const finishOk = ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
 
   // panel-toggle for the right-edge rail — square like the zoom cluster, count as a
   // tiny mono line under the icon. Lives on the canvas, costs the toolbar zero rows.
@@ -6027,6 +6283,22 @@ export default function TakeoffCanvas() {
       </div>
     );
   })();
+  const wallSensRow = (() => {
+    const NOTCHES = [SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE];
+    const label = wallSens === SENS_STRICT ? "Strict" : wallSens === SENS_BALANCED ? "Balanced" : wallSens === SENS_AGGRESSIVE ? "Aggressive" : `${Math.round(wallSens * 100)}%`;
+    const snap = (v) => { for (const n of NOTCHES) if (Math.abs(v - n) <= 0.06) return n; return v; };
+    return (
+      <div title={"Wall Trace sensitivity — pen-weight gate, grid-span filter, and door-neck break at openings.\nStrict: heavy linework only (dimensions/grid ignored).\nBalanced: default.\nAggressive: include hairlines; looser leak cap.\nLower if a click grabs too much linework; raise if hatch-filled walls come up short."}
+        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
+        <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-soft)" }}>Wall</span>
+        <input name="wall-sensitivity" type="range" min={SENS_STRICT} max={SENS_AGGRESSIVE} step={0.01} value={wallSens} list="wall-sens-notches"
+          onChange={(e) => { setWallSens(snap(parseFloat(e.target.value))); wallMaskCacheRef.current.clear(); }}
+          style={{ flex: 1, accentColor: "var(--cobalt)", cursor: "pointer" }} />
+        <datalist id="wall-sens-notches"><option value={SENS_STRICT} /><option value={SENS_BALANCED} /><option value={SENS_AGGRESSIVE} /></datalist>
+        <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, color: "var(--cobalt)", minWidth: 58 }}>{label}</span>
+      </div>
+    );
+  })();
 
   return (
     // .app-shell: the print stylesheet collapses this 100vh flex column while the report is open
@@ -6249,6 +6521,7 @@ export default function TakeoffCanvas() {
               },
               "divider",
               { id: "fill", custom: fillRow },
+              { id: "wall", custom: wallSensRow },
             ]}
           />
         </>)}
@@ -6336,6 +6609,9 @@ export default function TakeoffCanvas() {
             )}
             {proposal?.regions.length > 0 && (
               <button onClick={createProposal} title="Create the selected takeoff(s) (↵). ⌫ removes the last click; Esc discards the selection." style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "none", background: "var(--c-positive)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}><Icon name="check" size={14} />Create ({proposal.regions.length})</button>
+            )}
+            {wallProposal?.regions.length > 0 && (
+              <button onClick={createWallProposal} title="Create wall takeoff(s) (↵). Esc discards the selection." style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "none", background: "var(--c-positive)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}><Icon name="check" size={14} />Create walls ({wallProposal.regions.length})</button>
             )}
           </span>
         )}
@@ -6748,7 +7024,8 @@ export default function TakeoffCanvas() {
             }
             if (symbolHover) { setSymbolFocus(symbolHover.id); return; }
             if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); }
-            else if (tool === "area" || tool === "deduct" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
+            else if (tool === "walltrace") { if (wallProposal?.regions.length) createWallProposal(); }
+            else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
             else if (tool === "select") editMarkupAt(e);
           }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
@@ -7355,6 +7632,20 @@ export default function TakeoffCanvas() {
                       </g>
                       );
                     })}
+                    {/* Wall Trace proposal — wall ink network with room holes */}
+                    {wallProposal && wallProposal.key === p.key && wallProposal.regions.map((r, i) => {
+                      const col = "#1f3fc7";
+                      const s = tf.scale;
+                      const outerD = `M ${r.outer.map((q) => q.join(",")).join(" L ")} Z`;
+                      const holesD = (r.holes || []).map((h) => `M ${h.map((q) => q.join(",")).join(" L ")} Z`).join(" ");
+                      return (
+                        <g key={"wt" + i}>
+                          <path d={`${outerD} ${holesD}`} fillRule="evenodd"
+                            fill="rgba(31,63,199,.14)" stroke={col} strokeWidth={2.5 / s} strokeDasharray={`${7 / s} ${4 / s}`} />
+                          <path d={starPath(r.seed[0], r.seed[1], 5 / s)} fill={col} stroke="#fff" strokeWidth={1 / s} />
+                        </g>
+                      );
+                    })}
                     {/* Agent proposals — DASHED pencil pending the accept gate. A
                         finer dash than one-click's selection so the two proposal
                         kinds read apart; the seed star marks the flood seed. The
@@ -7538,6 +7829,20 @@ export default function TakeoffCanvas() {
                 )}
               </>
             );
+          })() : tool === "walltrace" && wallProposal?.regions.length ? (() => {
+            const face = wallProposal.regions.reduce((n, r) => n + r.wall_face_sf, 0);
+            const fp = wallProposal.regions.reduce((n, r) => n + r.footprint_sf, 0);
+            const vol = wallProposal.regions.reduce((n, r) => n + r.volume_cf, 0);
+            return (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(face, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} face</span></div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{num(areaVal(fp, units))} {areaUnit(units)} footprint · {num(vol, 1)} CF · {wallProposal.regions.length} network{wallProposal.regions.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>click adds a wall island · ⏎ Create · Esc cancel</div>
+                {wallProposal.regions.some((r) => r.hf) && (
+                  <div style={{ fontSize: 11.5, color: "var(--c-warning)", marginTop: 4 }}>Hatch-filled walls included — verify edges before Create.</div>
+                )}
+              </>
+            );
           })() : tool === "surface" && poly.length >= 2 && liveUpp ? (
             (() => {
               const liveLF = openLen(poly) * liveUpp;
@@ -7564,8 +7869,30 @@ export default function TakeoffCanvas() {
               {condH > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>@H {num(condH, 2)}′: {fa(livePerim * condH)} vert{units === "metric" ? "" : ` · ${num((liveArea * condH) / 27)} CY`}</div>}
             </>
           ) : (
-            <div style={{ fontSize: 12.5, opacity: 0.6 }}>{!unitsPerPx ? "Set scale first" : tool === "zone" ? "Trace a region (an apartment, a wing) — ⏎ closes it and lists every condition inside" : !activeCond ? "Pick a condition" : tool === "oneclick" ? "Click inside a room — it selects itself" : tool === "surface" ? "Trace the wall run" : "Click to trace an area"}</div>
+            <div style={{ fontSize: 12.5, opacity: 0.6 }}>{!unitsPerPx ? "Set scale first" : tool === "zone" ? "Trace a region (an apartment, a wing) — ⏎ closes it and lists every condition inside" : !activeCond ? "Pick a condition" : tool === "oneclick" ? "Click inside a room — it selects itself" : tool === "walltrace" ? "Click a wall line — connected network traces" : tool === "wallarea" ? "Click corners around the wall poché — ⏎ finishes · Deduct carves room holes" : tool === "surface" ? "Trace the wall run" : "Click to trace an area"}</div>
           )}
+          {tool !== "oneclick" && proposal?.regions.length > 0 && (() => {
+            const pos = proposal.regions.filter((r) => r.kind === "pos");
+            const neg = proposal.regions.filter((r) => r.kind === "neg");
+            const sf = pos.reduce((n, r) => n + r.area_sf, 0) - neg.reduce((n, r) => n + r.area_sf, 0);
+            return (
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Pending rooms</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cobalt)", marginTop: 2 }}>{num(areaVal(sf, units))} {areaUnit(units)} · {pos.length} space{pos.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>Switch to One-Click (O) or press Create rooms</div>
+              </div>
+            );
+          })()}
+          {tool !== "walltrace" && wallProposal?.regions.length > 0 && (() => {
+            const face = wallProposal.regions.reduce((n, r) => n + r.wall_face_sf, 0);
+            return (
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Pending walls</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cobalt)", marginTop: 2 }}>{num(areaVal(face, units))} {areaUnit(units)} face · {wallProposal.regions.length} network{wallProposal.regions.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>Switch to Wall Trace (W) or press Create walls</div>
+              </div>
+            );
+          })()}
           {selShape?.measure_role === "surface_area" && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }} title="Height for THIS wall only — full-height tile here, 4-ft wainscot there, same condition. ↺ returns to the condition height.">
               <Icon name="height" size={12} />
@@ -7588,6 +7915,11 @@ export default function TakeoffCanvas() {
           {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
           {vertTotal > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }} title="Display only — floor-area perimeters × this condition's height (not committed)">{fa(vertTotal)} vert (perim × H)</div>}
           {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
+          {(sheetFloorSf > 0 || sheetWallSf > 0) && (sheetFloorSf !== condTotal || sheetWallSf !== wallTotal) && (
+            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 6 }} title="All conditions on this sheet — estimate keeps every committed mask">
+              Sheet: {sheetFloorSf > 0 ? `${fa(sheetFloorSf)} floor` : ""}{sheetFloorSf > 0 && sheetWallSf > 0 ? " · " : ""}{sheetWallSf > 0 ? `${fa(sheetWallSf)} wall` : ""}
+            </div>
+          )}
           <div style={{ fontSize: 10.5, opacity: 0.45, marginTop: 6 }}>{visibleShapes.length} shapes on {groupKeys.length > 1 ? `${groupKeys.length} sheets` : "sheet"} · zoom {(tf.scale * 100).toFixed(0)}%</div>
         </div>
 
@@ -7695,7 +8027,12 @@ export default function TakeoffCanvas() {
         )}
 
         {showDrawingsChat && (
-          <DrawingsChatPanel onClose={() => setShowDrawingsChat(false)} />
+          <DrawingsChatPanel
+            onClose={() => setShowDrawingsChat(false)}
+            onOpenInWorkspace={openCitationInWorkspace}
+            sheetNames={sheets.map((s) => s.name)}
+            galleryLabels={galleryLabels}
+          />
         )}
 
         {showRates && (
@@ -7737,6 +8074,7 @@ export default function TakeoffCanvas() {
           onShapeNavigate={flyToShape}
           onShapeDelete={deleteShapeFromBoq}
           onClearFocus={() => setBoqFocusShapeId(null)}
+          onOpenRates={() => setShowRates(true)}
           materialRates={materialRates}
           projectSettings={projectSettings}
           pricingCtx={pricingCtx}

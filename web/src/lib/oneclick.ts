@@ -1156,3 +1156,268 @@ export function ringArea(pts: Point[]): number {
   }
   return Math.abs(a) / 2;
 }
+
+// ── 7. wall-ink flood (mirror of room flood — fills ink, not void) ─────────
+// Wall Trace clicks on wall poché / heavy linework and floods the connected
+// ink component. Rooms become holes when the ink region is traced with
+// traceRegionWithHoles. Guards against dimension/grid bleed via line-weight
+// prefilter (buildWallMask) + a separate leak cap.
+
+export const WALL_LEAK_FRACTION = 0.15;   // Balanced default — one wing shouldn't exceed ~15% of sheet ink
+export const WALL_TINY_PX = 20;
+export const WALL_MIN_THICK = 3;
+export const WALL_GROWTH_MAX = 2.5;
+/** Long axis-aligned strokes above this fraction of the sheet side are treated as grid (not wall ink). */
+export const WALL_GRID_SPAN_FRAC = 0.72;
+/** Max device pen width for the grid-span rule — heavier strokes stay wall. */
+export const WALL_GRID_MAX_DEVW = 3;
+
+const WALL_SENS_ANCHORS: Array<[number, number, number, number]> = [
+  [SENS_STRICT, 3, 0.10, 1.5],       // heavier pen only, tight leak cap
+  [SENS_BALANCED, 2, WALL_LEAK_FRACTION, WALL_GROWTH_MAX],
+  [SENS_AGGRESSIVE, 1, 0.22, 3.5],   // hairlines included, looser cap
+];
+
+/** Sensitivity → min device pen width, leak fraction, hatch-escalation growth cap. */
+export function wallSensitivityParams(sensitivity: number): { minDevW: number; leakFraction: number; growthMax: number } {
+  const s = Math.max(0, Math.min(1, Number.isFinite(sensitivity) ? sensitivity : SENS_BALANCED));
+  let a = WALL_SENS_ANCHORS[0], b = WALL_SENS_ANCHORS[WALL_SENS_ANCHORS.length - 1];
+  for (let i = 1; i < WALL_SENS_ANCHORS.length; i++) {
+    if (s <= WALL_SENS_ANCHORS[i][0]) { a = WALL_SENS_ANCHORS[i - 1]; b = WALL_SENS_ANCHORS[i]; break; }
+  }
+  const t = b[0] === a[0] ? 0 : (s - a[0]) / (b[0] - a[0]);
+  return {
+    minDevW: Math.round(a[1] + (b[1] - a[1]) * t),
+    leakFraction: a[2] + (b[2] - a[2]) * t,
+    growthMax: a[3] + (b[3] - a[3]) * t,
+  };
+}
+
+/** Wall-only mask: plot segments at or above minDevW device pen width.
+ *  Solid poché fills (SEG_FILLONLY) always plot — they're wall ink, not hatch. */
+export function buildWallMask(
+  segs: number[], imgW: number, imgH: number,
+  maxDim = MASK_MAX_DIM, meta: Uint8Array | null = null, minDevW = 2,
+): MaskObj {
+  const ws = Math.min(1, maxDim / Math.max(imgW, imgH, 1));
+  const mw = Math.max(2, Math.ceil(imgW * ws)), mh = Math.max(2, Math.ceil(imgH * ws));
+  const mask = new Uint8Array(mw * mh);
+  const soft = meta ? classifyHatchSegs(segs, meta, ws) : null;
+  let softCount = 0;
+  const minW = Math.max(1, Math.floor(minDevW));
+  for (let i = 0, si = 0; i + 3 < segs.length; i += 4, si++) {
+    const flags = meta ? meta[si] : 0;
+    if (flags & SEG_CLIP) continue;
+    // Door swings are bezier chords — they bridge openings and must not be wall ink.
+    if (flags & SEG_CURVE) continue;
+    const devW = flags >> 4;
+  // poché fills are always wall ink; thin strokes must clear the weight gate
+    if (!(flags & SEG_FILLONLY) && devW < minW) continue;
+    const sx0 = segs[i], sy0 = segs[i + 1], sx1 = segs[i + 2], sy1 = segs[i + 3];
+    const dx = sx1 - sx0, dy = sy1 - sy0;
+    const lenImg = Math.hypot(dx, dy);
+    if (!(flags & SEG_FILLONLY) && lenImg > 0) {
+      let ang = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
+      if (ang > 90) ang = 180 - ang;
+      const axis = ang <= 4 || ang >= 86;
+      const spanLim = Math.max(imgW, imgH) * WALL_GRID_SPAN_FRAC;
+      if (axis && lenImg >= spanLim && devW <= WALL_GRID_MAX_DEVW) continue;
+    }
+    const v = soft && soft[si] ? 2 : 1;
+    if (v === 2) softCount++;
+    let x0 = Math.round(sx0 * ws), y0 = Math.round(sy0 * ws);
+    const x1 = Math.round(sx1 * ws), y1 = Math.round(sy1 * ws);
+    const bdx = Math.abs(x1 - x0), bdy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let e = bdx + bdy;
+    for (;;) {
+      if (x0 >= 0 && y0 >= 0 && x0 < mw && y0 < mh) mask[y0 * mw + x0] |= v;
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * e;
+      if (e2 >= bdy) { e += bdy; x0 += sx; }
+      if (e2 <= bdx) { e += bdx; y0 += sy; }
+    }
+  }
+  return { mask, mw, mh, ws, softCount };
+}
+
+/** 4-connected flood among ink pixels (mask bit & inkBits). */
+function floodInkPass(maskObj: MaskObj, ix: number, iy: number, inkBits: number, leakFraction: number): FloodResult {
+  const { mask, mw, mh, ws } = maskObj;
+  const ink = (idx: number) => (mask[idx] & inkBits) !== 0;
+  let sx = Math.round(ix * ws), sy = Math.round(iy * ws);
+  if (sx < 0 || sy < 0 || sx >= mw || sy >= mh) return { status: "boundary" };
+  if (!ink(sy * mw + sx)) {
+    let found: Point | null = null;
+    for (let r = 1; r <= 3 && !found; r++) {
+      for (let dy = -r; dy <= r && !found; dy++) for (let dx = -r; dx <= r; dx++) {
+        const nx = sx + dx, ny = sy + dy;
+        if (nx >= 0 && ny >= 0 && nx < mw && ny < mh && ink(ny * mw + nx)) { found = [nx, ny]; break; }
+      }
+    }
+    if (!found) return { status: "boundary" };
+    sx = found[0]; sy = found[1];
+  }
+  const region = new Uint8Array(mw * mh);
+  const cap = Math.floor(mw * mh * leakFraction);
+  let count = 0, leaked = false;
+  let bx0 = sx, bx1 = sx, by0 = sy, by1 = sy;
+  const stack: number[][] = [[sx, sy]];
+  while (stack.length) {
+    const popped = stack.pop() as number[];
+    const px = popped[0], py = popped[1];
+    let x0 = px;
+    while (x0 > 0 && ink((py * mw + x0 - 1)) && !region[py * mw + x0 - 1]) x0--;
+    let x1 = px;
+    while (x1 < mw - 1 && ink(py * mw + x1 + 1) && !region[py * mw + x1 + 1]) x1++;
+    if (x0 === 0 || x1 === mw - 1 || py === 0 || py === mh - 1) leaked = true;
+    if (x0 < bx0) bx0 = x0; if (x1 > bx1) bx1 = x1; if (py < by0) by0 = py; if (py > by1) by1 = py;
+    let upOpen = false, downOpen = false;
+    for (let x = x0; x <= x1; x++) {
+      const idx = py * mw + x;
+      if (region[idx]) { upOpen = downOpen = false; continue; }
+      region[idx] = 1; count++;
+      if (py > 0) {
+        const u = idx - mw;
+        if (ink(u) && !region[u]) { if (!upOpen) { stack.push([x, py - 1]); upOpen = true; } }
+        else upOpen = false;
+      }
+      if (py < mh - 1) {
+        const d = idx + mw;
+        if (ink(d) && !region[d]) { if (!downOpen) { stack.push([x, py + 1]); downOpen = true; } }
+        else downOpen = false;
+      }
+    }
+    if (count > cap) return { status: "leak" };
+  }
+  if (leaked) return { status: "leak" };
+  if (count < WALL_TINY_PX || bx1 - bx0 + 1 < WALL_MIN_THICK || by1 - by0 + 1 < WALL_MIN_THICK) return { status: "tiny", count };
+  return { status: "ok", region, count, mw, mh, ws };
+}
+
+// ── 7b. door-neck break (thin bridge removal on hard ink) ───────────────────
+// Removes door-width ink bridges so wall floods don't jump openings. Unlike
+// morph-open, this keeps thin poché bands (2–3 mask px) intact — only strips
+// pixels that are thin in both axes (header lines / swing chords).
+
+function runLengths(hard: Uint8Array, mw: number, mh: number): { hRun: Uint16Array; vRun: Uint16Array } {
+  const hRun = new Uint16Array(mw * mh);
+  const vRun = new Uint16Array(mw * mh);
+  for (let y = 0; y < mh; y++) {
+    const row = y * mw;
+    let x = 0;
+    while (x < mw) {
+      if (!hard[row + x]) { x++; continue; }
+      let x1 = x;
+      while (x1 < mw && hard[row + x1]) x1++;
+      const len = x1 - x;
+      for (let i = x; i < x1; i++) hRun[row + i] = len;
+      x = x1;
+    }
+  }
+  for (let x = 0; x < mw; x++) {
+    let y = 0;
+    while (y < mh) {
+      const i = y * mw + x;
+      if (!hard[i]) { y++; continue; }
+      let y1 = y;
+      while (y1 < mh && hard[y1 * mw + x]) y1++;
+      const len = y1 - y;
+      for (let j = y; j < y1; j++) vRun[j * mw + x] = len;
+      y = y1;
+    }
+  }
+  return { hRun, vRun };
+}
+
+/** Strip hard ink runs ≤ maxGap that are thin in both axes (door bridges). */
+function breakAxisBridges(hard: Uint8Array, mw: number, mh: number, maxGap: number): Uint8Array {
+  const gap = Math.max(1, Math.floor(maxGap));
+  const { hRun, vRun } = runLengths(hard, mw, mh);
+  const out = hard.slice();
+  for (let y = 0; y < mh; y++) {
+    const row = y * mw;
+    let x = 0;
+    while (x < mw) {
+      if (!hard[row + x]) { x++; continue; }
+      let x1 = x;
+      while (x1 < mw && hard[row + x1]) x1++;
+      const hLen = x1 - x;
+      if (hLen <= gap) {
+        for (let i = x; i < x1; i++) {
+          const idx = row + i;
+          if (vRun[idx] <= gap) out[idx] = 0;
+        }
+      }
+      x = x1;
+    }
+  }
+  for (let x = 0; x < mw; x++) {
+    let y = 0;
+    while (y < mh) {
+      const i = y * mw + x;
+      if (!hard[i]) { y++; continue; }
+      let y1 = y;
+      while (y1 < mh && hard[y1 * mw + x]) y1++;
+      const vLen = y1 - y;
+      if (vLen <= gap) {
+        for (let j = y; j < y1; j++) {
+          const idx = j * mw + x;
+          if (hRun[idx] <= gap) out[idx] = 0;
+        }
+      }
+      y = y1;
+    }
+  }
+  return out;
+}
+
+const wallOpenCache = new WeakMap<Uint8Array, Map<number, MaskObj>>();
+
+/** Break door-width ink bridges on hard wall ink; soft hatch bits preserved. */
+export function breakWallOpenings(maskObj: MaskObj, maxGapMaskPx: number): MaskObj {
+  const { mask, mw, mh, ws, softCount } = maskObj;
+  const gap = Math.max(0, Math.floor(maxGapMaskPx));
+  if (gap < 1) return { mask: mask.slice(), mw, mh, ws, softCount };
+  let byGap = wallOpenCache.get(mask);
+  const hit = byGap?.get(gap);
+  if (hit) return hit;
+
+  const hard = new Uint8Array(mw * mh);
+  for (let i = 0; i < hard.length; i++) if (mask[i] & 1) hard[i] = 1;
+  const opened = breakAxisBridges(hard, mw, mh, gap);
+  const out = new Uint8Array(mw * mh);
+  for (let i = 0; i < out.length; i++) {
+    const soft = mask[i] & 2;
+    out[i] = (opened[i] ? 1 : 0) | soft;
+  }
+  const result: MaskObj = { mask: out, mw, mh, ws, softCount };
+  if (!byGap) { byGap = new Map(); wallOpenCache.set(mask, byGap); }
+  byGap.set(gap, result);
+  return result;
+}
+
+/** Wall flood mask: optional door-neck break before ink flood. Cached per source mask + gap. */
+export function prepareWallFloodMask(maskObj: MaskObj, maxGapMaskPx: number = 0): MaskObj {
+  return breakWallOpenings(maskObj, maxGapMaskPx);
+}
+
+/** Flood connected wall ink from a click. Pass 1 = hard walls (bit 1); if tiny
+ *  and the mask has soft hatch, escalate to bits 1|2 with grow-but-verify. */
+export function floodWallInk(
+  maskObj: MaskObj, ix: number, iy: number,
+  sensitivity: number = SENS_BALANCED, maxGapMaskPx: number = 0,
+): FloodResult {
+  const work = maxGapMaskPx >= 1 ? prepareWallFloodMask(maskObj, maxGapMaskPx) : maskObj;
+  const { leakFraction, growthMax } = wallSensitivityParams(sensitivity);
+  const r1 = floodInkPass(work, ix, iy, 1, leakFraction);
+  if (!work.softCount) return r1;
+  if (r1.status === "leak") return r1;
+  if (r1.status === "ok") return r1;
+  const r2 = floodInkPass(work, ix, iy, 3, leakFraction);
+  if (r2.status === "ok" && (r1.status !== "ok" || r2.count <= (r1.count || 0) * growthMax)) {
+    r2.hatchFiltered = true;
+    return r2;
+  }
+  return r1;
+}

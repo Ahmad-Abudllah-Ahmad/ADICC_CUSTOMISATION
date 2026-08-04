@@ -6,6 +6,8 @@ export type UnitSystem = "imperial" | "metric";
 
 export const M_PER_FT = 0.3048;
 export const M2_PER_SF = 0.09290304;
+/** Cubic feet → cubic meters */
+export const M3_PER_CF = 0.028316846592;
 
 /** area for display: SF in, SF or m² out */
 export const areaVal = (sf: number, units: UnitSystem): number =>

@@ -1,0 +1,30 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feature/citation-open-source-file",
+    "feature/layers",
+    "fix/canvas-chrome-stability",
+    "main",
+    "mustafa/project-isolation",
+    "mustafa_branch",
+    "ui/toolbar-sizing"
+  ],
+  "parent": {
+    "feature/citation-open-source-file": "main",
+    "feature/layers": "main",
+    "fix/canvas-chrome-stability": "main",
+    "main": null,
+    "mustafa/project-isolation": "main",
+    "mustafa_branch": "main",
+    "ui/toolbar-sizing": "main"
+  },
+  "order": [
+    "main",
+    "feature/citation-open-source-file",
+    "feature/layers",
+    "fix/canvas-chrome-stability",
+    "mustafa/project-isolation",
+    "mustafa_branch",
+    "ui/toolbar-sizing"
+  ]
+}

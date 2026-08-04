@@ -103,6 +103,7 @@ export default function BoqPanel({
   onShapeNavigate,
   onShapeDelete,
   onClearFocus,
+  onOpenRates,
   materialRates = [],
   projectSettings = {},
   pricingCtx = null,
@@ -363,9 +364,18 @@ export default function BoqPanel({
         </td>
         <td style={td}>
           <input style={{ ...inp, width: 72, textAlign: "right" }} type="number" step="any"
-            value={meta.rate ?? ""} placeholder="0"
+            value={meta.rate ?? ""} placeholder={priced.rate ? String(priced.rate) : "0"}
             onClick={(e) => e.stopPropagation()}
             onChange={(e) => upsertLine(key, { rate: e.target.value, sheet_id: g.sheet_id, condition_id: r.condition_id, shape_id: r.shape_id })} />
+          {!meta.rate && !priced.rate && (r.finish_tag || displayDesc) && (
+            <div style={{ fontSize: 9, color: "var(--c-warning)", marginTop: 2 }}>
+              No rate
+              {onOpenRates ? (
+                <> — <button type="button" onClick={(e) => { e.stopPropagation(); onOpenRates(); }}
+                  style={{ border: "none", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 9, padding: 0, textDecoration: "underline" }}>Rates</button></>
+              ) : null}
+            </div>
+          )}
         </td>
         <td style={{ ...td, fontFamily: "var(--f-mono)", textAlign: "right", fontWeight: 600 }}>
           {amount ? money(amount, projectSettings.currency || "AED") : dash}
@@ -415,7 +425,7 @@ export default function BoqPanel({
         <Icon name="document" size={16} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: "0.02em" }}>Bill of Quantities</div>
-          <div style={{ fontSize: 10.5, opacity: 0.85, marginTop: 2 }}>Per-room masked takeoff · auto-detected from plan</div>
+          <div style={{ fontSize: 10.5, opacity: 0.85, marginTop: 2 }}>Rooms &amp; walls · auto-detected · linked to estimate</div>
         </div>
         <button type="button" onClick={onClose} title="Close BOQ panel" style={{ border: "none", background: "transparent", color: "inherit", fontSize: 18, cursor: "pointer", padding: "0 4px" }}>×</button>
       </div>
@@ -432,7 +442,10 @@ export default function BoqPanel({
       <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
         <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>
           {grand.sheets} sheet{grand.sheets === 1 ? "" : "s"} · {grand.shapes_n} mask{grand.shapes_n === 1 ? "" : "s"} ·{" "}
-          <b style={{ color: "var(--ink)" }}>{num(grand.floor)} {areaUnit(units)}</b> floor total
+          <b style={{ color: "var(--ink)" }}>{num(grand.floor)} {areaUnit(units)}</b> floor
+          {grand.wall > 0 && (
+            <> · <b style={{ color: "var(--ink)" }}>{num(grand.wall)} {areaUnit(units)}</b> wall</>
+          )}
         </span>
         <div style={{ flex: 1 }} />
         <button type="button" onClick={syncFromTakeoff} title="Re-detect room names and refresh quantities from the canvas"
@@ -448,7 +461,7 @@ export default function BoqPanel({
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
         {!bySheet.length && !manualLines.length ? (
           <div style={{ padding: "20px 14px", color: "var(--ink-muted)", fontSize: 13, lineHeight: 1.5 }}>
-            No masked floor data yet. Trace areas on the plan — room names, finish codes, and quantities fill in automatically when each mask is complete.
+            No masked takeoff yet. Trace rooms (One-Click) or walls (Wall Trace) — room names, finish codes, quantities, and rates fill in from schedules and the Rates catalog when available.
           </div>
         ) : (
           <>
