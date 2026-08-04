@@ -45,6 +45,8 @@ export const SNAP_CELL = 24;   // snap-grid bucket, raster px (Spline runs 12 â€
 // toolbar menus â€” STACK-style: the menu face shows the armed tool
 export const MEASURE_TOOLS = [
   { id: "oneclick", icon: "oneClick", label: "One-Click Area", shortcut: "O" },
+  { id: "walltrace", icon: "wallTrace", label: "Wall Trace", shortcut: "W" },
+  { id: "wallarea", icon: "wallArea", label: "Wall Area", shortcut: "U" },
   { id: "area", icon: "area", label: "Area", shortcut: "A" },
   { id: "rect", icon: "rectTool", label: "Rectangle", shortcut: "R" },
   { id: "linear", icon: "linear", label: "Linear", shortcut: "L" },

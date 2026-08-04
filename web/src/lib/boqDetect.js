@@ -232,15 +232,79 @@ function polyCentroid(poly) {
   return [sx / poly.length, sy / poly.length];
 }
 
-export function detectRoomName(shape, { planSymbols, roomLabelsBySheet, symbolNotes, panelImgs }) {
+function pointInHolePx(x, y, holeNorm, dims) {
+  const hp = holeNorm.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
+  return hp.length >= 3 && pointInPoly(x, y, hp);
+}
+
+/** Room label / symbol lookup inside a single hole polygon (wall poché void). */
+function detectRoomInHole(holeNorm, sheetId, dims, { planSymbols, roomLabelsBySheet, symbolNotes }) {
+  const hp = holeNorm.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
+  if (hp.length < 3) return "";
+  const [cx, cy] = polyCentroid(hp);
+  const roomLabels = roomLabelsBySheet[sheetId] || [];
+
+  let bestLabel = null;
+  for (const lbl of roomLabels) {
+    if (!pointInPoly(lbl.x, lbl.y, hp)) continue;
+    const d = Math.hypot(lbl.x - cx, lbl.y - cy);
+    const score = d - lbl.h * 0.15;
+    if (!bestLabel || score < bestLabel.score) bestLabel = { text: lbl.text, score };
+  }
+  if (bestLabel) return bestLabel.text;
+
+  let bestSym = null;
+  for (const sym of (planSymbols || []).filter((s) => s.sheet_id === sheetId)) {
+    if (!pointInPoly(sym.x, sym.y, hp)) continue;
+    const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+    const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
+    const room = fields.room_name;
+    if (!room) continue;
+    const d = Math.hypot(sym.x - cx, sym.y - cy);
+    if (!bestSym || d < bestSym.d) bestSym = { room, d };
+  }
+  return bestSym?.room || "";
+}
+
+/** If a wall hole centroid sits inside a traced floor mask, borrow that room name. */
+function detectRoomFromFloorMasks(shape, allShapes, dims, ctx) {
+  if (!allShapes?.length || !shape.holes_norm?.length) return "";
+  for (const hole of shape.holes_norm) {
+    const hp = hole.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
+    if (hp.length < 3) continue;
+    const [cx, cy] = polyCentroid(hp);
+    for (const other of allShapes) {
+      if (other.id === shape.id || other.sheet_id !== shape.sheet_id || other.measure_role !== "floor_area") continue;
+      const op = shapePolyPx(other, dims);
+      if (op.length < 3 || !pointInPoly(cx, cy, op)) continue;
+      const r = detectRoomName(other, ctx, allShapes);
+      if (r) return r;
+    }
+  }
+  return "";
+}
+
+export function detectRoomName(shape, ctx, allShapes = null) {
   const assigned = shapeLabelValue(shape);
   if (assigned) return assigned;
 
-  const dims = panelImgs[shape.sheet_id];
+  const dims = ctx.panelImgs[shape.sheet_id];
   const poly = shapePolyPx(shape, dims);
+
+  // Wall network: room names live inside holes (or on matching floor masks).
+  if (shape.measure_role === "wall_area" && shape.holes_norm?.length) {
+    for (const hole of shape.holes_norm) {
+      const fromHole = detectRoomInHole(hole, shape.sheet_id, dims, ctx);
+      if (fromHole) return fromHole;
+    }
+    const fromFloor = detectRoomFromFloorMasks(shape, allShapes, dims, ctx);
+    if (fromFloor) return fromFloor;
+  }
+
   if (poly.length < 3) return "";
 
   const [cx, cy] = polyCentroid(poly);
+  const { planSymbols, roomLabelsBySheet, symbolNotes } = ctx;
   const roomLabels = roomLabelsBySheet[shape.sheet_id] || [];
 
   let bestLabel = null;
@@ -276,6 +340,10 @@ export function shapeQuantities(shape) {
     case "deduct": floor_sf = -(cp.area_sf || 0); break;
     case "floor_area": floor_sf = cp.area_sf || 0; lf = cp.perimeter_lf || 0; break;
     case "surface_area": wall_sf = cp.area_sf || 0; lf = cp.perimeter_lf || 0; break;
+    case "wall_area":
+      wall_sf = cp.wall_face_sf || cp.area_sf || 0;
+      lf = cp.perimeter_lf || 0;
+      break;
     case "linear": lf = cp.perimeter_lf || 0; break;
     case "count": ea = cp.count || 1; break;
     default: break;
@@ -298,7 +366,7 @@ export function buildShapeRows(shapes, conditions, detectCtx) {
     .map((s) => {
       const cond = byId.get(s.condition_id);
       const qty = shapeQuantities(s);
-      const room_detected = detectRoomName(s, detectCtx);
+      const room_detected = detectRoomName(s, detectCtx, shapes);
       return {
         shape_id: s.id,
         sheet_id: s.sheet_id,

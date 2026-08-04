@@ -41,6 +41,11 @@ function accumulateRole(acc, s) {
     case "deduct": acc.floor -= cp.area_sf || 0; break;
     case "floor_area": acc.floor += cp.area_sf || 0; break;
     case "surface_area": acc.wall += cp.area_sf || 0; break;
+    case "wall_area":
+      acc.wall += cp.wall_face_sf || cp.area_sf || 0;
+      acc.wallFootprint += cp.footprint_sf || 0;
+      acc.wallVolume += cp.volume_cf || 0;
+      break;
     case "linear": acc.lf += cp.perimeter_lf || 0; acc.border += cp.area_sf || 0; break;
     case "count": acc.ea += cp.count || 1; break;
     default: break;
@@ -53,10 +58,11 @@ export function conditionTotals(conditions, shapes) {
     const waste = Math.max(0, Number(c.waste_pct) || 0);
     const w = 1 + waste / 100;
     const cs = shapes.filter((s) => s.condition_id === c.id);
-    const acc = { floor: 0, wall: 0, border: 0, lf: 0, ea: 0 };
+    const acc = { floor: 0, wall: 0, border: 0, lf: 0, ea: 0, wallFootprint: 0, wallVolume: 0 };
     for (const s of cs) accumulateRole(acc, s);
-    let { floor, wall, border, lf, ea } = acc;
+    let { floor, wall, border, lf, ea, wallFootprint, wallVolume } = acc;
     floor *= mult; wall *= mult; border *= mult; lf *= mult; ea *= mult;
+    wallFootprint *= mult; wallVolume *= mult;
     const total = floor + wall + border;
     // supporting materials: deterministic quantity = basis ÷ coverage, rounded up
     // to whole units (you buy whole buckets/bags). basis = this condition's measured
@@ -73,10 +79,12 @@ export function conditionTotals(conditions, shapes) {
       multiplier: mult, waste_pct: waste, shape_count: cs.length,
       floor_sf: round2(floor), wall_sf: round2(wall), border_sf: round2(border),
       lf: round2(lf), ea,
+      wall_footprint_sf: round2(wallFootprint), wall_volume_cf: round2(wallVolume),
       total_sf: round2(total),
       // waste-adjusted (order quantities)
       floor_sf_net: round2(floor * w), wall_sf_net: round2(wall * w),
       border_sf_net: round2(border * w), lf_net: round2(lf * w),
+      wall_footprint_sf_net: round2(wallFootprint * w), wall_volume_cf_net: round2(wallVolume * w),
       total_sf_net: round2(total * w),
       sy_net: round2((total * w) / 9),
       materials,
@@ -115,7 +123,7 @@ export function sheetTotals(conditions, shapes) {
     let conds = bySheet.get(s.sheet_id);
     if (!conds) { conds = new Map(); bySheet.set(s.sheet_id, conds); }
     let a = conds.get(s.condition_id);
-    if (!a) { a = { n: 0, floor: 0, wall: 0, border: 0, lf: 0, ea: 0 }; conds.set(s.condition_id, a); }
+    if (!a) { a = { n: 0, floor: 0, wall: 0, border: 0, lf: 0, ea: 0, wallFootprint: 0, wallVolume: 0 }; conds.set(s.condition_id, a); }
     a.n += 1;
     accumulateRole(a, s);
   }
@@ -129,6 +137,7 @@ export function sheetTotals(conditions, shapes) {
         id: c.id, finish_tag: c.finish_tag, color: c.color,
         multiplier: c.multiplier || 1, shape_count: a.n,
         floor_sf: a.floor, wall_sf: a.wall, border_sf: a.border, lf: a.lf, ea: a.ea,
+        wall_footprint_sf: a.wallFootprint, wall_volume_cf: a.wallVolume,
       };
     });
     return { sheet_id, rows };
