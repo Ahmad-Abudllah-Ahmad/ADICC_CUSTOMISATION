@@ -245,12 +245,53 @@ export function seedShapeSnapshot(projectId, shapes) {
   shapeSnapshot.set(projectId, next);
 }
 
+// Upsert defensively: if the live schema is missing a column the client
+// tries to write (e.g. an optional field whose migration hasn't been applied
+// to this environment yet), PostgREST rejects the WHOLE request with
+// PGRST204 ("Could not find the 'x' column ... in the schema cache") — which
+// previously aborted the entire sync before shapes/holes/BOQ lines ever
+// reached the database, so newly drawn/edited/deleted polygon points were
+// silently lost. Retry with that one column dropped from every affected row
+// (never touching the schema itself) so the rest of the save — most
+// importantly the shapes geometry, which is also fully preserved inside
+// `annotations` — still goes through.
+const MISSING_COLUMN_RE = /Could not find the '([^']+)' column/i;
+
+// Columns this environment rejected, remembered per table so a schema gap is
+// discovered once and then stripped up front — later saves send a payload the
+// live table accepts on the first try instead of re-failing every time.
+const unknownColumns = new Map();
+
+function withoutColumns(rowOrRows, drop) {
+  if (!drop.size) return rowOrRows;
+  const strip = (row) => {
+    const out = {};
+    for (const key of Object.keys(row)) if (!drop.has(key)) out[key] = row[key];
+    return out;
+  };
+  return Array.isArray(rowOrRows) ? rowOrRows.map(strip) : strip(rowOrRows);
+}
+
+async function upsertResilient(table, rowOrRows, onConflict) {
+  let drop = unknownColumns.get(table);
+  if (!drop) unknownColumns.set(table, (drop = new Set()));
+  for (;;) {
+    const { error } = await supabase.from(table).upsert(withoutColumns(rowOrRows, drop), { onConflict });
+    if (!error) return;
+    const missing = error.code === "PGRST204" ? error.message?.match(MISSING_COLUMN_RE)?.[1] : null;
+    // Nothing new to strip (unrelated failure, or the same column again) — surface it.
+    if (!missing || drop.has(missing)) throw error;
+    drop.add(missing);
+  }
+}
+
+async function upsertProjectRow(projectRow) {
+  await upsertResilient("projects", projectRow, "id");
+}
+
 async function replaceChildRows(table, projectId, rows, onConflict) {
   await supabase.from(table).delete().eq("project_id", projectId);
-  if (rows.length) {
-    const { error } = await supabase.from(table).upsert(rows, { onConflict });
-    if (error) throw error;
-  }
+  if (rows.length) await upsertResilient(table, rows, onConflict);
 }
 
 /** Load project annotations from Supabase (falls back to stored JSON blob). */
@@ -526,20 +567,12 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     condition_columns: payload.condition_columns || [],
     shape_labels: payload.shape_labels || [],
     palette: payload.palette || [],
-    sheet_levels: payload.sheet_levels || {},
-    file_folders: payload.file_folders || {},
-    symbol_notes: payload.symbol_notes || {},
-    provenance_counters: payload.provenance_counters || { shapes_deleted: {} },
-    sheet_group: payload.sheet_group || [],
-    last_group: payload.last_group || [],
-    sheet_tabs: payload.sheet_tabs || [],
     schema_version: ANN_SCHEMA,
     annotations: payload,
     updated_at: new Date().toISOString(),
   };
 
-  const { error: projErr } = await supabase.from("projects").upsert(projectRow, { onConflict: "id" });
-  if (projErr) throw projErr;
+  await upsertProjectRow(projectRow);
 
   await replaceChildRows("conditions", projectId, conditions.map((c) => ({
     project_id: projectId,
@@ -655,7 +688,7 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     if (evErr) throw evErr;
   }
 
-  const { error: totErr } = await supabase.from("project_totals").upsert({
+  await upsertResilient("project_totals", {
     project_id: projectId,
     shape_count: totals.shape_count,
     floor_sf: totals.floor_sf,
@@ -676,6 +709,5 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     grand_total: totals.grand_total ?? 0,
     by_condition_cost: totals.by_condition_cost ?? {},
     updated_at: new Date().toISOString(),
-  }, { onConflict: "project_id" });
-  if (totErr) throw totErr;
+  }, "project_id");
 }

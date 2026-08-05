@@ -19,9 +19,12 @@ test("classifySheetByName: doors / finishes / windows / detail", () => {
   assert.equal(classifySheetByName("A7101-WOODEN DOORS (SHEET 1 OF5).pdf"), "door_schedule");
   assert.equal(classifySheetByName("A0002-FINISHES SCHEDUALE.pdf"), "finish_schedule");
   assert.equal(classifySheetByName("A7201-ALUMINUM WINDOWS DETAILS.pdf"), "window_schedule");
+  assert.equal(classifySheetByName("A7202-CURTAIN WALL SCHEDULE.pdf"), "window_schedule");
   assert.equal(classifySheetByName("A4106-STAIRCASE 04 DETAILS.pdf"), "detail");
   assert.equal(classifySheetByName("A7106-WOODEN DOORS JAMB DETAILS.pdf"), "detail");
   assert.equal(classifySheetByName("A1105-1st FLOOR PLAN.pdf"), "other");
+  // Folder path must not force DETAIL class — classify basename only in extractors
+  assert.equal(classifySheetByName("DETAILS/A7101-WOODEN DOORS.pdf"), "door_schedule");
   // Detail sheet must NOT become door_schedule just because page text says "DOOR"
   assert.equal(
     classifySheetByName("A5601-GARBAGE DETAIL.pdf", "HOPPER DOOR D03 FIRE RATED"),
@@ -290,4 +293,33 @@ test("buildScheduleKb + lookup + enrich hover fields", () => {
   assert.equal(fields.type, "Wooden Door D01");
   // Manual override wins
   assert.equal(resolveSymbolFields(en[0].schedule, { fire_rating: "60 MIN" }, null).fire_rating, "60 MIN");
+});
+
+test("enrich hover: CW-06 matches schedule KB variants", () => {
+  const kb = buildScheduleKb([
+    {
+      tag: "CW-06",
+      kind: "window",
+      type: "Curtain Wall CW-06",
+      description: "Curtain Wall CW-06 — W 3000 × H 2600 mm",
+      size: "W 3000 × H 2600 mm",
+      remarks: "Count 12 · See curtain-wall legend (C1–C6)",
+      source_sheet: "A7201.pdf",
+      source_title: "A7201-ALUMINUM WINDOWS DETAILS (SHEET 1 OF 2)",
+      source_bbox: { x: 10, y: 20, w: 200, h: 100 },
+    },
+  ]);
+  assert.ok(lookupScheduleKb(kb, "CW-06"));
+  assert.ok(lookupScheduleKb(kb, "CW06"));
+
+  const idx = buildPlanSymbolIndex({
+    "plan.pdf": [{ tag: "CW-06", kind: "finish", x: 80, y: 80, w: 24, h: 24 }],
+  });
+  const en = enrichSymbolsWithSchedule(idx, { kb });
+  assert.equal(en[0].schedule.type, "Curtain Wall CW-06");
+  assert.equal(en[0].schedule.size, "W 3000 × H 2600 mm");
+  assert.ok(en[0].schedule.source_title?.includes("ALUMINUM WINDOWS"));
+  const fields = resolveSymbolFields(en[0].schedule, {}, en[0].room_name);
+  assert.equal(fields.type, "Curtain Wall CW-06");
+  assert.equal(fields.size, "W 3000 × H 2600 mm");
 });

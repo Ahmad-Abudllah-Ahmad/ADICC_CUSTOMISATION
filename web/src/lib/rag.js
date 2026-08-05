@@ -8,7 +8,8 @@ import { parseSheetKey } from "./sheetKey";
 
 /** @typedef {{ room: string, matched_room?: string|null, finish_codes: Array<{ category: string, code: string, description: string, material?: string|null }>, citations: Citation[], abstained: boolean }} FinishForRoomResponse */
 
-const RAG_BASE = "/rag";
+// Local Vite proxies /rag → 127.0.0.1:8001. Production sets VITE_RAG_URL to the Render RAG service.
+const RAG_BASE = (import.meta.env.VITE_RAG_URL || "/rag").replace(/\/$/, "");
 
 /**
  * @param {string} question

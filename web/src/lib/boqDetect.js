@@ -233,16 +233,18 @@ function polyCentroid(poly) {
 }
 
 function pointInHolePx(x, y, holeNorm, dims) {
+  if (!dims?.w || !dims?.h) return false;
   const hp = holeNorm.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
   return hp.length >= 3 && pointInPoly(x, y, hp);
 }
 
 /** Room label / symbol lookup inside a single hole polygon (wall poché void). */
 function detectRoomInHole(holeNorm, sheetId, dims, { planSymbols, roomLabelsBySheet, symbolNotes }) {
+  if (!dims?.w || !dims?.h) return "";
   const hp = holeNorm.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
   if (hp.length < 3) return "";
   const [cx, cy] = polyCentroid(hp);
-  const roomLabels = roomLabelsBySheet[sheetId] || [];
+  const roomLabels = roomLabelsBySheet?.[sheetId] || [];
 
   let bestLabel = null;
   for (const lbl of roomLabels) {
@@ -257,7 +259,7 @@ function detectRoomInHole(holeNorm, sheetId, dims, { planSymbols, roomLabelsBySh
   for (const sym of (planSymbols || []).filter((s) => s.sheet_id === sheetId)) {
     if (!pointInPoly(sym.x, sym.y, hp)) continue;
     const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
-    const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
+    const fields = resolveSymbolFields(sym.schedule, symbolNotes?.[noteKey], sym.room_name);
     const room = fields.room_name;
     if (!room) continue;
     const d = Math.hypot(sym.x - cx, sym.y - cy);
@@ -268,7 +270,7 @@ function detectRoomInHole(holeNorm, sheetId, dims, { planSymbols, roomLabelsBySh
 
 /** If a wall hole centroid sits inside a traced floor mask, borrow that room name. */
 function detectRoomFromFloorMasks(shape, allShapes, dims, ctx) {
-  if (!allShapes?.length || !shape.holes_norm?.length) return "";
+  if (!dims?.w || !dims?.h || !allShapes?.length || !shape.holes_norm?.length) return "";
   for (const hole of shape.holes_norm) {
     const hp = hole.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
     if (hp.length < 3) continue;
@@ -288,7 +290,10 @@ export function detectRoomName(shape, ctx, allShapes = null) {
   const assigned = shapeLabelValue(shape);
   if (assigned) return assigned;
 
-  const dims = ctx.panelImgs[shape.sheet_id];
+  // Panel bitmap may not be ready yet (shapes restored before sheets paint) —
+  // skip geometry lookup rather than crash BoqPanel on dims.w.
+  const dims = ctx?.panelImgs?.[shape.sheet_id];
+  if (!dims?.w || !dims?.h) return "";
   const poly = shapePolyPx(shape, dims);
 
   // Wall network: room names live inside holes (or on matching floor masks).

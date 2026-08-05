@@ -9,6 +9,8 @@
 // attached as a match so hover can show "also on A-102". Schedule/condition
 // enrichment fills known fields; blanks stay editable via SymbolNotes.
 
+import { lookupScheduleKb, tagLookupKeys } from "./symbolScheduleKb";
+
 export type SymbolKind = "door" | "window" | "type" | "finish" | "detail";
 
 export type SymbolToken = { str: string; x: number; y: number; h: number; w?: number };
@@ -476,19 +478,17 @@ export type KbRowLike = {
 };
 
 function kbForTag(kb: KbRowLike[] | Map<string, KbRowLike> | undefined, tag: string): KbRowLike | undefined {
-  if (!kb) return undefined;
+  if (!kb || !tag) return undefined;
+  // Same key variants as lookupScheduleKb (D01/D-1, CW-06/CW06, …) so hover
+  // enrichment matches schedule-PDF rows the BOQ path already resolves.
   if (kb instanceof Map) {
-    const direct = kb.get(tag);
-    if (direct) return direct;
-    // Try padded / dashed door variants
-    const m = tag.match(/^D(\d{1,3})([A-Z]?)$/i);
-    if (m) {
-      const n = m[1].padStart(2, "0");
-      return kb.get(`D${n}${m[2]}`) || kb.get(`D-${parseInt(m[1], 10)}${m[2]}`) || kb.get(`D${parseInt(m[1], 10)}${m[2]}`);
-    }
-    return undefined;
+    return (lookupScheduleKb(kb, tag) as KbRowLike | null) || undefined;
   }
-  return kb.find((e) => (e.tag || "").toUpperCase() === tag.toUpperCase());
+  for (const k of tagLookupKeys(tag)) {
+    const hit = kb.find((e) => (e.tag || "").toUpperCase() === k.toUpperCase());
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 /** Fill schedule fields from imported schedule rows, project KB, and/or conditions. */

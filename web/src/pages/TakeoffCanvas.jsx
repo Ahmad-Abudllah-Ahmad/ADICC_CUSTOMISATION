@@ -362,6 +362,7 @@ export default function TakeoffCanvas() {
   const [selectedId, setSelectedId] = useState(null);   // selected shape (Select tool)
   const [selVert, setSelVert] = useState(null);         // selected vertex index of the selected shape — Delete removes just that point
   const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
+  const [hoverEdge, setHoverEdge] = useState(null);   // { shapeId, i, length } — hovered edge segment length tooltip
   const [selectedMarkupId, setSelectedMarkupId] = useState(null); // selected markup — mutually exclusive with selectedId
   const [rfis, setRfis] = useState([]);                 // RFI register (Request For Information); linked to markups via markup.rfi_id === rfi.id
   // Deletion provenance: shapes leave no record once filtered out of `shapes`,
@@ -522,7 +523,14 @@ export default function TakeoffCanvas() {
   }
   // selecting a shape clears any markup selection and vice-versa — one live
   // selection at a time (bidirectional mutual exclusivity). Passing null clears both.
-  const selectShape = (id) => { setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null); };
+  // It also dismisses any pinned/hovering plan-symbol card (e.g. a curtain-wall
+  // finish-code popup) and any pinned mask BOQ card so neither lingers or blocks
+  // hover on other masks after the selection changes (or is cleared).
+  const selectShape = (id) => {
+    setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null);
+    setSymbolFocus(null); setSymbolHover(null);
+    setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqHoverStickyRef.current = false;
+  };
   const selectMarkup = (id) => { setSelectedMarkupId(id); setSelectedId(null); };
   const pendingFlyRef = useRef(null);   // fly-to target whose sheet is opening this tick (two-phase center once its bitmap loads)
 
@@ -567,6 +575,22 @@ export default function TakeoffCanvas() {
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
   const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
   const [showDrawingsChat, setShowDrawingsChat] = useState(false);
+  const [drawingsChatPill, setDrawingsChatPill] = useState(false);   // bottom-center search pill
+  const [drawingsChatDraft, setDrawingsChatDraft] = useState("");
+  const [drawingsChatSeed, setDrawingsChatSeed] = useState("");      // question handed to side panel
+  const drawingsChatPillRef = useRef(null);
+  useEffect(() => {
+    if (!drawingsChatPill) return undefined;
+    const onPointerDown = (e) => {
+      const el = drawingsChatPillRef.current;
+      if (el && !el.contains(e.target)) {
+        setDrawingsChatPill(false);
+        setDrawingsChatDraft("");
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [drawingsChatPill]);
   const [showRates, setShowRates] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
   const [materialRates, setMaterialRates] = useState([]);
@@ -1587,24 +1611,43 @@ export default function TakeoffCanvas() {
   const roomLabelsBySheet = useMemo(() => ({ ...roomLabelsRawRef.current }), [symbolEpoch]);
   const scheduleKb = useMemo(() => new Map(scheduleKbRef.current), [symbolKbEpoch]);
 
+  // Stable name set — listSheets / manifest refresh often rebuilds the sheets
+  // array with identical names; depending on array identity would cancel the
+  // in-flight PDF scan and leave the hover KB empty forever on large projects.
+  const sheetsSig = useMemo(
+    () => sheets.map((s) => s.name).slice().sort().join("\0"),
+    [sheets],
+  );
+
   // Background: scan uploaded PDFs whose filenames look like door / window /
   // finish schedules (or detail sheets) and build a mark → detail knowledge base
   // so hover can show accurate fields from the schedule PDFs themselves.
   useEffect(() => {
-    if (!sheets.length) {
+    if (!sheetsSig) {
       scheduleKbRef.current = new Map();
       setSymbolKbEpoch((n) => n + 1);
       return;
     }
+    const names = sheetsSig.split("\0");
     let cancelled = false;
     (async () => {
       const entries = [];
-      for (const s of sheets) {
+      // Basename classify (folder names like DETAILS/ must not force class), then
+      // door/window/finish first so hover fills before we grind through detail sheets.
+      const ranked = names
+        .map((name) => {
+          const base = name.replace(/\\/g, "/").split("/").pop() || name;
+          return { name, base, cls: classifySheetByName(base) };
+        })
+        .filter((x) => x.cls !== "other")
+        .sort((a, b) => {
+          const rank = { door_schedule: 0, window_schedule: 1, finish_schedule: 2, detail: 3 };
+          return (rank[a.cls] ?? 9) - (rank[b.cls] ?? 9);
+        });
+      for (const { name, base, cls } of ranked) {
         if (cancelled) return;
-        const cls = classifySheetByName(s.name);
-        if (cls === "other") continue;
         try {
-          const pdf = await docFor(s.name);
+          const pdf = await docFor(name);
           if (cancelled) return;
           const nPages = pdf.numPages || 1;
           for (let n = 1; n <= nPages; n++) {
@@ -1614,9 +1657,16 @@ export default function TakeoffCanvas() {
               const tc = await page.getTextContent();
               const vp = page.getViewport({ scale: RENDER_SCALE });
               const tokens = extractRegionText(tc, vp, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
-              const key = n > 1 ? `${s.name}#${n}` : s.name;
-              entries.push(...extractScheduleKbFromSheet(tokens, { sheet_id: key, file_name: s.name }));
+              const key = n > 1 ? `${name}#${n}` : name;
+              entries.push(...extractScheduleKbFromSheet(tokens, { sheet_id: key, file_name: base }));
             } catch { /* skip page */ }
+          }
+          // Publish after each real schedule sheet so CW/D/finish hover fills
+          // without waiting on every DETAIL sheet in a large plan set.
+          if (cls === "door_schedule" || cls === "window_schedule" || cls === "finish_schedule") {
+            if (cancelled) return;
+            scheduleKbRef.current = buildScheduleKb(entries);
+            setSymbolKbEpoch((n) => n + 1);
           }
         } catch { /* skip file */ }
       }
@@ -1625,9 +1675,9 @@ export default function TakeoffCanvas() {
       setSymbolKbEpoch((n) => n + 1);
     })();
     return () => { cancelled = true; };
-    // docFor is stable (useCallback []); sheets identity drives the scan
+    // docFor is stable (useCallback []); sheetsSig drives the scan
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheets]);
+  }, [sheetsSig]);
 
   // ── detail view: re-render the visible region at the current zoom ───────────
   // The base panel bitmap is the fast first paint and the zoomed-out view. Once
@@ -2970,6 +3020,48 @@ export default function TakeoffCanvas() {
       }
     }
     updateHover(e);
+    // Edge hover detection: when the Select tool is active, check if the cursor is
+    // near an edge of ANY visible shape and show that segment's length.
+    if (tool === "select" && !panRef.current && !dragRef.current) {
+      const _pt = toImage(e.clientX, e.clientY);
+      const _thr = 10 / tfRef.current.scale;
+      // Check selected shape first, then all visible shapes
+      const _candidates = selectedId
+        ? [shapes.find((_s) => _s.id === selectedId), ...visibleShapes.filter((_s) => _s.id !== selectedId)]
+        : [...visibleShapes].reverse();
+      let _foundEdge = false;
+      for (const _sel of _candidates) {
+        if (!_sel || _sel.measure_role === "count") continue;
+        const _sp = panelKeySet.has(_sel.sheet_id) ? panelByKey(_sel.sheet_id) : null;
+        if (!_sp || !_sp.img?.w) continue;
+        const _pts = _sel.verts_norm.map(([nx, ny]) => [nx * _sp.img.w + _sp.xOffset, ny * _sp.img.h]);
+        const _closed = _sel.measure_role !== "linear" && _sel.measure_role !== "surface_area";
+        const _edgeN = _closed ? _pts.length : _pts.length - 1;
+        let _bestD = Infinity, _bestI = -1;
+        for (let _i = 0; _i < _edgeN; _i++) {
+          const _j = (_i + 1) % _pts.length;
+          const _d = distToSeg(_pt[0], _pt[1], _pts[_i][0], _pts[_i][1], _pts[_j][0], _pts[_j][1]);
+          if (_d < _thr && _d < _bestD) { _bestD = _d; _bestI = _i; }
+        }
+        if (_bestI >= 0) {
+          const _j = (_bestI + 1) % _pts.length;
+          const _edgePx = Math.hypot(_pts[_j][0] - _pts[_bestI][0], _pts[_j][1] - _pts[_bestI][1]);
+          const _u = uppFor(_sel.sheet_id) || 0;
+          const _len = _edgePx * _u;
+          setHoverEdge((prev) => (prev && prev.shapeId === _sel.id && prev.i === _bestI) ? prev : { shapeId: _sel.id, i: _bestI, length: _len });
+          // Suppress the BOQ hover card when showing the edge length label
+          setShapeBoqHover(null);
+          shapeBoqHoverStickyRef.current = false;
+          _foundEdge = true;
+          break;
+        }
+      }
+      if (!_foundEdge) {
+        setHoverEdge((prev) => prev ? null : prev);
+      }
+    } else {
+      setHoverEdge((prev) => prev ? null : prev);
+    }
     // One-Click proposal editing: dragging a corner/edge grip, else revealing
     // handles on the region under the cursor. Both work in panel-LOCAL px.
     if (ocDragRef.current) { ocDragMove(e); return; }
@@ -6397,9 +6489,6 @@ export default function TakeoffCanvas() {
         <button onClick={() => setShowRates((v) => !v)}
           title="Material rates catalog — AED per m² / m / EA"
           style={{ padding: "8px 14px", border: `1px solid ${showRates ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showRates ? "var(--cobalt)" : "transparent", color: showRates ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Rates</button>
-        <button onClick={() => setShowDrawingsChat((v) => !v)}
-          title="Ask the Volume 4 drawings corpus — citation-grounded Q&A"
-          style={{ padding: "8px 14px", border: `1px solid ${showDrawingsChat ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showDrawingsChat ? "var(--cobalt)" : "transparent", color: showDrawingsChat ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Drawings</button>
         <button onClick={() => setShowReport(true)} disabled={!conditions.length} title="Open the takeoff report — per-condition breakdown with waste, plus CSV / JSON export."
           style={{ padding: "8px 14px", border: "none", background: conditions.length ? "var(--ink)" : "var(--text-faint)", color: "var(--paper-bright)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Report</button>
         {/* Deliberately subtle, not a button: local-first app, cloud mode is an
@@ -7015,6 +7104,61 @@ export default function TakeoffCanvas() {
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
           onDoubleClick={(e) => {
+            // Double-click on a vertex → remove it; Double-click near an edge → insert a vertex
+            // Must run BEFORE the shapeBoqHover check so clicks on the border line work.
+            if (tool === "select" && selectedId) {
+              const _dSel = shapes.find((_x) => _x.id === selectedId);
+              const _dSp = _dSel && panelKeySet.has(_dSel.sheet_id) ? panelByKey(_dSel.sheet_id) : null;
+              if (_dSel && _dSp && _dSel.measure_role !== "count") {
+                const _dP = toImage(e.clientX, e.clientY);
+                const _dPts = _dSel.verts_norm.map(([nx, ny]) => [nx * _dSp.img.w + _dSp.xOffset, ny * _dSp.img.h]);
+                
+                // 1. Check if user double-clicked a vertex (remove it)
+                const _dThr = 10 / tfRef.current.scale;
+                let _clickedVert = -1;
+                for (let _i = 0; _i < _dPts.length; _i++) {
+                  if (Math.hypot(_dPts[_i][0] - _dP[0], _dPts[_i][1] - _dP[1]) < _dThr * 1.6) {
+                    _clickedVert = _i; break;
+                  }
+                }
+                if (_clickedVert >= 0) {
+                  const isClosed = _dSel.measure_role !== "linear" && _dSel.measure_role !== "surface_area";
+                  const minV = isClosed ? 3 : 2;
+                  if (_dSel.verts_norm.length <= minV) {
+                    setCommitMsg(isClosed ? "A shape needs at least 3 points — ⌫ again deletes the whole shape." : "A run needs at least 2 points — ⌫ again deletes the whole run.");
+                    return;
+                  }
+                  const vn = _dSel.verts_norm.filter((_, j) => j !== _clickedVert);
+                  dispatchShape({
+                    type: "geom", id: _dSel.id, editKind: "vertexDelete",
+                    verts_norm: vn, computed: recomputeShape({ ..._dSel, verts_norm: vn }), prev: geomSnapshot(_dSel),
+                  });
+                  setSelVert(null); setSelHole(null); setHoverEdge(null);
+                  return;
+                }
+
+                // 2. Check if user double-clicked an edge (insert vertex)
+                // 2. Check if user double-clicked an edge (insert vertex)
+                if (hoverEdge && hoverEdge.shapeId === selectedId) {
+                  const _dBestI = hoverEdge.i;
+                  if (_dBestI >= _dPts.length) return; // safety against stale hover state
+                  const _jIdx = (_dBestI + 1) % _dPts.length;
+                  const _dx = _dPts[_jIdx][0] - _dPts[_dBestI][0], _dy = _dPts[_jIdx][1] - _dPts[_dBestI][1];
+                  const _l2 = _dx * _dx + _dy * _dy;
+                  const _dBestT = _l2 ? Math.max(0.01, Math.min(0.99, ((_dP[0] - _dPts[_dBestI][0]) * _dx + (_dP[1] - _dPts[_dBestI][1]) * _dy) / _l2)) : 0.5;
+                  const _va = _dSel.verts_norm[_dBestI];
+                  const _vb = _dSel.verts_norm[_jIdx];
+                  const _nv = [_va[0] + (_vb[0] - _va[0]) * _dBestT, _va[1] + (_vb[1] - _va[1]) * _dBestT];
+                  const _vnIns = [..._dSel.verts_norm.slice(0, _dBestI + 1), _nv, ..._dSel.verts_norm.slice(_dBestI + 1)];
+                  dispatchShape({
+                    type: "geom", id: _dSel.id, editKind: "vertexInsert",
+                    verts_norm: _vnIns, computed: recomputeShape({ ..._dSel, verts_norm: _vnIns }), prev: geomSnapshot(_dSel),
+                  });
+                  setSelVert(_dBestI + 1); setSelHole(null); setHoverEdge(null);
+                  return;
+                }
+              }
+            }
             if (shapeBoqHover?.id) {
               setShapeBoqFocus(shapeBoqHover.id);
               shapeBoqHoverStickyRef.current = true;
@@ -7257,7 +7401,7 @@ export default function TakeoffCanvas() {
               placeholder="Type, Enter to place · Esc cancels"
               style={{ position: "absolute", left: editor.left, top: editor.top, zIndex: 9, minWidth: 160, padding: "3px 6px", font: "13px var(--f-body, sans-serif)", color: "var(--ink)", background: "var(--paper-bright)", border: "1px solid var(--cobalt)", boxShadow: "0 2px 10px rgba(0,0,0,.18)", borderRadius: 0, cursor: "text", outline: "none" }} />
           )}
-          <div ref={stageRef} style={{ position: "absolute", transformOrigin: "0 0", willChange: "transform", width: stage.w || undefined, height: stage.h || undefined }}>
+          <div ref={stageRef} style={{ position: "absolute", transformOrigin: "0 0", width: stage.w || undefined, height: stage.h || undefined }}>
             {panels.map((p) => (
               <canvas key={p.key} ref={(el) => { if (el) panelCanvasRefs.current.set(p.key, el); else panelCanvasRefs.current.delete(p.key); }}
                 style={{ position: "absolute", left: p.xOffset, top: 0, boxShadow: "0 2px 20px rgba(0,0,0,.18)" }} />
@@ -7360,6 +7504,30 @@ export default function TakeoffCanvas() {
                             return <rect key={"m" + i} x={mx - ew / 2} y={my - eh / 2} width={ew} height={eh} rx={eh / 2}
                               transform={`rotate(${ang} ${mx} ${my})`} fill={grip} stroke="#1f3fc7" strokeWidth={1.6 / s} />;
                           })}
+                          {/* edge length label — shows the hovered segment's length */}
+                          {hoverEdge && hoverEdge.shapeId === sel.id && (() => {
+                            const _hI = hoverEdge.i, _hJ = (_hI + 1) % qs.length;
+                            const _hA = qs[_hI], _hB = qs[_hJ];
+                            const _hMx = (_hA[0] + _hB[0]) / 2, _hMy = (_hA[1] + _hB[1]) / 2;
+                            const _hAng = Math.atan2(_hB[1] - _hA[1], _hB[0] - _hA[0]) * 180 / Math.PI;
+                            const _hRot = (_hAng > 90 || _hAng < -90) ? _hAng + 180 : _hAng;
+                            const _hLen = hoverEdge.length;
+                            if (!_hLen) return null;
+                            const _hLabel = `${lenVal(_hLen, units).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${lenUnit(units)}`;
+                            const _hFs = 10.5 / s;
+                            const _hPad = 3 / s;
+                            const _hW = Math.max(50 / s, _hLabel.length * 6 / s);
+                            return (
+                              <g key="hover-edge-len" transform={`translate(${_hMx}, ${_hMy - 10 / s})`}>
+                                <rect x={-_hW / 2} y={-_hFs - _hPad} width={_hW} height={_hFs + _hPad * 2} rx={3 / s}
+                                  fill="var(--cobalt, #1f3fc7)" fillOpacity={0.92} />
+                                <text x={0} y={-_hPad} textAnchor="middle" fontSize={_hFs} fontWeight={700}
+                                  fontFamily="var(--f-mono, monospace)" fill="#fff">
+                                  {_hLabel}
+                                </text>
+                              </g>
+                            );
+                          })()}
                           {/* corner handles — click selects (Delete removes just that point), drag moves */}
                           {qs.map(([x, y], i) => {
                             const isSel = selHole == null && selVert === i;
@@ -7396,6 +7564,35 @@ export default function TakeoffCanvas() {
                               </g>
                             );
                           })}
+                        </g>
+                      );
+                    })()}
+                    {/* Edge length label — renders for ANY hovered shape (selected or not) */}
+                    {hoverEdge && (() => {
+                      const _hShape = pShapes.find((_s) => _s.id === hoverEdge.shapeId);
+                      if (!_hShape) return null;
+                      // Skip if the selected-shape block already rendered this label
+                      if (selectedId && hoverEdge.shapeId === selectedId) return null;
+                      const _hQs = dn(_hShape.verts_norm);
+                      const _hI = hoverEdge.i, _hJ = (_hI + 1) % _hQs.length;
+                      if (_hI >= _hQs.length) return null;
+                      const _hA = _hQs[_hI], _hB = _hQs[_hJ];
+                      const _hMx = (_hA[0] + _hB[0]) / 2, _hMy = (_hA[1] + _hB[1]) / 2;
+                      const _s = tf.scale;
+                      const _hLen = hoverEdge.length;
+                      if (!_hLen) return null;
+                      const _hLabel = `${lenVal(_hLen, units).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${lenUnit(units)}`;
+                      const _hFs = 10.5 / _s;
+                      const _hPad = 3 / _s;
+                      const _hW = Math.max(50 / _s, _hLabel.length * 6 / _s);
+                      return (
+                        <g key="hover-edge-len-any" transform={`translate(${_hMx}, ${_hMy - 10 / _s})`}>
+                          <rect x={-_hW / 2} y={-_hFs - _hPad} width={_hW} height={_hFs + _hPad * 2} rx={3 / _s}
+                            fill="var(--cobalt, #1f3fc7)" fillOpacity={0.92} />
+                          <text x={0} y={-_hPad} textAnchor="middle" fontSize={_hFs} fontWeight={700}
+                            fontFamily="var(--f-mono, monospace)" fill="#fff">
+                            {_hLabel}
+                          </text>
                         </g>
                       );
                     })()}
@@ -7999,6 +8196,121 @@ export default function TakeoffCanvas() {
           {panelBtn(toggleTakeoffs, "takeoffs", "Takeoffs — conditions + running totals", takeoffsOpen, visibleShapes.length)}
         </div>
 
+        {/* Drawings Q&A — bottom-center chatbot; expands to search pill, then docks as side panel */}
+        {!showDrawingsChat && (
+          <div
+            ref={drawingsChatPillRef}
+            style={{
+              position: "absolute",
+              left: "50%",
+              bottom: 22,
+              transform: "translateX(-50%)",
+              zIndex: 9,
+              display: "flex",
+              alignItems: "center",
+              pointerEvents: "auto",
+            }}
+          >
+            {!drawingsChatPill ? (
+              <button
+                type="button"
+                title="Ask the Volume 4 drawings corpus"
+                onClick={() => setDrawingsChatPill(true)}
+                style={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: 999,
+                  border: "1px solid var(--ink-faint)",
+                  background: "var(--cobalt)",
+                  color: "var(--paper-bright)",
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  boxShadow: "var(--shadow-2, 0 6px 18px rgba(0,0,0,.18))",
+                }}
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H10l-3.8 3.2c-.7.6-1.7.1-1.7-.8V16H6.5A2.5 2.5 0 0 1 4 13.5v-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+                  <circle cx="9" cy="10" r="1" fill="currentColor"/>
+                  <circle cx="12" cy="10" r="1" fill="currentColor"/>
+                  <circle cx="15" cy="10" r="1" fill="currentColor"/>
+                </svg>
+              </button>
+            ) : (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const q = drawingsChatDraft.trim();
+                  if (!q) return;
+                  setDrawingsChatSeed(q);
+                  setDrawingsChatDraft("");
+                  setDrawingsChatPill(false);
+                  setShowDrawingsChat(true);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  width: "min(440px, calc(100vw - 80px))",
+                  padding: "6px 6px 6px 14px",
+                  borderRadius: 999,
+                  border: "1px solid var(--ink-faint)",
+                  background: "var(--paper-bright)",
+                  boxShadow: "var(--shadow-2, 0 8px 24px rgba(0,0,0,.16))",
+                }}
+              >
+                <input
+                  autoFocus
+                  value={drawingsChatDraft}
+                  onChange={(e) => setDrawingsChatDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setDrawingsChatPill(false);
+                      setDrawingsChatDraft("");
+                    }
+                  }}
+                  placeholder="Ask about Volume 4 drawings…"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    border: "none",
+                    outline: "none",
+                    background: "transparent",
+                    fontSize: 13,
+                    fontFamily: "inherit",
+                    color: "var(--ink)",
+                    padding: "8px 0",
+                  }}
+                />
+                <button
+                  type="submit"
+                  title="Search"
+                  disabled={!drawingsChatDraft.trim()}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 999,
+                    border: "none",
+                    background: drawingsChatDraft.trim() ? "var(--cobalt)" : "var(--ink-faint)",
+                    color: "var(--paper-bright)",
+                    cursor: drawingsChatDraft.trim() ? "pointer" : "default",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2"/>
+                    <path d="M16.5 16.5 20 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
        </div>
 
         {/* Agent panel — DOCKED right-rail sibling (reflows the canvas like the
@@ -8028,10 +8340,11 @@ export default function TakeoffCanvas() {
 
         {showDrawingsChat && (
           <DrawingsChatPanel
-            onClose={() => setShowDrawingsChat(false)}
+            onClose={() => { setShowDrawingsChat(false); setDrawingsChatSeed(""); }}
             onOpenInWorkspace={openCitationInWorkspace}
             sheetNames={sheets.map((s) => s.name)}
             galleryLabels={galleryLabels}
+            initialQuestion={drawingsChatSeed}
           />
         )}
 

@@ -56,7 +56,12 @@ export function classifySheetByName(fileName: string, pageText = ""): SheetClass
     || /DOOR\s*SCHED/.test(fn)) {
     return "door_schedule";
   }
-  if (/\bWINDOWS?\b/.test(fn) || /WINDOW\s*SCHED/.test(fn)) return "window_schedule";
+  // Curtain-wall / louvre / glazing / aluminum window sheets (CW-##, GD-##, LV-##)
+  if (/\bWINDOWS?\b/.test(fn) || /WINDOW\s*SCHED/.test(fn)
+    || /CURTAIN\s*WALL\s*SCHED|GLASS\s*DOOR\s*SCHED|LOUVRE\s*SCHED|GLAZING\s*SCHED/.test(fn)
+    || (/ALUMIN(?:I)?UM/.test(fn) && /\b(WINDOW|CURTAIN|GLAZ|LOUVRE)/.test(fn))) {
+    return "window_schedule";
+  }
   // DETAIL / ENLARGEMENT in the filename wins over loose page-text "DOOR"
   if (/\bDETAILS?\b|\bENLARGEMENT\b/.test(fn)) return "detail";
 
@@ -724,7 +729,10 @@ export function extractScheduleKbFromSheet(
   meta: SheetMeta,
 ): ScheduleKbEntry[] {
   const pageSlice = pageTextOf(tokens).slice(0, 4000);
-  const cls = classifySheetByName(meta.file_name, pageSlice);
+  // Classify on the basename — a parent folder named DETAILS/ must not force
+  // every PDF under it into the detail class and skip real schedule parsers.
+  const baseName = (meta.file_name || "").replace(/\\/g, "/").split("/").pop() || meta.file_name;
+  const cls = classifySheetByName(baseName, pageSlice);
   if (cls === "door_schedule") {
     const wooden = parseDoorScheduleTokens(tokens, meta);
     const steel = parseSteelDoorFrameSchedule(tokens, meta);
