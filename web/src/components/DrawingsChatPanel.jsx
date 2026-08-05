@@ -224,6 +224,7 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
   }));
   const [viewZoom, setViewZoom] = useState(1);
   const [viewPan, setViewPan] = useState({ x: 0, y: 0 });
+  const [previewState, setPreviewState] = useState("loading"); // loading | ready | error
   const dragRef = useRef(null);
   const panRef = useRef(null);
 
@@ -235,6 +236,7 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
     }));
     setViewZoom(1);
     setViewPan({ x: 0, y: 0 });
+    setPreviewState(hasImagePreview(citation) ? "loading" : "error");
   }, [citation?.chunk_id]);
 
   if (!citation) return null;
@@ -388,10 +390,10 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
       ) : null}
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: 12, background: "var(--paper-cream)", minHeight: 180, gap: 8 }}>
-        {preview ? (
+        {preview && previewState !== "error" ? (
           <>
             <div
-              onPointerDown={onPanStart}
+              onPointerDown={previewState === "ready" ? onPanStart : undefined}
               title="Drag to pan"
               style={{
                 flex: 1,
@@ -400,11 +402,19 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
                 borderRadius: 6,
                 border: "1px solid var(--ink-faint)",
                 background: "#fff",
-                cursor: "grab",
+                cursor: previewState === "ready" ? "grab" : "default",
                 touchAction: "none",
                 position: "relative",
               }}
             >
+              {previewState === "loading" ? (
+                <div style={{
+                  position: "absolute", inset: 0, display: "flex", alignItems: "center",
+                  justifyContent: "center", fontSize: 12, color: "var(--ink-muted)",
+                }}>
+                  Loading preview…
+                </div>
+              ) : null}
               <img
                 key={citation.chunk_id}
                 src={citationImageUrl(citation.chunk_id)}
@@ -412,17 +422,14 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
                 draggable={false}
                 style={{
                   width: "100%",
-                  display: "block",
+                  display: previewState === "ready" ? "block" : "none",
                   transform: `translate(${viewPan.x}px, ${viewPan.y}px) scale(${viewZoom})`,
                   transformOrigin: "center center",
                   userSelect: "none",
                   pointerEvents: "none",
                 }}
-                onError={(e) => {
-                  e.currentTarget.style.display = "none";
-                  const fallback = e.currentTarget.parentElement?.nextSibling;
-                  if (fallback) fallback.style.display = "block";
-                }}
+                onLoad={() => setPreviewState("ready")}
+                onError={() => setPreviewState("error")}
               />
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
@@ -430,7 +437,7 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
                 type="button"
                 title="Zoom out"
                 onClick={() => zoomBy(-0.25)}
-                disabled={viewZoom <= 0.5}
+                disabled={viewZoom <= 0.5 || previewState !== "ready"}
                 style={{
                   width: 34, height: 34, borderRadius: 6,
                   border: "1px solid var(--ink-faint)", background: "var(--paper-bright)",
@@ -447,7 +454,7 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
                 type="button"
                 title="Zoom in"
                 onClick={() => zoomBy(0.25)}
-                disabled={viewZoom >= 4}
+                disabled={viewZoom >= 4 || previewState !== "ready"}
                 style={{
                   width: 34, height: 34, borderRadius: 6,
                   border: "1px solid var(--ink-faint)", background: "var(--paper-bright)",
@@ -459,21 +466,21 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
               </button>
             </div>
           </>
-        ) : null}
-        <div
-          style={{
-            display: preview ? "none" : "block",
-            padding: 14,
-            border: "1px dashed var(--ink-faint)",
-            borderRadius: 6,
-            fontSize: 12,
-            color: "var(--ink-muted)",
-            lineHeight: 1.45,
-            background: "var(--paper-bright)",
-          }}
-        >
-          No page image for this source. The cited text above is still available.
-        </div>
+        ) : (
+          <div
+            style={{
+              padding: 14,
+              border: "1px dashed var(--ink-faint)",
+              borderRadius: 6,
+              fontSize: 12,
+              color: "var(--ink-muted)",
+              lineHeight: 1.45,
+              background: "var(--paper-bright)",
+            }}
+          >
+            No page image for this source. The cited text above is still available.
+          </div>
+        )}
       </div>
     </div>
   );
