@@ -93,7 +93,7 @@ function Centered({ title, body }) {
   return (
     <div style={centered}>
       <AdiccLoadingLogo />
-      <div style={{ fontSize: 15, fontWeight: 600 }}>{title}</div>
+      {title ? <div style={{ fontSize: 15, fontWeight: 600 }}>{title}</div> : null}
       {body ? <div style={{ fontSize: 13, color: "var(--ink-muted)", maxWidth: 460 }}>{body}</div> : null}
     </div>
   );
@@ -262,7 +262,7 @@ function LocalCanvasGate() {
   }, [projectId]);
 
   if (error) return <Centered title="Database connection failed" body={error} />;
-  if (!ready) return <Centered title="Connecting to ADICC database…" body="Loading your project from Supabase." />;
+  if (!ready) return <Centered />;
   return <TakeoffCanvas key={projectId} />;
 }
 

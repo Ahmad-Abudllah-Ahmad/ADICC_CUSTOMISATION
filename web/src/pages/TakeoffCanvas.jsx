@@ -6509,9 +6509,7 @@ export default function TakeoffCanvas() {
           title="Auto-Takeoff — reveal masks one by one on this floor plan. Click again to restart. Revealed masks stay visible when switching between A1105 / A1106 / A1107."
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "1px solid var(--cobalt)", borderRadius: 999, background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1, whiteSpace: "nowrap" }}>
           <Icon name="sparkle" size={15} />
-          {aiDetectAnimatingKey === aiDetectViewKey && aiDetectShapes.length > 0
-            ? `Auto-Takeoff ${aiDetectShownNow}/${aiDetectShapes.length}`
-            : "Auto-Takeoff"}
+          Auto-Takeoff
         </button>
         {/* team cloud mode: always a way to leave this project, plus a way to
             browse the rest of the team's projects when the build names a root
