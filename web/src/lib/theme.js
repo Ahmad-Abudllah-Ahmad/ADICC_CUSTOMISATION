@@ -18,11 +18,15 @@ export function getTheme() {
   return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
 }
 
+export function setTheme(t) {
+  if (t !== "light" && t !== "dark") return getTheme();
+  apply(t);
+  try { localStorage.setItem(KEY, t); } catch { /* private mode — session-only */ }
+  return t;
+}
+
 export function toggleTheme() {
-  const next = getTheme() === "dark" ? "light" : "dark";
-  apply(next);
-  try { localStorage.setItem(KEY, next); } catch { /* private mode — session-only */ }
-  return next;
+  return setTheme(getTheme() === "dark" ? "light" : "dark");
 }
 
 // Subscribe React state to any theme change (toggle, OS flip, other tab).
@@ -36,6 +40,7 @@ export function onThemeChange(fn) {
 // Call once at startup. Non-togglers (no stored choice) follow live OS
 // changes; an explicit choice made in another tab syncs here via `storage`
 // (which never fires in the tab that set it, so no double-apply).
+// Also accepts theme sync from the parent ADICC platform iframe host.
 export function initTheme() {
   const mq = matchMedia("(prefers-color-scheme: dark)");
   const onOsChange = (e) => {
@@ -47,5 +52,10 @@ export function initTheme() {
   else mq.addListener(onOsChange);   // Safari < 14
   window.addEventListener("storage", (e) => {
     if (e.key === KEY && (e.newValue === "light" || e.newValue === "dark")) apply(e.newValue);
+  });
+  window.addEventListener("message", (e) => {
+    const d = e?.data;
+    if (!d || d.type !== "adicc:theme") return;
+    if (d.theme === "light" || d.theme === "dark") setTheme(d.theme);
   });
 }

@@ -362,7 +362,7 @@ export default function TakeoffCanvas() {
   const [selectedId, setSelectedId] = useState(null);   // selected shape (Select tool)
   const [selVert, setSelVert] = useState(null);         // selected vertex index of the selected shape — Delete removes just that point
   const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
-  const [hoverEdge, setHoverEdge] = useState(null);   // { shapeId, i, length } — hovered edge segment length tooltip
+  const [hoverEdge, setHoverEdge] = useState(null);   // { shapeId, i, length, t } — edge length chip follows cursor along the segment (t ∈ [0,1])
   const [selectedMarkupId, setSelectedMarkupId] = useState(null); // selected markup — mutually exclusive with selectedId
   const [rfis, setRfis] = useState([]);                 // RFI register (Request For Information); linked to markups via markup.rfi_id === rfi.id
   // Deletion provenance: shapes leave no record once filtered out of `shapes`,
@@ -574,6 +574,40 @@ export default function TakeoffCanvas() {
   }, [commitMsgState]);
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
   const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
+  // AI Detection — ONLY A1105 / A1106 / A1107 floor plans. Keep mask DATA intact;
+  // those sheets show no masks until the nav button runs, then reveal one-by-one.
+  // All other PDFs keep normal always-visible masks + hover (untouched).
+  const AI_DETECT_FLOOR_PLAN_FILES = useMemo(() => new Set([
+    "a1105-1st floor plan.pdf",
+    "a1106-2nd floor plan.pdf",
+    "a1107-3rd floor plan.pdf",
+  ]), []);
+  const isAiDetectFloorPlan = useCallback((sheetKey) => {
+    const file = parseSheetKey(String(sheetKey || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
+    return AI_DETECT_FLOOR_PLAN_FILES.has(file);
+  }, [AI_DETECT_FLOOR_PLAN_FILES]);
+  // Per-sheet reveal counts persist when switching files among A1105/A1106/A1107.
+  // Clicking AI Detection always restarts the sequential reveal on the viewed sheet.
+  const [aiDetectShownBySheet, setAiDetectShownBySheet] = useState({});
+  const [aiDetectAnimatingKey, setAiDetectAnimatingKey] = useState(null);
+  const aiDetectTimerRef = useRef(null);
+  const stopAiDetectReveal = useCallback(() => {
+    if (aiDetectTimerRef.current != null) {
+      clearInterval(aiDetectTimerRef.current);
+      aiDetectTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => stopAiDetectReveal(), [stopAiDetectReveal]);
+  // Platform "All projects" → same destination as the former Home control.
+  useEffect(() => {
+    const onMsg = (e) => {
+      const d = e?.data;
+      if (!d || d.source !== "adicc-platform" || d.type !== "adicc:home") return;
+      goSupabaseHome();
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
   const [showDrawingsChat, setShowDrawingsChat] = useState(false);
   const [drawingsChatPill, setDrawingsChatPill] = useState(false);   // bottom-center search pill
   const [drawingsChatDraft, setDrawingsChatDraft] = useState("");
@@ -872,6 +906,58 @@ export default function TakeoffCanvas() {
     const keys = new Set(sheetGroup.length ? sheetGroup : [sheetKey]);
     return shapes.filter((s) => keys.has(s.sheet_id));
   }, [shapes, sheetGroup, sheetKey]);
+  // AI Detection targets the sheet the user is viewing; reveal counts are kept
+  // per file so switching A1105 ↔ A1106 ↔ A1107 keeps already-revealed masks visible.
+  const aiDetectViewKey = (sheetGroup.length
+    ? ((focusKey && sheetGroup.includes(focusKey)) ? focusKey : (sheetGroup[0] || sheetKey))
+    : sheetKey);
+  const aiDetectShapes = useMemo(() => {
+    if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return [];
+    return shapes.filter((s) => s.sheet_id === aiDetectViewKey);
+  }, [shapes, aiDetectViewKey, isAiDetectFloorPlan]);
+  const aiDetectShownNow = aiDetectShownBySheet[aiDetectViewKey] || 0;
+  const aiDetectShapeRevealed = useCallback((shape) => {
+    if (!shape || !isAiDetectFloorPlan(shape.sheet_id)) return true;
+    const list = shapes.filter((s) => s.sheet_id === shape.sheet_id);
+    const idx = list.findIndex((s) => s.id === shape.id);
+    const shown = aiDetectShownBySheet[shape.sheet_id] || 0;
+    return idx >= 0 && idx < shown;
+  }, [shapes, aiDetectShownBySheet, isAiDetectFloorPlan]);
+  const boqShapes = useMemo(
+    () => shapes.filter((s) => aiDetectShapeRevealed(s)),
+    [shapes, aiDetectShapeRevealed],
+  );
+  const runAiDetection = useCallback(() => {
+    stopAiDetectReveal();
+    setShapeBoqFocus(null);
+    setShapeBoqHover(null);
+    shapeBoqHoverStickyRef.current = false;
+    if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return;
+    const key = aiDetectViewKey;
+    const list = shapes.filter((s) => s.sheet_id === key);
+    const total = list.length;
+    // Click again always restarts reveal on this file from the first mask.
+    setAiDetectShownBySheet((prev) => ({ ...prev, [key]: 0 }));
+    setAiDetectAnimatingKey(key);
+    if (total <= 0) {
+      setAiDetectAnimatingKey(null);
+      return;
+    }
+    let n = 0;
+    aiDetectTimerRef.current = setInterval(() => {
+      n += 1;
+      setAiDetectShownBySheet((prev) => ({ ...prev, [key]: n }));
+      if (n >= total) {
+        stopAiDetectReveal();
+        setAiDetectAnimatingKey(null);
+      }
+    }, 120);
+  }, [aiDetectViewKey, shapes, isAiDetectFloorPlan, stopAiDetectReveal]);
+  // Stop in-flight animation when switching files — keep each sheet's reveal count.
+  useEffect(() => {
+    stopAiDetectReveal();
+    setAiDetectAnimatingKey(null);
+  }, [aiDetectViewKey, stopAiDetectReveal]);
   const visibleMarkups = useMemo(() => {
     const keys = new Set(sheetGroup.length ? sheetGroup : [sheetKey]);
     return markups.filter((m) => keys.has(m.sheet_id));
@@ -2977,6 +3063,11 @@ export default function TakeoffCanvas() {
       const r = containerRef.current.getBoundingClientRect();
       if (!hit.isProposal) {
         el.style.display = "none"; hoverIdRef.current = "";
+        // A1105/A1106/A1107: hover only after that sheet's mask has been revealed.
+        if (isAiDetectFloorPlan(hit.sheet_id) && !aiDetectShapeRevealed(hit)) {
+          if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
+          return;
+        }
         const cx = Math.min(e.clientX - r.left + 14, r.width - 260);
         const cy = Math.min(e.clientY - r.top + 16, r.height - 220);
         setShapeBoqHover((prev) => (prev?.id === hit.id && prev?.cx === cx && prev?.cy === cy ? prev : { id: hit.id, cx, cy }));
@@ -3045,10 +3136,19 @@ export default function TakeoffCanvas() {
         }
         if (_bestI >= 0) {
           const _j = (_bestI + 1) % _pts.length;
-          const _edgePx = Math.hypot(_pts[_j][0] - _pts[_bestI][0], _pts[_j][1] - _pts[_bestI][1]);
+          const _ax = _pts[_bestI][0], _ay = _pts[_bestI][1], _bx = _pts[_j][0], _by = _pts[_j][1];
+          const _edx = _bx - _ax, _edy = _by - _ay;
+          const _elen2 = _edx * _edx + _edy * _edy;
+          let _t = _elen2 < 1e-12 ? 0 : ((_pt[0] - _ax) * _edx + (_pt[1] - _ay) * _edy) / _elen2;
+          if (_t < 0) _t = 0; else if (_t > 1) _t = 1;
+          const _edgePx = Math.sqrt(_elen2);
           const _u = uppFor(_sel.sheet_id) || 0;
           const _len = _edgePx * _u;
-          setHoverEdge((prev) => (prev && prev.shapeId === _sel.id && prev.i === _bestI) ? prev : { shapeId: _sel.id, i: _bestI, length: _len });
+          setHoverEdge((prev) => (
+            prev && prev.shapeId === _sel.id && prev.i === _bestI && prev.t === _t && prev.length === _len
+              ? prev
+              : { shapeId: _sel.id, i: _bestI, length: _len, t: _t }
+          ));
           // Suppress the BOQ hover card when showing the edge length label
           setShapeBoqHover(null);
           shapeBoqHoverStickyRef.current = false;
@@ -6405,17 +6505,14 @@ export default function TakeoffCanvas() {
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
       <div style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 14px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", whiteSpace: "nowrap" }}>
-        <button type="button" onClick={supabaseMode ? goSupabaseHome : undefined} disabled={!supabaseMode}
-          title={supabaseMode ? "Home — recent projects" : undefined}
-          style={{ border: "none", background: "transparent", padding: 0, cursor: supabaseMode ? "pointer" : "default" }}>
-          <strong style={{ fontFamily: "var(--f-display)", fontSize: 15, color: "var(--ink)", letterSpacing: "-0.02em" }}>ADI<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>CC</span></strong>
+        <button type="button" onClick={runAiDetection}
+          title="Auto-Takeoff — reveal masks one by one on this floor plan. Click again to restart. Revealed masks stay visible when switching between A1105 / A1106 / A1107."
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "1px solid var(--cobalt)", borderRadius: 999, background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1, whiteSpace: "nowrap" }}>
+          <Icon name="sparkle" size={15} />
+          {aiDetectAnimatingKey === aiDetectViewKey && aiDetectShapes.length > 0
+            ? `Auto-Takeoff ${aiDetectShownNow}/${aiDetectShapes.length}`
+            : "Auto-Takeoff"}
         </button>
-        {supabaseMode && (
-          <button type="button" onClick={goSupabaseHome} title="Back to recent projects"
-            style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12.5, lineHeight: 1 }}>
-            Home
-          </button>
-        )}
         {/* team cloud mode: always a way to leave this project, plus a way to
             browse the rest of the team's projects when the build names a root
             — fixed presence for the whole session (cloudMode is set before the
@@ -6436,33 +6533,6 @@ export default function TakeoffCanvas() {
           onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
           onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-        <button type="button" onClick={() => fileInputRef.current?.click()} title="Open plans — PDF, image, or a .zip plan set (or just drag them onto the canvas)"
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-          <Icon name="plus" size={14} />Open</button>
-        <button type="button" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder — every PDF, image, and .zip inside is added to this project"
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-          <Icon name="sheets" size={14} />Folder</button>
-        <button type="button" onClick={() => setView("gallery")}
-          title={`Plan set — the visual gallery; open one or several sheets (G)${sheetGroup.length ? ` · ${sheetGroup.length} side-by-side now` : ""}`}
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${sheetGroup.length ? "var(--cobalt)" : "var(--ink-faint)"}`, background: sheetGroup.length ? "var(--cobalt)" : "transparent", color: sheetGroup.length ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-          <Icon name="sheets" size={15} />Sheets
-        </button>
-        {sheets.length > 0 && (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={!!sheetGroup.length || page <= 1} title="Previous sheet"
-              style={{ padding: "5px 8px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", opacity: (!!sheetGroup.length || page <= 1) ? 0.4 : 1 }}><Icon name="chevronLeft" size={12} /></button>
-            <ToolMenu
-              title="Sheet — the sheets in this set, files, grouping, and the gallery"
-              onOpenChange={onMenuDepth}
-              face={<span style={{ display: "inline-block", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sheetChipLabel}</span>}
-              faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 12, fontWeight: 400, padding: "6px 8px" }}
-              menuStyle={{ minWidth: 260, maxHeight: "min(480px, 60vh)", overflowY: "auto" }}
-              items={sheetMenuItems}
-            />
-            <button type="button" onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={!!sheetGroup.length || page >= pageCount} title="Next sheet"
-              style={{ padding: "5px 8px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", opacity: (!!sheetGroup.length || page >= pageCount) ? 0.4 : 1 }}><Icon name="chevronRight" size={12} /></button>
-          </span>
-        )}
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 11, color: "var(--ink-muted)", minWidth: 44, fontFamily: "var(--f-mono)" }}>{saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : ""}</span>
         {materialRates.length > 0 && projectEstimateTotal > 0 && (
@@ -6470,16 +6540,6 @@ export default function TakeoffCanvas() {
             {money(projectEstimateTotal, projectCurrency)}
           </span>
         )}
-        <button onClick={toggleTheme} title="App theme — light / dark chrome (sheets unaffected; use ☾ on the canvas to invert the print)"
-          aria-label="App theme — light / dark chrome" aria-pressed={theme === "dark"}
-          style={{ display: "inline-flex", alignItems: "center", padding: "6px 9px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>
-          {theme === "dark" ? "◐" : "◑"}
-        </button>
-        <button onClick={() => { setScheduleAnchor(null); setTool((t) => (t === "schedule" ? "select" : "schedule")); }}
-          title="Import from schedule — arm, then drag a box around the finish/material schedule to create conditions (two clicks: corner, corner)"
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${tool === "schedule" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: tool === "schedule" ? "var(--cobalt)" : "transparent", color: tool === "schedule" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-          <Icon name="rectTool" size={15} />Schedule
-        </button>
         <button onClick={() => setShowBoq((v) => !v)} disabled={!shapes.length && !conditions.length}
           title="Bill of Quantities — floor-plan masked takeoff by sheet, with editable line details"
           style={{ padding: "8px 14px", border: `1px solid ${showBoq ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showBoq ? "var(--cobalt)" : "transparent", color: showBoq ? "var(--paper-bright)" : "var(--ink)", cursor: shapes.length || conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: shapes.length || conditions.length ? 1 : 0.5 }}>BOQ</button>
@@ -7197,6 +7257,7 @@ export default function TakeoffCanvas() {
             const cardId = shapeBoqFocus || shapeBoqHover?.id;
             const s = shapes.find((x) => x.id === cardId);
             if (!s || !shapeBoqHover) return null;
+            if (isAiDetectFloorPlan(s.sheet_id) && !aiDetectShapeRevealed(s)) return null;
             const data = resolveShapeBoq(s, conditions, boqDetectCtx, boqLines, units, pricingCtx);
             if (!data) return null;
             const pinned = !!shapeBoqFocus;
@@ -7333,7 +7394,7 @@ export default function TakeoffCanvas() {
                         title="Open source PDF with this schedule region highlighted"
                         style={{
                           display: "block", width: "100%", textAlign: "left", padding: 0, border: "none",
-                          background: "transparent", cursor: "pointer", fontSize: 11.5, color: "var(--cobalt)",
+                          background: "transparent", cursor: "pointer", fontSize: 11.5, color: "var(--ink)",
                           lineHeight: 1.35, fontFamily: "var(--f-body)", textDecoration: "underline",
                           textUnderlineOffset: 2,
                         }}>
@@ -7341,7 +7402,7 @@ export default function TakeoffCanvas() {
                       </button>
                       {pinned && (
                         <button type="button" onClick={openSource}
-                          style={{ width: "100%", marginTop: 8, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--cobalt)", fontFamily: "var(--f-body)" }}>
+                          style={{ width: "100%", marginTop: 8, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--f-body)" }}>
                           Open source PDF →
                         </button>
                       )}
@@ -7353,7 +7414,7 @@ export default function TakeoffCanvas() {
                       {sym.matches.slice(0, 6).map((m, i) => {
                         const mp = panelByKey(m.sheet_id);
                         return (
-                          <div key={`${m.sheet_id}-${i}`} style={{ fontSize: 11.5, color: "var(--cobalt)" }}>
+                          <div key={`${m.sheet_id}-${i}`} style={{ fontSize: 11.5, color: "var(--ink)" }}>
                             {mp ? labelFor(mp) : m.sheet_id}
                           </div>
                         );
@@ -7434,7 +7495,12 @@ export default function TakeoffCanvas() {
                       return <rect key={s.id} x={s.x - s.w / 2} y={s.y - s.h / 2} width={s.w} height={s.h}
                         fill={on ? "rgba(31,63,199,.10)" : "transparent"} stroke={col} strokeWidth={sw} strokeDasharray={`${3 / z} ${2 / z}`} />;
                     })}
-                    {pShapes.map((s) => {
+                    {(() => {
+                      const aiSheet = isAiDetectFloorPlan(p.key);
+                      const shown = aiDetectShownBySheet[p.key] || 0;
+                      const drawn = !aiSheet ? pShapes : pShapes.slice(0, shown);
+                      return drawn;
+                    })().map((s) => {
                       const cond = condById[s.condition_id];
                       const col = cond?.color || "#888";
                       const sel = s.id === selectedId;
@@ -7486,7 +7552,11 @@ export default function TakeoffCanvas() {
                     })}
                     {/* vertex handles for the selected shape (drag to reshape) */}
                     {selectedId && (() => {
-                      const sel = pShapes.find((s) => s.id === selectedId);
+                      const aiSheet = isAiDetectFloorPlan(p.key);
+                      const shown = aiDetectShownBySheet[p.key] || 0;
+                      if (aiSheet && shown <= 0) return null;
+                      const drawnIds = aiSheet ? new Set(pShapes.slice(0, shown).map((x) => x.id)) : null;
+                      const sel = pShapes.find((s) => s.id === selectedId && (!drawnIds || drawnIds.has(s.id)));
                       if (!sel || sel.measure_role === "count") return null;
                       const qs = dn(sel.verts_norm);
                       const closed = sel.measure_role !== "linear" && sel.measure_role !== "surface_area";
@@ -7508,9 +7578,9 @@ export default function TakeoffCanvas() {
                           {hoverEdge && hoverEdge.shapeId === sel.id && (() => {
                             const _hI = hoverEdge.i, _hJ = (_hI + 1) % qs.length;
                             const _hA = qs[_hI], _hB = qs[_hJ];
-                            const _hMx = (_hA[0] + _hB[0]) / 2, _hMy = (_hA[1] + _hB[1]) / 2;
-                            const _hAng = Math.atan2(_hB[1] - _hA[1], _hB[0] - _hA[0]) * 180 / Math.PI;
-                            const _hRot = (_hAng > 90 || _hAng < -90) ? _hAng + 180 : _hAng;
+                            const _ht = Number.isFinite(hoverEdge.t) ? hoverEdge.t : 0.5;
+                            const _hMx = _hA[0] + (_hB[0] - _hA[0]) * _ht;
+                            const _hMy = _hA[1] + (_hB[1] - _hA[1]) * _ht;
                             const _hLen = hoverEdge.length;
                             if (!_hLen) return null;
                             const _hLabel = `${lenVal(_hLen, units).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${lenUnit(units)}`;
@@ -7518,7 +7588,7 @@ export default function TakeoffCanvas() {
                             const _hPad = 3 / s;
                             const _hW = Math.max(50 / s, _hLabel.length * 6 / s);
                             return (
-                              <g key="hover-edge-len" transform={`translate(${_hMx}, ${_hMy - 10 / s})`}>
+                              <g key="hover-edge-len" transform={`translate(${_hMx}, ${_hMy - 14 / s})`}>
                                 <rect x={-_hW / 2} y={-_hFs - _hPad} width={_hW} height={_hFs + _hPad * 2} rx={3 / s}
                                   fill="var(--cobalt, #1f3fc7)" fillOpacity={0.92} />
                                 <text x={0} y={-_hPad} textAnchor="middle" fontSize={_hFs} fontWeight={700}
@@ -7577,7 +7647,9 @@ export default function TakeoffCanvas() {
                       const _hI = hoverEdge.i, _hJ = (_hI + 1) % _hQs.length;
                       if (_hI >= _hQs.length) return null;
                       const _hA = _hQs[_hI], _hB = _hQs[_hJ];
-                      const _hMx = (_hA[0] + _hB[0]) / 2, _hMy = (_hA[1] + _hB[1]) / 2;
+                      const _ht = Number.isFinite(hoverEdge.t) ? hoverEdge.t : 0.5;
+                      const _hMx = _hA[0] + (_hB[0] - _hA[0]) * _ht;
+                      const _hMy = _hA[1] + (_hB[1] - _hA[1]) * _ht;
                       const _s = tf.scale;
                       const _hLen = hoverEdge.length;
                       if (!_hLen) return null;
@@ -7586,7 +7658,7 @@ export default function TakeoffCanvas() {
                       const _hPad = 3 / _s;
                       const _hW = Math.max(50 / _s, _hLabel.length * 6 / _s);
                       return (
-                        <g key="hover-edge-len-any" transform={`translate(${_hMx}, ${_hMy - 10 / _s})`}>
+                        <g key="hover-edge-len-any" transform={`translate(${_hMx}, ${_hMy - 14 / _s})`}>
                           <rect x={-_hW / 2} y={-_hFs - _hPad} width={_hW} height={_hFs + _hPad * 2} rx={3 / _s}
                             fill="var(--cobalt, #1f3fc7)" fillOpacity={0.92} />
                           <text x={0} y={-_hPad} textAnchor="middle" fontSize={_hFs} fontWeight={700}
@@ -8370,7 +8442,7 @@ export default function TakeoffCanvas() {
           open={showBoq}
           onClose={() => { setShowBoq(false); setBoqFocusShapeId(null); }}
           conditions={conditions}
-          shapes={shapes}
+          shapes={boqShapes}
           sheetLabel={tabLabel}
           sheetLevels={sheetLevels}
           boqLines={boqLines}

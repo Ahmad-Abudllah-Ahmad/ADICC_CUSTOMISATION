@@ -377,7 +377,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     <div className="report-panel" style={{ ...theme.vars, position: "absolute", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
       <div className="report-toolbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
         <Icon name="takeoffs" size={18} />
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>Takeoff report</strong>
+        <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>ADICC REPORTS</strong>
         <input name="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)} placeholder="Project name (optional)"
           className="field-input" style={{ width: 260, padding: "5px 9px", fontSize: 13 }} />
         <div style={{ flex: 1 }} />
@@ -439,92 +439,6 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             </div>
           )}
         </div>
-        <div ref={templatesRef} style={{ position: "relative" }}>
-          <button className="btn-ghost" onClick={() => setShowTemplates((s) => !s)} title="Save and recall report layouts (columns + grouping)">Templates{templates.length ? ` (${templates.length})` : ""}</button>
-          {showTemplates && (
-            <div className="report-modal" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 70, width: 260, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", padding: "10px 12px", fontSize: 12.5, color: "var(--ink)" }}>
-              <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
-                <strong style={{ fontFamily: "var(--f-display)", fontSize: 13 }}>Templates</strong>
-                <div style={{ flex: 1 }} />
-                <button onClick={() => setShowTemplates(false)} title="Close"
-                  style={{ border: "none", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 13, padding: 0, lineHeight: 1 }}>✕</button>
-              </div>
-              <div style={{ fontSize: 10.5, color: "var(--ink-muted)", lineHeight: 1.4, marginBottom: 6 }}>Saved column + grouping layouts (this device). Click one to apply.</div>
-              {templates.length === 0 && <div style={{ fontSize: 10.5, color: "var(--ink-muted)", marginBottom: 6 }}>No saved templates yet.</div>}
-              {templates.map((t) => (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 4, padding: "2px 0" }}>
-                  <button onClick={() => applyTemplate(t)} title="Apply this layout"
-                    style={{ flex: 1, minWidth: 0, textAlign: "left", border: "none", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12, padding: "3px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name}</button>
-                  <button onClick={() => renameTpl(t)} title="Rename"
-                    style={{ padding: "0 3px", border: "none", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>✎</button>
-                  <button onClick={() => setTemplates(deleteTemplate(t.id))} title="Delete this template"
-                    style={{ padding: "0 3px", border: "none", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 11 }}>✕</button>
-                </div>
-              ))}
-              <div style={{ display: "flex", alignItems: "center", gap: 6, borderTop: "1px solid var(--ink-faint)", marginTop: 6, paddingTop: 8 }}>
-                <input name="template-name" value={tplName} onChange={(e) => setTplName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && saveAsTemplate()}
-                  placeholder="Name this layout" style={{ flex: 1, minWidth: 0, padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-                <button onClick={saveAsTemplate} disabled={!tplName.trim()} title="Save the current columns + grouping under this name"
-                  style={{ padding: "3px 8px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 }}>Save</button>
-              </div>
-              {/* Optional Drive sync — only when signed in and a Projects root is
-                  configured. Load MERGES (this device wins on a name clash); it
-                  does not pull remote deletes/edits, so the copy stays "Load," not
-                  "Sync," to avoid over-promising two-way behavior. */}
-              {canSync && (
-                <div style={{ borderTop: "1px solid var(--ink-faint)", marginTop: 8, paddingTop: 8 }}>
-                  <div style={{ fontSize: 10.5, color: "var(--ink-muted)", lineHeight: 1.4, marginBottom: 6 }}>Carry these across your own devices via Drive. Load only adds templates this device doesn't have — a same-name template is never overwritten (rename or delete it here first to pull a newer copy).</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button onClick={pushToDrive} disabled={syncBusy} title="Write your saved templates to your private Drive file"
-                      style={{ flex: 1, padding: "4px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--cobalt)", cursor: syncBusy ? "default" : "pointer", fontSize: 12 }}>Push to Drive</button>
-                    <button onClick={loadFromDrive} disabled={syncBusy} title="Merge templates from your Drive file into this device"
-                      style={{ flex: 1, padding: "4px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--cobalt)", cursor: syncBusy ? "default" : "pointer", fontSize: 12 }}>Load from Drive</button>
-                  </div>
-                  {syncMsg && <div style={{ fontSize: 10.5, color: "var(--ink-muted)", marginTop: 6 }}>{syncMsg}</div>}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-        <div ref={themeRef} style={{ position: "relative" }}>
-          <button className="btn-ghost" onClick={() => setShowTheme((s) => !s)} title="Apply an imported design-token theme to the report (colors + fonts)">Theme{theme.name ? " ●" : ""}</button>
-          {showTheme && (
-            <div className="report-modal" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 70, width: 292, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", padding: "10px 12px", fontSize: 12.5, color: "var(--ink)" }}>
-              <div style={{ display: "flex", alignItems: "center", marginBottom: 6 }}>
-                <strong style={{ fontFamily: "var(--f-display)", fontSize: 13 }}>Report theme</strong>
-                <div style={{ flex: 1 }} />
-                <button onClick={() => setShowTheme(false)} title="Close"
-                  style={{ border: "none", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 13, padding: 0, lineHeight: 1 }}>✕</button>
-              </div>
-              <div style={{ fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.5, marginBottom: 8 }}>
-                Import a design-token file (e.g. a Claude Design <code>tokens.json</code>) to reskin this report — palette and fonts only. Your company identity stays where it is.
-              </div>
-              {theme.name ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span className="pip" />
-                  <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }} title={theme.name}>{theme.name}</div>
-                </div>
-              ) : (
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginBottom: 8 }}>Using the default house style.</div>
-              )}
-              <div style={{ display: "flex", gap: 6 }}>
-                <button onClick={() => themeFileRef.current?.click()} title="Choose a design-token file to import"
-                  style={{ flex: 1, padding: "5px 8px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Import theme…</button>
-                {theme.name && (
-                  <button onClick={resetTheme} title="Remove the imported theme and return to the default"
-                    style={{ padding: "5px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--cobalt)", cursor: "pointer", fontSize: 12 }}>Reset</button>
-                )}
-              </div>
-              {theme.warnings.length > 0 && (
-                <ul style={{ margin: "8px 0 0", paddingLeft: 16, fontSize: 10.5, color: "var(--c-warning)", lineHeight: 1.5 }}>
-                  {theme.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                </ul>
-              )}
-              <input ref={themeFileRef} type="file" accept="application/json,.json" onChange={importThemeFile} style={{ display: "none" }} />
-            </div>
-          )}
-        </div>
         {/* Exports consolidated into Export ▾; browser print + marked set into
             Print ▾. JSON / Print / Marked set intentionally work markups-only
             ("Revisions noted" renders from markups alone); CSV stays rows-only.
@@ -566,10 +480,6 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
               title="RFI log as JSON"><Icon name="rfi" size={13} />RFI JSON</button>
           </>
         )}
-        <button className="btn-primary" onClick={() => setShowContribute(true)} disabled={!rows.length}
-          title="Optionally contribute this takeoff's derived data to the open flooring model">
-          <Icon name="oneClick" size={13} />Contribute
-        </button>
         <button onClick={onClose} title="Back to the canvas (Esc)"
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12.5 }}>
           <Icon name="close" size={12} />Close

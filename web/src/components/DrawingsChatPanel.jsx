@@ -77,7 +77,7 @@ function FormattedAnswer({ content }) {
         }
         if (b.type === "section") {
           return (
-            <div key={i} style={{ fontSize: 12, fontWeight: 700, color: "var(--cobalt)", marginTop: i ? 4 : 0, letterSpacing: "0.02em" }}>
+            <div key={i} style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)", marginTop: i ? 4 : 0, letterSpacing: "0.02em" }}>
               {b.text}
             </div>
           );

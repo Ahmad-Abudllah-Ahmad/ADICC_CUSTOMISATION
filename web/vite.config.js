@@ -17,6 +17,8 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
 // model AI sandbox in `../server` (see server/README.md). Without it, the app
 // works fully; the AI hooks just stay dormant.
 export default defineConfig({
+  // Mounted under the ADICC platform origin via Next rewrite (/takeoff).
+  base: "/takeoff/",
   plugins: [react()],
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   // The STT worker (stt.worker.ts, RFC #59) lazy-imports its engine adapter,
@@ -28,7 +30,11 @@ export default defineConfig({
   },
   assetsInclude: ["**/*.wasm"],
   server: {
+    host: "127.0.0.1",
     port: 5173,
+    strictPort: true,
+    // HMR stays on the Vite port so the platform proxy only needs HTTP.
+    hmr: { host: "127.0.0.1", port: 5173, clientPort: 5173 },
     proxy: {
       "/ai": "http://localhost:8000",
       "/rag": {

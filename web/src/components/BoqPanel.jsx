@@ -448,10 +448,6 @@ export default function BoqPanel({
           )}
         </span>
         <div style={{ flex: 1 }} />
-        <button type="button" onClick={syncFromTakeoff} title="Re-detect room names and refresh quantities from the canvas"
-          style={{ padding: "5px 10px", border: "1px solid var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 11.5, fontWeight: 600 }}>
-          Sync takeoff
-        </button>
         <button type="button" onClick={exportCsv} disabled={!bySheet.length && !manualLines.length}
           style={{ padding: "5px 10px", border: "none", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontSize: 11.5, fontWeight: 700, opacity: bySheet.length || manualLines.length ? 1 : 0.5 }}>
           Export CSV

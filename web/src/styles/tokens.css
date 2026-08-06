@@ -42,11 +42,11 @@
   --grain-rgb:     0, 0, 0;
   --grain-inverse-rgb: 255, 255, 255;
 
-  /* type — Times New Roman sitewide */
-  --f-display: "Times New Roman", Times, serif;
-  --f-body:    "Times New Roman", Times, serif;
-  --f-mono:    "Times New Roman", Times, serif;
-  --f-mono-draft: "Times New Roman", Times, serif;
+  /* type — platform sans (matches ADICC top nav) */
+  --f-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --f-body:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --f-mono:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --f-mono-draft: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
   /* hairlines */
   --rule: 1px solid var(--ink);
@@ -94,8 +94,9 @@
     --ink-faint:  #3d5166;
     --text-faint: #7f8c8d;
 
-    --cobalt:      #5dade2;
-    --cobalt-deep: #85c1e9;
+    /* Dark-mode accent only — sampled from platform navy swatch. */
+    --cobalt:      #204c68;
+    --cobalt-deep: #183a52;
 
     --c-positive: #58d68d;
     --c-warning:  #f4d03f;
@@ -105,7 +106,7 @@
     --tint-select:     #1c2a3d;
     --tint-active:     #1e332c;
     --surface-pop:     #2a3850;
-    --accent-contrast: #1c2833;
+    --accent-contrast: #ecf0f1;
     --hairline-warm:   #354a63;
     --divider-soft:    #2c3a52;
     --scrim:           rgba(0, 0, 0, .55);
@@ -113,7 +114,7 @@
     --shadow-1: 0 1px 2px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .35);
     --shadow-2: 0 12px 36px rgba(0, 0, 0, .55);
     --shadow-pop: 0 6px 22px rgba(0, 0, 0, .45);
-    --ring: 0 0 0 3px rgba(93, 173, 226, .65);
+    --ring: 0 0 0 3px rgba(32, 76, 104, .65);
 
     --grain-rgb: 255, 255, 255;
     --grain-inverse-rgb: 0, 0, 0;

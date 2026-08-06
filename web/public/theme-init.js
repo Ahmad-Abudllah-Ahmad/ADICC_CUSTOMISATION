@@ -10,10 +10,18 @@
 // (no async/defer) so it runs before the first paint.
 (function () {
   var t = null;
-  try { t = localStorage.getItem("opentakeoff_theme"); } catch (e) {}
+  // Parent ADICC platform may pass ?theme= when embedding this app in an iframe.
+  try {
+    var qt = new URLSearchParams(location.search).get("theme");
+    if (qt === "light" || qt === "dark") t = qt;
+  } catch (e) {}
+  if (t !== "light" && t !== "dark") {
+    try { t = localStorage.getItem("opentakeoff_theme"); } catch (e) {}
+  }
   if (t !== "light" && t !== "dark")
     t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", t);
+  try { localStorage.setItem("opentakeoff_theme", t); } catch (e) {}
   document.querySelector('meta[name="theme-color"]')
     .setAttribute("content", t === "dark" ? "#1a2332" : "#fafaf8");
 })();

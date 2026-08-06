@@ -58,14 +58,13 @@ export default function SupabaseHome() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--paper-cream)", color: "var(--ink)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
-        <strong style={{ fontFamily: "var(--f-display)", fontSize: 20, letterSpacing: "-0.02em" }}>
-          ADI<span style={{ fontStyle: "italic", color: "var(--cobalt)" }}>CC</span>
-        </strong>
-        <span style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink-muted)" }}>Home</span>
-      </div>
-
+    <div style={{
+      minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--paper-cream)", color: "var(--ink)",
+      fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+      "--f-display": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+      "--f-body": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+      "--f-mono": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    }}>
       <div style={{ flex: 1, overflow: "auto", padding: "32px 18px 48px" }}>
         <div style={{ maxWidth: 640, margin: "0 auto" }}>
           <div style={{ fontFamily: "var(--f-display)", fontSize: 22, color: "var(--ink)", lineHeight: 1.3, marginBottom: 6 }}>

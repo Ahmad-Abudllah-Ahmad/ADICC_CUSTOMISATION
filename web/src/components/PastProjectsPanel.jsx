@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Icon } from "../brand/icons.jsx";
 import { isSupabaseConfigured } from "../lib/supabaseStore.js";
 import { createSupabaseRecents, mergeProjectLists, browserStorage } from "../lib/supabaseRecents.js";
+import ProjectPdfSlider from "./ProjectPdfSlider.jsx";
 
 const sectionHead = {
   fontFamily: "var(--f-mono)",
@@ -174,7 +175,7 @@ export default function PastProjectsPanel({ currentProjectId, onNewProject, home
         </div>
         {home && onNewProject && (
           <button type="button" onClick={onNewProject} disabled={creating}
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 14px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: creating ? "default" : "pointer", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", opacity: creating ? 0.6 : 1 }}>
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "10px 14px", border: "1px solid var(--cobalt)", background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: creating ? "default" : "pointer", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", opacity: creating ? 0.6 : 1 }}>
             <Icon name="plus" size={14} />{creating ? "Creating…" : "New project"}
           </button>
         )}
@@ -207,53 +208,59 @@ export default function PastProjectsPanel({ currentProjectId, onNewProject, home
                 onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !active && !renaming && !busy) { e.preventDefault(); openProject(p); } }}
                 style={{
                   ...rowBase,
+                  flexDirection: home ? "column" : "row",
+                  alignItems: home ? "stretch" : "center",
+                  gap: home ? 10 : 12,
                   cursor: active || renaming || busy ? "default" : "pointer",
                   borderColor: active ? "var(--cobalt)" : "var(--ink-faint)",
                   boxShadow: active ? "inset 0 0 0 1px var(--cobalt)" : "none",
                   opacity: busy ? 0.65 : 1,
                 }}
               >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                    <span style={{ color: "var(--cobalt)", flexShrink: 0, display: "inline-flex" }}>
-                      <Icon name="document" size={15} />
-                    </span>
-                    {renaming ? (
-                      <input
-                        name="project-rename"
-                        value={renameDraft}
-                        autoFocus
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") { e.preventDefault(); commitRename(p); }
-                          if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
-                        }}
-                        onBlur={() => commitRename(p)}
-                        style={{ flex: 1, minWidth: 0, padding: "4px 8px", border: "1px solid var(--cobalt)", fontSize: 14, fontFamily: "var(--f-body)" }}
-                      />
-                    ) : (
-                      <strong style={{ fontSize: 14, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.name}>
-                        {p.name}
-                      </strong>
-                    )}
-                    {active && !renaming && (
-                      <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--cobalt)", border: "1px solid var(--cobalt)", padding: "1px 6px", flexShrink: 0 }}>
-                        Current
+                {home && <ProjectPdfSlider projectId={p.id} sheetCount={p.sheetCount} />}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+                      <span style={{ color: "var(--cobalt)", flexShrink: 0, display: "inline-flex" }}>
+                        <Icon name="document" size={15} />
                       </span>
-                    )}
+                      {renaming ? (
+                        <input
+                          name="project-rename"
+                          value={renameDraft}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); commitRename(p); }
+                            if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
+                          }}
+                          onBlur={() => commitRename(p)}
+                          style={{ flex: 1, minWidth: 0, padding: "4px 8px", border: "1px solid var(--cobalt)", fontSize: 14, fontFamily: "var(--f-body)" }}
+                        />
+                      ) : (
+                        <strong style={{ fontSize: 14, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.name}>
+                          {p.name}
+                        </strong>
+                      )}
+                      {active && !renaming && (
+                        <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--cobalt)", border: "1px solid var(--cobalt)", padding: "1px 6px", flexShrink: 0 }}>
+                          Current
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--ink-muted)", paddingLeft: 23 }}>{metaLine(p)}</div>
                   </div>
-                  <div style={{ fontSize: 12, color: "var(--ink-muted)", paddingLeft: 23 }}>{metaLine(p)}</div>
+                  {!active && home && !renaming && (
+                    <>
+                      <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} style={openBtn}>Rename</button>
+                      <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} style={{ ...openBtn, color: "var(--c-danger)", borderColor: "var(--c-danger)" }}>Delete</button>
+                    </>
+                  )}
+                  {!active && !renaming && (
+                    <button type="button" disabled={busy} onClick={(e) => { e.stopPropagation(); openProject(p); }} style={openBtn}>Open</button>
+                  )}
                 </div>
-                {!active && home && !renaming && (
-                  <>
-                    <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} style={openBtn}>Rename</button>
-                    <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} style={{ ...openBtn, color: "var(--c-danger)", borderColor: "var(--c-danger)" }}>Delete</button>
-                  </>
-                )}
-                {!active && !renaming && (
-                  <button type="button" disabled={busy} onClick={(e) => { e.stopPropagation(); openProject(p); }} style={openBtn}>Open</button>
-                )}
               </div>
             );
           })}

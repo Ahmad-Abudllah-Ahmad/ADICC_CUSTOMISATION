@@ -105,7 +105,7 @@ export default function ShapeBoqHoverCard({
         style={{
           display: "block", width: "100%", padding: "8px 12px", border: "none",
           borderTop: "1px solid var(--ink-faint)", background: pinned ? "var(--paper-cream)" : "transparent",
-          fontSize: 10.5, color: "var(--cobalt)", fontWeight: 600, textAlign: "center",
+          fontSize: 10.5, color: "var(--ink)", fontWeight: 600, textAlign: "center",
           cursor: "pointer", fontFamily: "inherit",
         }}
       >
