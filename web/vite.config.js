@@ -17,8 +17,9 @@ const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), 
 // model AI sandbox in `../server` (see server/README.md). Without it, the app
 // works fully; the AI hooks just stay dormant.
 export default defineConfig({
-  // Mounted under the ADICC platform origin via Next rewrite (/takeoff).
-  base: "/takeoff/",
+  // Local/dev: /takeoff/ (platform Next rewrite). Render static site: set VITE_BASE=/
+  // so built assets match the publish root (/assets, /theme-init.js).
+  base: process.env.VITE_BASE || "/takeoff/",
   plugins: [react()],
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   // The STT worker (stt.worker.ts, RFC #59) lazy-imports its engine adapter,
