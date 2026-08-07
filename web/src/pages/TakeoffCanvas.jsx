@@ -71,9 +71,10 @@ import BoqPanel from "../components/BoqPanel.jsx";
 import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
 import EstimatePanel from "../components/EstimatePanel.jsx";
+import FloatingWindow from "../components/FloatingWindow.jsx";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
 import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty } from "../lib/boqDetect.js";
-import { queryChat, finishForRoom, sheetKeyForCitation } from "../lib/rag.js";
+import { queryChat, finishForRoom, sheetKeyForCitation, buildProjectChatContext, buildLiveCountsSummary, answerFromLiveDetections, resolveChatAnswer } from "../lib/rag.js";
 import { priceMaskRow, pricedGrandTotals, pricedConditionTotals } from "../lib/pricing.js";
 import { money } from "../lib/num.js";
 import { listMaterialRates } from "../lib/supabase/pricing.js";
@@ -232,11 +233,25 @@ export default function TakeoffCanvas() {
   const resetZone = () => { setZoneCheck(null); setZoneExpand(null); };
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
-  // Docked LEFT panel — one at a time, never overlapping: null | "files" | "markup" | "stamp" | "rfi".
-  // Defaults to "files" so the project plan set is always visible in the sidebar.
-  // The right-rail buttons switch tabs; the dock reflows the canvas (mirrors the
-  // docked Takeoffs panel on the right).
-  const [leftTab, setLeftTab] = useState("files");
+  // Floating LEFT panel — one at a time: null | "files" | "markup" | "stamp" | "rfi".
+  // Opens on left-edge hover (or rail click); closes on mouse leave. Fixed size, not resizable.
+  const [leftTab, setLeftTab] = useState(null);
+  const lastLeftTabRef = useRef("files");
+  const leftHoverCloseRef = useRef(null);
+  const openLeftHover = useCallback((tab) => {
+    if (leftHoverCloseRef.current) { clearTimeout(leftHoverCloseRef.current); leftHoverCloseRef.current = null; }
+    const next = tab || lastLeftTabRef.current || "files";
+    lastLeftTabRef.current = next;
+    setLeftTab(next);
+  }, []);
+  const cancelLeftHoverClose = useCallback(() => {
+    if (leftHoverCloseRef.current) { clearTimeout(leftHoverCloseRef.current); leftHoverCloseRef.current = null; }
+  }, []);
+  const scheduleLeftHoverClose = useCallback(() => {
+    if (leftHoverCloseRef.current) clearTimeout(leftHoverCloseRef.current);
+    leftHoverCloseRef.current = setTimeout(() => setLeftTab(null), 220);
+  }, []);
+  useEffect(() => () => { if (leftHoverCloseRef.current) clearTimeout(leftHoverCloseRef.current); }, []);
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
   const [panelEditId, setPanelEditId] = useState(null);       // markup id whose text is being edited inline in the markup panel (off-screen fallback for the ✎ button)
@@ -360,6 +375,13 @@ export default function TakeoffCanvas() {
   const [ocSel, setOcSel] = useState(null);        // selected proposal vertex {ri, vi} — Delete removes just that point
   const [ocHover, setOcHover] = useState(-1);      // proposal region under the cursor — handles reveal on hover
   const [selectedId, setSelectedId] = useState(null);   // selected shape (Select tool)
+  const [selectedCutoutIds, setSelectedCutoutIds] = useState(() => new Set()); // multi-select for deduct cutouts
+  const [cutoutChecks, setCutoutChecks] = useState({}); // checklist id → checked (apply cutouts to parent)
+  const [cutoutPanelPos, setCutoutPanelPos] = useState(null); // { left, top } after user drags the floating Cutouts card
+  const [cutoutPanelSize, setCutoutPanelSize] = useState({ w: 240, h: 280 }); // floating Cutouts card size
+  const [shapeCtxMenu, setShapeCtxMenu] = useState(null); // { x, y, shapeId } canvas-local right-click menu
+  const shapeCtxMenuRef = useRef(null);
+  shapeCtxMenuRef.current = shapeCtxMenu;
   const [selVert, setSelVert] = useState(null);         // selected vertex index of the selected shape — Delete removes just that point
   const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
   const [hoverEdge, setHoverEdge] = useState(null);   // { shapeId, i, length, t } — edge length chip follows cursor along the segment (t ∈ [0,1])
@@ -399,18 +421,34 @@ export default function TakeoffCanvas() {
   const shapesRef = useRef(shapes);
   shapesRef.current = shapes;
   function dispatchShape(cmd, { record = true, reset = false, baseShapes = null } = {}) {
-    const res = applyShapeCommand(baseShapes || shapesRef.current, cmd);
+    // Stamp floating-Edit draw appearance onto newly committed shapes only.
+    let applied = cmd;
+    if (cmd?.type === "add" && Array.isArray(cmd.shapes) && drawAppearanceRef.current) {
+      const da = drawAppearanceRef.current;
+      const app = {};
+      for (const k of ["color", "fill", "hatch", "line_style"]) {
+        if (da[k] != null) app[k] = da[k];
+      }
+      if (Object.keys(app).length) {
+        applied = {
+          ...cmd,
+          shapes: cmd.shapes.map((s) => ({ ...s, ...app, appearance_override: true })),
+        };
+      }
+    }
+    const res = applyShapeCommand(baseShapes || shapesRef.current, applied);
     shapesRef.current = res.shapes;
     setShapes(res.shapes);
     if (res.counted) countDeleted(res.counted);
     if (reset) { undoStackRef.current = []; redoStackRef.current = []; }
     else if (record && res.inverse) {
-      const st = recordCommand(undoStackRef.current, { cmd, inverse: res.inverse });
+      const st = recordCommand(undoStackRef.current, { cmd: applied, inverse: res.inverse });
       undoStackRef.current = st.undo;
       redoStackRef.current = st.redo;   // a new command discards the redone future
     }
-    if (cmd.type === "add" && cmd.shapes?.length) {
-      suggestFinishForNewShapes(cmd.shapes, res.shapes);
+    if (applied.type === "add" && applied.shapes?.length) {
+      suggestFinishForNewShapes(applied.shapes, res.shapes);
+      if (drawAppearanceRef.current) setDrawAppearance(null);
     }
     return res;
   }
@@ -530,6 +568,8 @@ export default function TakeoffCanvas() {
     setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null);
     setSymbolFocus(null); setSymbolHover(null);
     setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqHoverStickyRef.current = false;
+    setShapeCtxMenu(null);
+    if (!id) setSelectedCutoutIds(new Set());
   };
   const selectMarkup = (id) => { setSelectedMarkupId(id); setSelectedId(null); };
   const pendingFlyRef = useRef(null);   // fly-to target whose sheet is opening this tick (two-phase center once its bitmap loads)
@@ -574,19 +614,21 @@ export default function TakeoffCanvas() {
   }, [commitMsgState]);
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
   const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
-  // AI Detection — ONLY A1105 / A1106 / A1107 floor plans. Keep mask DATA intact;
+  // AI Detection — ONLY A1105–A1109 floor plans. Keep mask DATA intact;
   // those sheets show no masks until the nav button runs, then reveal one-by-one.
   // All other PDFs keep normal always-visible masks + hover (untouched).
   const AI_DETECT_FLOOR_PLAN_FILES = useMemo(() => new Set([
     "a1105-1st floor plan.pdf",
     "a1106-2nd floor plan.pdf",
     "a1107-3rd floor plan.pdf",
+    "a1108-4th floor plan.pdf",
+    "a1109-5th & 6th floor plan.pdf",
   ]), []);
   const isAiDetectFloorPlan = useCallback((sheetKey) => {
     const file = parseSheetKey(String(sheetKey || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
     return AI_DETECT_FLOOR_PLAN_FILES.has(file);
   }, [AI_DETECT_FLOOR_PLAN_FILES]);
-  // Per-sheet reveal counts persist when switching files among A1105/A1106/A1107.
+  // Per-sheet reveal counts persist when switching files among A1105–A1109.
   // Clicking AI Detection always restarts the sequential reveal on the viewed sheet.
   const [aiDetectShownBySheet, setAiDetectShownBySheet] = useState({});
   const [aiDetectAnimatingKey, setAiDetectAnimatingKey] = useState(null);
@@ -627,6 +669,11 @@ export default function TakeoffCanvas() {
   }, [drawingsChatPill]);
   const [showRates, setShowRates] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
+  const [showCondEdit, setShowCondEdit] = useState(false);
+  // Floating Condition Edit: appearance for the in-progress draw only (not all CPT-1).
+  const [drawAppearance, setDrawAppearance] = useState(null);
+  const drawAppearanceRef = useRef(null);
+  drawAppearanceRef.current = drawAppearance;
   const [materialRates, setMaterialRates] = useState([]);
   const [projectCurrency, setProjectCurrency] = useState("AED");
   const [markupPct, setMarkupPct] = useState(0);
@@ -907,7 +954,7 @@ export default function TakeoffCanvas() {
     return shapes.filter((s) => keys.has(s.sheet_id));
   }, [shapes, sheetGroup, sheetKey]);
   // AI Detection targets the sheet the user is viewing; reveal counts are kept
-  // per file so switching A1105 ↔ A1106 ↔ A1107 keeps already-revealed masks visible.
+  // per file so switching among A1105–A1109 keeps already-revealed masks visible.
   const aiDetectViewKey = (sheetGroup.length
     ? ((focusKey && sheetGroup.includes(focusKey)) ? focusKey : (sheetGroup[0] || sheetKey))
     : sheetKey);
@@ -918,11 +965,14 @@ export default function TakeoffCanvas() {
   const aiDetectShownNow = aiDetectShownBySheet[aiDetectViewKey] || 0;
   const aiDetectShapeRevealed = useCallback((shape) => {
     if (!shape || !isAiDetectFloorPlan(shape.sheet_id)) return true;
-    const list = shapes.filter((s) => s.sheet_id === shape.sheet_id);
+    // Manual cutouts stay visible on top of the parent until the user applies them.
+    if (shape.measure_role === "deduct") return true;
+    const list = shapes.filter((s) => s.sheet_id === shape.sheet_id && s.measure_role !== "deduct");
     const idx = list.findIndex((s) => s.id === shape.id);
     const shown = aiDetectShownBySheet[shape.sheet_id] || 0;
     return idx >= 0 && idx < shown;
   }, [shapes, aiDetectShownBySheet, isAiDetectFloorPlan]);
+  // BOQ + Estimate both follow Auto-Takeoff reveal (hidden masks stay out of totals).
   const boqShapes = useMemo(
     () => shapes.filter((s) => aiDetectShapeRevealed(s)),
     [shapes, aiDetectShapeRevealed],
@@ -934,7 +984,8 @@ export default function TakeoffCanvas() {
     shapeBoqHoverStickyRef.current = false;
     if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return;
     const key = aiDetectViewKey;
-    const list = shapes.filter((s) => s.sheet_id === key);
+    // Floor masks only — cutouts stay visible separately and must not pad the reveal count.
+    const list = shapes.filter((s) => s.sheet_id === key && s.measure_role !== "deduct");
     const total = list.length;
     // Click again always restarts reveal on this file from the first mask.
     setAiDetectShownBySheet((prev) => ({ ...prev, [key]: 0 }));
@@ -1341,6 +1392,19 @@ export default function TakeoffCanvas() {
     // display units ride the payload (additive) — a metric project opens metric
     // on any machine; payloads without the field keep this browser's toggle
     if (a.units === "metric" || a.units === "imperial") setUnits(a.units);
+    // additive ai_detect_shown — per-sheet Auto-Takeoff reveal counts so revealed
+    // (and edited) masks stay visible/editable after reload. Else-clear: a payload
+    // without the key must not inherit the replaced project's reveal progress.
+    {
+      const raw = a.ai_detect_shown;
+      const next = {};
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [k, v] of Object.entries(raw)) {
+          if (typeof k === "string" && Number.isFinite(v) && v > 0) next[k] = Math.floor(Number(v));
+        }
+      }
+      setAiDetectShownBySheet(next);
+    }
   };
   useEffect(() => {
     let off = false;
@@ -1964,7 +2028,12 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    // ai_detect_shown is additive the same way — omit when empty so legacy
+    // payloads stay byte-identical until Auto-Takeoff has revealed anything.
+    const aiShown = Object.fromEntries(
+      Object.entries(aiDetectShownBySheet).filter(([, n]) => Number.isFinite(n) && n > 0),
+    );
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(aiShown).length ? { ai_detect_shown: aiShown } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -2023,7 +2092,7 @@ export default function TakeoffCanvas() {
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, aiDetectShownBySheet, lastGroup, openTabs, projectName, clientInfo, units]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -2202,6 +2271,8 @@ export default function TakeoffCanvas() {
     };
     const onWheel = (e) => {
       if (editingRef.current) return;   // freeze pan/zoom while the inline editor is pinned to its anchor
+      // Static hover cards (symbol / mask) scroll their own body — don't steal the wheel.
+      if (e.target?.closest?.("[data-hover-scroll]")) return;
       e.preventDefault();
       gestureUntilRef.current = performance.now() + GESTURE_MS;  // detail view waits for wheel quiet
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
@@ -2319,7 +2390,7 @@ export default function TakeoffCanvas() {
         else if (ocSel && proposal) { deleteSelectedOcVertex(); }
         else if (proposal?.regions.length) { setProposal((pr) => { const rg = pr.regions.slice(0, -1); return rg.length ? { ...pr, regions: rg } : null; }); }
         else if (selVert != null && selectedId) { deleteSelectedShapeVertex(); }
-        else if (selectedId) { dispatchShape({ type: "delete", ids: [selectedId] }); setSelectedId(null); }
+        else if (selectedCutoutIds.size > 1 || selectedId) { deleteSelected(); }
         else if (selectedMarkupId && showMarkups) { deleteMarkup(selectedMarkupId); setSelectedMarkupId(null); }
         // pop ONLY the armed tool's pending points — calibrate and check both
         // keep two-click state (calib points even render while another tool is
@@ -2327,7 +2398,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -2441,7 +2512,14 @@ export default function TakeoffCanvas() {
     else if (tool === "check") setCheck((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "oneclick") oneClickAt(p, !!(ev && ev.altKey));
     else if (tool === "walltrace") wallTraceAt(p);
-    else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") setPoly((q) => [...q, p]);
+    else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") {
+      // Join the end — click near the first vertex to close & commit (autosaves via shapes).
+      if ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) {
+        const thr = 12 / tfRef.current.scale;
+        if (Math.hypot(p[0] - poly[0][0], p[1] - poly[0][1]) < thr) { finishShape(); return; }
+      }
+      setPoly((q) => [...q, p]);
+    }
     else if (tool === "count") commitCount(p);
     else if (tool === "rect" || tool === "deduct-rect") {
       if (poly.length === 0) setPoly([p]);
@@ -2534,7 +2612,10 @@ export default function TakeoffCanvas() {
   // it. Every shape hit-tests in ITS panel's local frame (stage x minus xOffset).
   function selectAt(p, e) {
     const thr = 8 / tfRef.current.scale;
-    const sel = selectedId ? shapes.find((s) => s.id === selectedId) : null;
+    // Auto-Takeoff: only revealed masks are selectable/editable (unrevealed stay
+    // invisible and must not steal hits or commit geometry).
+    let sel = selectedId ? shapes.find((s) => s.id === selectedId) : null;
+    if (sel && !aiDetectShapeRevealed(sel)) { selectShape(null); sel = null; }
     const selSp = sel && panelKeySet.has(sel.sheet_id) ? panelByKey(sel.sheet_id) : null;
     setSelVert(null); setSelHole(null);   // default: this press clears the vertex pick (overridden below on a corner/insert hit)
     // 1. Handles of the ALREADY-selected shape win first, so a shape (or vertex)
@@ -2647,10 +2728,28 @@ export default function TakeoffCanvas() {
       e.currentTarget.setPointerCapture(e.pointerId); return;
     }
     // 4. otherwise pick a shape (or clear the selection)
-    const hit = [...visibleShapes].reverse().find((s) => {
+    // Prefer deduct cutouts (drawn on top) so multi-select / edit hits the overlay first.
+    const hit = [...visibleShapes].slice().sort((a, b) => {
+      const ad = a.measure_role === "deduct" ? 1 : 0, bd = b.measure_role === "deduct" ? 1 : 0;
+      return ad - bd;
+    }).reverse().find((s) => {
+      if (!aiDetectShapeRevealed(s)) return false;
       const sp = panelByKey(s.sheet_id);
       return hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
     });
+    if (hit?.measure_role === "deduct" && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+      setSelectedCutoutIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(hit.id)) next.delete(hit.id); else next.add(hit.id);
+        return next;
+      });
+      setSelectedId(hit.id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null);
+      setShapeCtxMenu(null);
+      revealSheetInFilesSidebar(hit.sheet_id);
+      return;
+    }
+    if (hit?.measure_role === "deduct") setSelectedCutoutIds(new Set([hit.id]));
+    else setSelectedCutoutIds(new Set());
     selectShape(hit ? hit.id : null);
     if (hit) { revealSheetInFilesSidebar(hit.sheet_id); dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return; }
     // 4b. plan symbol (door/type mark) — pin the detail card for review / manual fill
@@ -2988,6 +3087,7 @@ export default function TakeoffCanvas() {
     const pt = toImage(e.clientX, e.clientY);
     const thr = 8 / tfRef.current.scale;
     let hit = [...visibleShapes].reverse().find((s) => {
+      if (!aiDetectShapeRevealed(s)) return false;
       const sp = panelByKey(s.sheet_id);
       return hitShapeC(s, pt[0] - sp.xOffset, pt[1], sp.img.w, sp.img.h, thr);
     });
@@ -3063,7 +3163,7 @@ export default function TakeoffCanvas() {
       const r = containerRef.current.getBoundingClientRect();
       if (!hit.isProposal) {
         el.style.display = "none"; hoverIdRef.current = "";
-        // A1105/A1106/A1107: hover only after that sheet's mask has been revealed.
+        // A1105–A1109: hover only after that sheet's mask has been revealed.
         if (isAiDetectFloorPlan(hit.sheet_id) && !aiDetectShapeRevealed(hit)) {
           if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
           return;
@@ -3122,7 +3222,7 @@ export default function TakeoffCanvas() {
         : [...visibleShapes].reverse();
       let _foundEdge = false;
       for (const _sel of _candidates) {
-        if (!_sel || _sel.measure_role === "count") continue;
+        if (!_sel || _sel.measure_role === "count" || !aiDetectShapeRevealed(_sel)) continue;
         const _sp = panelKeySet.has(_sel.sheet_id) ? panelByKey(_sel.sheet_id) : null;
         if (!_sp || !_sp.img?.w) continue;
         const _pts = _sel.verts_norm.map(([nx, ny]) => [nx * _sp.img.w + _sp.xOffset, ny * _sp.img.h]);
@@ -3804,6 +3904,28 @@ export default function TakeoffCanvas() {
       return;
     }
     if (p.source === "poly") {
+      // Cut Out over a parent floor mask: Merge keeps the deduct overlay (visible
+      // until Apply); Remove punches the parent immediately (existing trim path).
+      if (p.cutoutOverParent) {
+        if (choice === "merge") {
+          const met = closedMetrics(p.points);
+          const upp = uppFor(p.sheetId);
+          dispatchShape({ type: "add", shapes: [{
+            sheet_id: p.sheetId, condition_id: p.condId, measure_role: "deduct",
+            verts_norm: p.points.map(([x, y]) => [(x - p.xOffset) / p.imgW, y / p.imgH]),
+            computed: { area_sf: +(met.area * upp * upp).toFixed(2), perimeter_lf: +(met.perim * upp).toFixed(2) },
+            ...(p.label ? { label: p.label } : {}),
+            origin: { method: "manual" },
+          }] });
+          setCommitMsg("Cutout kept on top of the parent mask — apply it when ready.");
+          return;
+        }
+        if (choice === "remove") {
+          removeOverlapFromVictims(p.newPoly, p.sheetId, p.victims);
+          setPoly([]);
+          return;
+        }
+      }
       if (choice === "merge") {
         if (!mergeIntoExistingShapes(p.newPoly, p.sheetId, p.condId, p.role)) {
           // Merge failed unexpectedly — fall through to a plain add.
@@ -3865,6 +3987,28 @@ export default function TakeoffCanvas() {
         tag: condById[activeCond]?.finish_tag || "this condition",
       });
       return;
+    }
+    // Cut Out only — finishing a deduct over a parent floor mask offers Merge / Remove.
+    if (asDeduct && tp.img?.w) {
+      const w = tp.img.w, h = tp.img.h;
+      const polyOf = (s) => s.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
+      const parentVictims = shapesRef.current.filter((s) =>
+        s.sheet_id === tp.key
+        && s.measure_role === "floor_area"
+        && polygonsOverlap(newPoly, polyOf(s)));
+      if (parentVictims.length) {
+        setOverlapPrompt({
+          source: "poly",
+          cutoutOverParent: true,
+          points, role: "deduct", newPoly,
+          sheetId: tp.key, condId: activeCond,
+          xOffset: tp.xOffset, imgW: tp.img.w, imgH: tp.img.h,
+          label: activeLabel || undefined,
+          victims: parentVictims,
+          tag: condById[activeCond]?.finish_tag || "this condition",
+        });
+        return;
+      }
     }
     const met = closedMetrics(points);
     // id + created_at are minted by the add command — the ONE creation gate
@@ -5126,7 +5270,65 @@ export default function TakeoffCanvas() {
     else commitPoly(poly, tool === "deduct");
     setPoly([]);
   }
-  function deleteSelected() { if (selectedId) { dispatchShape({ type: "delete", ids: [selectedId] }); setSelectedId(null); } }
+  function deleteSelected() {
+    const cutIds = [...selectedCutoutIds];
+    if (cutIds.length > 1) {
+      dispatchShape({ type: "delete", ids: cutIds });
+      setSelectedCutoutIds(new Set());
+      setSelectedId(null);
+      setCutoutChecks((m) => {
+        const next = { ...m };
+        for (const id of cutIds) delete next[id];
+        return next;
+      });
+      return;
+    }
+    if (selectedId) {
+      dispatchShape({ type: "delete", ids: [selectedId] });
+      setSelectedCutoutIds((prev) => { const n = new Set(prev); n.delete(selectedId); return n; });
+      setCutoutChecks((m) => { const n = { ...m }; delete n[selectedId]; return n; });
+      setSelectedId(null);
+    }
+  }
+  // Punch checked/selected deduct cutouts into overlapping parent floor masks (holes_norm),
+  // then remove the deduct overlays. Uses existing trim path — no schema change; autosaves via shapes.
+  function applyCutoutsToParents(ids) {
+    const list = [...new Set(ids)].filter(Boolean);
+    if (!list.length) return;
+    let applied = 0;
+    for (const id of list) {
+      const cut = shapesRef.current.find((s) => s.id === id);
+      if (!cut || cut.measure_role !== "deduct") continue;
+      const tp = panelByKey(cut.sheet_id);
+      if (!tp?.img?.w) continue;
+      const cutterPx = cut.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+      if (cutterPx.length < 3) continue;
+      const parents = shapesRef.current.filter((s) => {
+        if (s.id === cut.id || s.sheet_id !== cut.sheet_id || s.measure_role !== "floor_area") return false;
+        if (!aiDetectShapeRevealed(s) && isAiDetectFloorPlan(s.sheet_id)) return false;
+        const outer = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+        return polygonsOverlap(cutterPx, outer) || cutterPx.some(([x, y]) => pointInPoly(x, y, outer));
+      });
+      if (parents.length) {
+        removeOverlapFromVictims(cutterPx, cut.sheet_id, parents);
+        applied += 1;
+      }
+      if (shapesRef.current.some((s) => s.id === id)) {
+        dispatchShape({ type: "delete", ids: [id] });
+      }
+    }
+    setSelectedCutoutIds(new Set());
+    setSelectedId(null);
+    setShapeCtxMenu(null);
+    setCutoutChecks((m) => {
+      const next = { ...m };
+      for (const id of list) delete next[id];
+      return next;
+    });
+    setCommitMsg(applied
+      ? `Applied ${applied} cutout${applied === 1 ? "" : "s"} to parent mask${applied === 1 ? "" : "s"}.`
+      : "No overlapping parent mask found for those cutouts.");
+  }
   function reassignSelected(condId) { if (selectedId) dispatchShape({ type: "reassign", ids: [selectedId], condition_id: condId }); }
   function reassignSelectedLabel(value) { if (selectedId) dispatchShape({ type: "label", ids: [selectedId], value }); }   // Select-tool single-shape re-label (#111) — value "" / null clears it; label commands never stamp
 
@@ -5367,10 +5569,25 @@ export default function TakeoffCanvas() {
       createCondition: (tag) => { const c = mintCondition(tag); return { id: c.id, finish_tag: c.finish_tag }; },
       proposeShapes: stageAgentProposals,
       askDrawings: async (question) => {
-        const result = await queryChat(question);
+        const liveConditions = agentStateRef.current.conditions || conditions;
+        const projectContext = buildProjectChatContext({
+          projectName,
+          units,
+          shapes,
+          conditions: liveConditions,
+          planSymbols,
+          symbolNotes,
+          panelImgs,
+          roomLabelsBySheet,
+          scheduleKb,
+        });
+        const liveSummary = buildLiveCountsSummary(planSymbols, shapes, liveConditions);
+        const liveAnswer = answerFromLiveDetections(question, planSymbols, shapes, liveConditions);
+        const result = await queryChat(question, { projectContext, liveSummary });
+        const resolved = resolveChatAnswer(question, result, liveAnswer);
         return {
-          answer: result.answer,
-          abstained: result.abstained,
+          answer: resolved.content,
+          abstained: resolved.abstained,
           citations: (result.citations || []).map((c) => ({
             sheet_id: c.sheet_id,
             quote: c.quote,
@@ -6111,6 +6328,133 @@ export default function TakeoffCanvas() {
       return { ...next, computed: recomputeShape(next) };
     }));
   };
+  // Floating Condition Edit — apply only to the selected takeoff and/or the
+  // in-progress draw. Appearance rides on the shape (saved in annotations);
+  // other fields clone a private condition for that one shape so peers keep theirs.
+  const FLOAT_APPEARANCE_KEYS = ["color", "fill", "hatch", "line_style"];
+  const resolveShapeLook = (shape, cond) => {
+    if (!cond) return null;
+    if (!shape?.appearance_override) return cond;
+    return {
+      ...cond,
+      ...(shape.color != null ? { color: shape.color } : {}),
+      ...(shape.fill != null ? { fill: shape.fill } : {}),
+      ...(shape.hatch != null ? { hatch: shape.hatch } : {}),
+      ...(shape.line_style != null ? { line_style: shape.line_style } : {}),
+    };
+  };
+  const isolateShapeCondition = (shapeId, patch) => {
+    const sel = shapesRef.current.find((s) => s.id === shapeId);
+    if (!sel) return;
+    const base = condById[sel.condition_id];
+    if (!base) return;
+    const peers = shapesRef.current.filter((s) => s.condition_id === sel.condition_id);
+    if (peers.length <= 1) {
+      updateCondById(sel.condition_id, patch);
+      return;
+    }
+    const nid = uid("cnd");
+    const clone = {
+      ...base,
+      id: nid,
+      materials: (base.materials || []).map((m) => ({ ...m, id: uid("mat") })),
+      attrs: { ...(base.attrs || {}) },
+      spec: base.spec && typeof base.spec === "object" && !Array.isArray(base.spec) ? { ...base.spec } : base.spec,
+      ...patch,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    setConditions((cs) => [...cs, clone]);
+    dispatchShape({ type: "reassign", ids: [sel.id], condition_id: nid });
+    setActiveCond(nid);
+  };
+  const floatEditTargetShape = () => {
+    if (selectedId) {
+      const hit = shapesRef.current.find((s) => s.id === selectedId);
+      if (hit) return hit;
+    }
+    // Condition Edit open with a just-drawn takeoff: allow Line/Fill colour on
+    // the latest shape of the active condition (not every CPT-1 mask).
+    if (!activeCond) return null;
+    const pool = shapesRef.current.filter((s) => s.condition_id === activeCond);
+    return pool.length ? pool[pool.length - 1] : null;
+  };
+  const applyFloatCondEdit = (patch) => {
+    const sel = floatEditTargetShape();
+    const drawing = poly.length > 0
+      || !!(proposal?.regions?.length)
+      || !!(wallProposal?.regions?.length)
+      || tool === "rect"
+      || tool === "deduct-rect"
+      || MEASURE_TOOLS.some((t) => t.id === tool);
+    if (!sel && !drawing) {
+      setCommitMsg("Select a takeoff or start drawing — Edit applies only to that selection.");
+      return;
+    }
+    const app = {};
+    const rest = { ...patch };
+    for (const k of FLOAT_APPEARANCE_KEYS) {
+      if (k in rest) { app[k] = rest[k]; delete rest[k]; }
+    }
+    if ("height_ft" in rest && sel) {
+      const v = rest.height_ft;
+      delete rest.height_ft;
+      if (selectedId === sel.id) {
+        if (v == null || v === "") clearShapeHeight();
+        else setShapeHeight(v);
+      } else {
+        setShapes((ss) => ss.map((s) => {
+          if (s.id !== sel.id) return s;
+          const next = v == null
+            ? { ...s, height_ft: Number(condById[s.condition_id]?.height_ft) || 0, height_override: false }
+            : { ...s, height_ft: Math.max(0, Number(v) || 0), height_override: true };
+          return { ...next, computed: recomputeShape(next) };
+        }));
+      }
+    }
+    if (Object.keys(app).length) {
+      if (sel) {
+        setShapes((ss) => ss.map((s) => (s.id === sel.id ? { ...s, ...app, appearance_override: true } : s)));
+      }
+      if (drawing) setDrawAppearance((d) => ({ ...(d || {}), ...app }));
+    }
+    if (Object.keys(rest).length) {
+      if (sel) isolateShapeCondition(sel.id, rest);
+      else if (drawing) setDrawAppearance((d) => ({ ...(d || {}), ...rest }));
+    }
+  };
+  const applyFloatCondParam = (field, raw) => {
+    const v = raw === "" ? null : Math.max(0, parseFloat(raw) || 0);
+    applyFloatCondEdit({ [field]: v });
+  };
+  const applyFloatAssignAttr = (colId, v) => {
+    const sel = selectedId ? shapesRef.current.find((s) => s.id === selectedId) : null;
+    if (!sel) {
+      setCommitMsg("Select a takeoff first — Edit applies only to that selection.");
+      return;
+    }
+    const base = condById[sel.condition_id];
+    const attrs = { ...(base?.attrs || {}) };
+    if (v) attrs[colId] = v; else delete attrs[colId];
+    isolateShapeCondition(sel.id, { attrs });
+  };
+  const floatEditCond = (() => {
+    if (!aCond) return null;
+    const sel = selectedId
+      ? shapes.find((s) => s.id === selectedId)
+      : (() => {
+          const pool = shapes.filter((s) => s.condition_id === activeCond);
+          return pool.length ? pool[pool.length - 1] : null;
+        })();
+    if (sel) {
+      const base = condById[sel.condition_id] || aCond;
+      const look = resolveShapeLook(sel, base) || base;
+      return drawAppearance ? { ...look, ...drawAppearance } : look;
+    }
+    if (drawAppearance) return { ...aCond, ...drawAppearance };
+    return aCond;
+  })();
+  const liveDrawLook = drawAppearance && aCond ? { ...aCond, ...drawAppearance } : aCond;
   const measureActive = MEASURE_TOOLS.some((t) => t.id === tool);
   const faceTool = MEASURE_TOOLS.find((t) => t.id === (measureActive ? tool : lastMeasureRef.current)) || MEASURE_TOOLS[0];
   const finishOk = ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
@@ -6506,7 +6850,7 @@ export default function TakeoffCanvas() {
           control ever changes position. */}
       <div style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 14px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", whiteSpace: "nowrap" }}>
         <button type="button" onClick={runAiDetection}
-          title="Auto-Takeoff — reveal masks one by one on this floor plan. Click again to restart. Revealed masks stay visible when switching between A1105 / A1106 / A1107."
+          title="Auto-Takeoff — reveal masks one by one on this floor plan. Click again to restart. Revealed masks stay visible when switching between A1105–A1109."
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "1px solid var(--cobalt)", borderRadius: 999, background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1, whiteSpace: "nowrap" }}>
           <Icon name="sparkle" size={15} />
           Auto-Takeoff
@@ -6672,6 +7016,27 @@ export default function TakeoffCanvas() {
             ]}
           />
         </>)}
+        {aCond && vRule}
+        {aCond && cluster("Condition",
+          <button
+            type="button"
+            onClick={() => setShowCondEdit(true)}
+            title={`Edit appearance for ${aCond.finish_tag}`}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 7,
+              padding: "6px 12px", border: "1px solid var(--ink-faint)", borderRadius: 999,
+              background: showCondEdit ? "var(--cobalt)" : "var(--paper-bright)",
+              color: showCondEdit ? "var(--paper-bright)" : "var(--ink)",
+              cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--f-mono)",
+              lineHeight: 1, whiteSpace: "nowrap",
+            }}
+          >
+            <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0 }}>
+              <HatchSwatch type={aCond.hatch || "solid"} line={aCond.color} fill={aCond.fill} />
+            </span>
+            Edit {aCond.finish_tag}
+          </button>
+        )}
         {/* The caption always shows the ACTIVE label (+ the cobalt highlight keyed
             on it) so what a new trace will get is never hidden — even in Select
             mode, where the dropdown VALUE instead shows the selected shape's label
@@ -6687,48 +7052,6 @@ export default function TakeoffCanvas() {
             <option value="">No label</option>
             {shapeLabels.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
-        )}
-        {/* Typed voice command (RFC #59 slice 2): the same grammar push-to-talk
-            will feed — a keyboard command line meanwhile, and the accessibility
-            path. Focus suppresses canvas shortcuts via the existing INPUT guards.
-            Deixis: focus marks the utterance's start — "this room" then needs an
-            aim placed AFTER it (park the pointer on the room, type, Enter). */}
-        {cluster("Command",
-          <input
-            type="text"
-            placeholder="cpt 1 · waste 7 · this room"
-            title={'Command line (RFC #59): a condition tag ("CPT-1", "carpet one", "tile 2 waste 5"), "waste 7", "label Phase 1", "clear label", or "note …" — Enter runs it through the same actions the buttons use. End with "this room" / "here" while the pointer rests on a room to trace and commit it there ("carpet one, this room"). Push-to-talk dictation will feed this box.'}
-            onFocus={() => { voiceAimMarkRef.current = aimSeqRef.current; }}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter") return;
-              const v = e.currentTarget.value.trim();
-              if (!v) return;
-              const el = e.currentTarget;   // capture: currentTarget nulls after dispatch, and deixis outcomes can resolve async (raster)
-              // router confirm (RFC #59 slice 5): the rejected text is still in
-              // the box (only success clears it) — a second ⏎ on the SAME text
-              // confirms the pending offer instead of re-rejecting in a loop
-              if (pendingAgentOfferRef.current && v === pendingAgentOfferRef.current.transcript) {
-                agentOfferFnsRef.current.confirm();
-                el.value = "";
-                return;
-              }
-              Promise.resolve(onVoiceCommand(v)).then((ok) => { if (ok) el.value = ""; });
-            }}
-            style={{ fontFamily: "var(--f-mono)", fontSize: 11.5, padding: "5px 6px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", width: 150 }}
-          />
-        )}
-        {/* Push-to-talk (RFC #59 recognizer): hold the button (or M) to dictate
-            into the same grammar the Command box runs. Hidden entirely where
-            capture is unsupported — graceful feature-absence, never broken. */}
-        {captureSupported() && cluster("Voice",
-          <button
-            title={'Hold to talk (or hold M anywhere on the canvas): speak a command — "carpet one, waste seven", "label phase two", "note …", or end with "this room" to trace at the cursor. Release to run; Esc discards. Audio is processed on-device and never leaves the browser.'}
-            onPointerDown={(e) => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); voiceHoldRef.current = true; voiceFnsRef.current.start(); }}
-            onPointerUp={() => { if (voiceHoldRef.current) { voiceHoldRef.current = false; voiceFnsRef.current.end(true); } }}
-            onPointerCancel={() => { if (voiceHoldRef.current) { voiceHoldRef.current = false; voiceFnsRef.current.end(false); } }}
-            style={{ padding: "5px 10px", border: `1px solid ${voiceChip?.tone === "live" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: voiceChip?.tone === "live" ? "var(--cobalt)" : "transparent", color: voiceChip?.tone === "live" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontFamily: "var(--f-mono)", fontSize: 11, fontWeight: 700, lineHeight: 1 }}>
-            {voiceChip?.tone === "live" ? "● talking" : "talk · M"}
-          </button>
         )}
         <div style={{ flex: 1 }} />
         {cluster(`Scale — ${labelFor(focusPanel)}`,
@@ -6748,84 +7071,39 @@ export default function TakeoffCanvas() {
             />
           </>
         )}
-        {cluster("Action",
-          <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end", gap: 6, minWidth: 150 }}>
-            {markupDraft && (tool === "cloud" || tool === "callout" || tool === "highlight") && <span style={{ fontSize: 11, color: "var(--cobalt)" }}>click the {tool === "callout" ? "label spot" : "opposite corner"}…</span>}
-            {finishOk && (
-              <button onClick={finishShape} title="Finish shape (↵ or double-click)" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "none", background: "var(--c-positive)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}><Icon name="check" size={14} />Finish ({poly.length})</button>
-            )}
-            {proposal?.regions.length > 0 && (
-              <button onClick={createProposal} title="Create the selected takeoff(s) (↵). ⌫ removes the last click; Esc discards the selection." style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "none", background: "var(--c-positive)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}><Icon name="check" size={14} />Create ({proposal.regions.length})</button>
-            )}
-            {wallProposal?.regions.length > 0 && (
-              <button onClick={createWallProposal} title="Create wall takeoff(s) (↵). Esc discards the selection." style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "none", background: "var(--c-positive)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}><Icon name="check" size={14} />Create walls ({wallProposal.regions.length})</button>
-            )}
-          </span>
-        )}
       </div>
 
-      {/* quick-access condition palette — its own slim band under the toolbar
-          (like the sheet-tabs / conditions-strip rows), not crammed into the
-          already-wrapping top bar. A curated ≤9 pinned conditions for one-click
-          activation without opening the panel: drag a condition here from the
-          Takeoffs panel (or the strip) to pin it, or use a row's pushpin. Each
-          chip carries its 1–9 hotkey badge (cobalt); single-click activates
-          (reassigning a selected shape, like every activation surface),
-          double-click opens the docked panel scrolled to that row, the pushpin
-          unpins, and dragging one chip onto another reorders (which renumbers
-          the hotkeys). Below the chips, the active condition's appearance editor
-          — the same one the docked panel row renders — so line/fill/hatch/height
-          are editable without opening the sidebar. Shown once there's a
-          condition to pin, so the drop zone is discoverable. */}
-      {conditions.length > 0 && (
-        <div
-          onDragOver={(e) => { if (e.dataTransfer.types.includes(CONDITION_DND_MIME)) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; } }}
-          onDrop={(e) => { if (!e.dataTransfer.types.includes(CONDITION_DND_MIME)) return; e.preventDefault(); e.stopPropagation(); const id = e.dataTransfer.getData(CONDITION_DND_MIME); if (id) pinToPalette(id); }}
-          style={{ padding: "5px 14px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)" }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            <span title="Quick-access conditions — drag a condition here (or use a row's pushpin) to pin it, up to 9. Press 1–9 to activate by this order; click a chip to activate; double-click to open the panel."
-              style={{ fontFamily: "var(--f-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ink-muted)" }}>Conditions</span>
-            {paletteConds.length === 0 ? (
-              <span style={{ fontSize: 11.5, color: "var(--ink-muted)", fontStyle: "italic", padding: "3px 8px", border: "1px dashed var(--ink-faint)" }}>drag conditions here (or pin a row) for 1-9 one-click access</span>
-            ) : paletteConds.map((c) => {
-              const on = c.id === activeCond;
-              const reassign = tool === "select" && selectedId;
-              const idx = palette.indexOf(c.id);   // palette position → the 1–9 hotkey number
-              return (
-                <span key={c.id} style={{ display: "inline-flex", alignItems: "center" }}
-                  onDragOver={(e) => { if (e.dataTransfer.types.includes(CONDITION_DND_MIME)) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "move"; } }}
-                  onDrop={(e) => { if (!e.dataTransfer.types.includes(CONDITION_DND_MIME)) return; e.preventDefault(); e.stopPropagation(); const dragId = e.dataTransfer.getData(CONDITION_DND_MIME); if (dragId) { if (palette.includes(dragId)) movePalette(dragId, idx); else pinToPalette(dragId); } }}>
-                  <button type="button" draggable
-                    onDragStart={(e) => { e.dataTransfer.setData(CONDITION_DND_MIME, c.id); e.dataTransfer.effectAllowed = "copyMove"; }}
-                    onClick={() => activateCondition(c.id)}
-                    onDoubleClick={() => openConditionInPanel(c.id)}
-                    title={reassign ? `Reassign the selected takeoff to ${c.finish_tag} (double-click opens the panel)` : `${c.finish_tag} — press ${idx + 1} or click to activate, double-click to open in the panel, drag onto another chip to reorder`}
-                    style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 8px 3px 5px", border: on ? `2px solid ${c.color}` : (reassign ? "1px dashed var(--cobalt)" : "1px solid var(--ink-faint)"), background: on ? "var(--surface-pop)" : "transparent", cursor: "pointer", fontWeight: on ? 700 : 500, fontSize: 12.5, lineHeight: 1 }}>
-                    {idx < 9 && <span style={{ fontSize: 9, fontFamily: "var(--f-mono,monospace)", color: "var(--cobalt)", border: "1px solid var(--cobalt)", borderRadius: 3, padding: "0 3px" }}>{idx + 1}</span>}
-                    <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>{c.finish_tag}
-                  </button>
-                  <button type="button" onClick={() => unpinFromPalette(c.id)} title={`Unpin ${c.finish_tag} from the palette`}
-                    style={{ border: "none", background: "none", cursor: "pointer", color: "var(--cobalt)", padding: "0 3px", lineHeight: 0, display: "inline-flex" }}>
-                    <Icon name="pin" size={12} />
-                  </button>
-                </span>
-              );
-            })}
-            {paletteConds.length >= PALETTE_MAX && (
-              <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontStyle: "italic" }}>full ({PALETTE_MAX})</span>
-            )}
-            {/* add a condition without opening the (now-collapsed) sidebar */}
-            <button type="button" onClick={addCondition} title="Add a new condition"
-              style={{ padding: "3px 9px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12, color: "var(--ink-muted)" }}>+ condition</button>
-          </div>
-          {/* the active condition's appearance editor, restored to the top bar —
-              same component the docked panel row renders (one source of truth) */}
-          {aCond && (
-            <div style={{ marginTop: 5, paddingTop: 5, borderTop: "1px solid var(--ink-faint)" }}>
-              <ConditionAppearanceEditor cond={aCond} onUpdateCond={updateCond} onSetCondParam={setCondParam} onAssignAttr={assignAttr} conditionColumns={conditionColumns} layout="row" />
+      {showCondEdit && aCond && (
+        <FloatingWindow
+          defaultRect={{
+            x: 24,
+            y: 120,
+            w: Math.min(720, (typeof window !== "undefined" ? window.innerWidth : 1280) - 48),
+            h: Math.min(280, (typeof window !== "undefined" ? window.innerHeight : 800) - 140),
+          }}
+          minW={360}
+          minH={200}
+        >
+          <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
+            <header data-float-drag style={{ padding: "10px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8, cursor: "grab", userSelect: "none", flexShrink: 0 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Condition</div>
+                <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{aCond.finish_tag}</div>
+              </div>
+              <button type="button" onClick={() => setShowCondEdit(false)} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "var(--ink-muted)" }}>×</button>
+            </header>
+            <div style={{ flex: 1, overflow: "auto", padding: "8px 12px 12px", minHeight: 0 }}>
+              <ConditionAppearanceEditor
+                cond={floatEditCond || aCond}
+                onUpdateCond={applyFloatCondEdit}
+                onSetCondParam={applyFloatCondParam}
+                onAssignAttr={applyFloatAssignAttr}
+                conditionColumns={conditionColumns}
+                layout="row"
+              />
             </div>
-          )}
-        </div>
+          </div>
+        </FloatingWindow>
       )}
 
       {/* open-sheet tabs — what you opened from the gallery; click to view,
@@ -6935,15 +7213,71 @@ export default function TakeoffCanvas() {
       )}
 
       {/* canvas + issue desk */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
-       {/* docked LEFT panel — one of Files/Markups/Stamps/RFIs at a time. Reflows the
-           canvas (a flex sibling), mirroring the docked Takeoffs panel on the right. */}
-       {leftTab && (
-         <div style={{ width: 360, flexShrink: 0, display: "flex", flexDirection: "column", borderRight: "1px solid var(--ink-faint)", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
+       {/* Left icon rail + floating Files panel — sits in the canvas band (below
+           the toolbar), never overlaps the decks. Rail stays visible; hover opens
+           the fixed-size panel (not resizable). */}
+       <div
+         onMouseEnter={() => openLeftHover()}
+         onMouseLeave={scheduleLeftHoverClose}
+         onPointerDown={(e) => e.stopPropagation()}
+         style={{
+           position: "absolute",
+           left: 8,
+           top: 10,
+           bottom: 10,
+           zIndex: 55,
+           display: "flex",
+           flexDirection: "row",
+           alignItems: "stretch",
+           gap: 6,
+           pointerEvents: "none",
+         }}
+       >
+         {/* slim vertical icon rail — always visible */}
+         <div
+           style={{
+             pointerEvents: "auto",
+             alignSelf: "center",
+             display: "flex",
+             flexDirection: "column",
+             gap: 6,
+             padding: "6px 4px",
+             background: "var(--paper-bright)",
+             border: "1px solid var(--ink-faint)",
+             borderRadius: 8,
+             boxShadow: "0 6px 18px rgba(14, 26, 46, 0.12)",
+           }}
+         >
+           {panelBtn(() => openLeftHover("files"), "sheets", "Project files — plans in this takeoff (upload folder, zip, or PDFs)", leftTab === "files", sheets.length)}
+           {panelBtn(() => openLeftHover("markup"), "markup", "Markups on these sheets (clouds, callouts, notes)", leftTab === "markup", markupCount)}
+           {panelBtn(() => openLeftHover("stamp"), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
+           {panelBtn(() => openLeftHover("rfi"), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
+         </div>
+         {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
+         {leftTab && (
+         <div
+           role="dialog"
+           aria-label="Files panel"
+           onMouseEnter={cancelLeftHoverClose}
+           style={{
+             pointerEvents: "auto",
+             width: 360,
+             alignSelf: "stretch",
+             display: "flex",
+             flexDirection: "column",
+             background: "var(--paper-bright)",
+             border: "1px solid var(--ink-faint)",
+             borderRadius: 10,
+             boxShadow: "0 14px 40px rgba(14, 26, 46, 0.22)",
+             overflow: "hidden",
+             minHeight: 0,
+           }}
+         >
            {/* tab strip */}
-           <div style={{ display: "flex", alignItems: "stretch", background: "var(--cobalt)", color: "var(--accent-contrast)" }}>
+           <div style={{ display: "flex", alignItems: "stretch", background: "var(--cobalt)", color: "var(--accent-contrast)", flexShrink: 0 }}>
              {[{ id: "files", label: "Files", n: sheets.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
-               <button key={t.id} onClick={() => setLeftTab(t.id)} title={t.label}
+               <button key={t.id} onClick={() => { lastLeftTabRef.current = t.id; setLeftTab(t.id); }} title={t.label}
                  style={{ flex: 1, padding: "9px 4px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5 }}>
                  {t.label}{t.n ? ` · ${t.n}` : ""}
                </button>
@@ -7157,10 +7491,39 @@ export default function TakeoffCanvas() {
              )}
            </div>
          </div>
-       )}
+         )}
+       </div>
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas} onContextMenu={(e) => e.preventDefault()}
+          onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            const r = containerRef.current?.getBoundingClientRect();
+            if (!r || status !== "ready") { setShapeCtxMenu(null); return; }
+            const p = toImage(e.clientX, e.clientY);
+            const thr = 8 / tfRef.current.scale;
+            const hit = [...visibleShapes].slice().sort((a, b) => {
+              const ad = a.measure_role === "deduct" ? 1 : 0, bd = b.measure_role === "deduct" ? 1 : 0;
+              return ad - bd;
+            }).reverse().find((s) => {
+              if (!aiDetectShapeRevealed(s)) return false;
+              const sp = panelByKey(s.sheet_id);
+              return sp && hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
+            });
+            if (!hit) { setShapeCtxMenu(null); return; }
+            if (hit.measure_role === "deduct") {
+              setSelectedCutoutIds((prev) => (prev.has(hit.id) ? prev : new Set([hit.id])));
+              setSelectedId(hit.id);
+            } else {
+              setSelectedCutoutIds(new Set());
+              selectShape(hit.id);
+            }
+            setShapeCtxMenu({
+              x: Math.min(e.clientX - r.left, r.width - 180),
+              y: Math.min(e.clientY - r.top, r.height - 120),
+              shapeId: hit.id,
+            });
+          }}
           onDoubleClick={(e) => {
             // Double-click on a vertex → remove it; Double-click near an edge → insert a vertex
             // Must run BEFORE the shapeBoqHover check so clicks on the border line work.
@@ -7267,6 +7630,24 @@ export default function TakeoffCanvas() {
                 units={units}
                 pinned={pinned}
                 onOpenBoq={() => openBoqForShape(s.id)}
+                onOpenDoorDetect={(ref) => {
+                  const sid = ref?.symbol_id;
+                  if (!sid || !planSymbols.some((p) => p.id === sid)) return;
+                  const cw = containerRef.current?.clientWidth || 800;
+                  const ch = containerRef.current?.clientHeight || 600;
+                  const cx = Math.min((shapeBoqHover?.cx ?? 24) + 16, cw - 308);
+                  const cy = Math.min(shapeBoqHover?.cy ?? 24, ch - 380);
+                  setSymbolHover({ id: sid, cx: Math.max(8, cx), cy: Math.max(8, cy) });
+                  setSymbolFocus(sid);
+                }}
+                onMove={(nx, ny) => {
+                  const cw = containerRef.current?.clientWidth || 1200;
+                  const ch = containerRef.current?.clientHeight || 800;
+                  const cx = Math.max(8, Math.min(cw - 256, nx));
+                  const cy = Math.max(8, Math.min(ch - 80, ny));
+                  setShapeBoqHover((prev) => (prev ? { ...prev, cx, cy } : prev));
+                  shapeBoqHoverStickyRef.current = true;
+                }}
                 onClose={() => { setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqHoverStickyRef.current = false; }}
                 onPointerEnter={() => { shapeBoqHoverStickyRef.current = true; }}
                 onPointerLeave={() => {
@@ -7321,7 +7702,7 @@ export default function TakeoffCanvas() {
               });
             };
             return (
-              <div style={{ position: "absolute", left, top, zIndex: 12, width: 300, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", pointerEvents: "auto", fontFamily: "var(--f-body)", fontSize: 12, color: "var(--ink)", cursor: !pinned ? "pointer" : "default" }}
+              <div data-hover-scroll style={{ position: "absolute", left, top, zIndex: 12, width: 300, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-2)", pointerEvents: "auto", fontFamily: "var(--f-body)", fontSize: 12, color: "var(--ink)", cursor: !pinned ? "pointer" : "default" }}
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); if (!pinned) setSymbolFocus(sym.id); }}
                 onDoubleClick={(e) => { e.stopPropagation(); if (!pinned) setSymbolFocus(sym.id); }}>
@@ -7363,7 +7744,7 @@ export default function TakeoffCanvas() {
                     <span style={{ fontSize: 10, color: "var(--ink-muted)", whiteSpace: "nowrap" }}>click to edit</span>
                   )}
                 </div>
-                <div style={{ padding: "8px 12px", display: "grid", gap: 6, maxHeight: pinned ? 380 : 320, overflowY: "auto" }}>
+                <div style={{ padding: "8px 12px", display: "grid", gap: 6, maxHeight: pinned ? 380 : 320, overflowY: "auto", overscrollBehavior: "contain" }}>
                   {fieldRows.map(([key, label, value]) => {
                     const empty = !value;
                     if (!pinned) {
@@ -7404,20 +7785,6 @@ export default function TakeoffCanvas() {
                           Open source PDF →
                         </button>
                       )}
-                    </div>
-                  )}
-                  {sym.matches.length > 0 && (
-                    <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
-                      <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Also on</div>
-                      {sym.matches.slice(0, 6).map((m, i) => {
-                        const mp = panelByKey(m.sheet_id);
-                        return (
-                          <div key={`${m.sheet_id}-${i}`} style={{ fontSize: 11.5, color: "var(--ink)" }}>
-                            {mp ? labelFor(mp) : m.sheet_id}
-                          </div>
-                        );
-                      })}
-                      {sym.matches.length > 6 && <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>+{sym.matches.length - 6} more</div>}
                     </div>
                   )}
                   {pinned && (
@@ -7470,6 +7837,15 @@ export default function TakeoffCanvas() {
             <svg width={stage.w} height={stage.h} viewBox={`0 0 ${stage.w} ${stage.h}`} style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}>
               <defs>
                 {conditions.map((c) => <HatchPattern key={patId(c)} id={patId(c)} type={c.hatch || "solid"} line={c.color} fill={c.fill} dark={darkMode} />)}
+                {shapes.filter((s) => s.appearance_override).map((s) => {
+                  const base = condById[s.condition_id];
+                  const look = resolveShapeLook(s, base);
+                  if (!look) return null;
+                  return <HatchPattern key={`ov-${s.id}-${patId(look)}`} id={patId(look)} type={look.hatch || "solid"} line={look.color} fill={look.fill} dark={darkMode} />;
+                })}
+                {liveDrawLook && drawAppearance ? (
+                  <HatchPattern key={`draw-${patId(liveDrawLook)}`} id={patId(liveDrawLook)} type={liveDrawLook.hatch || "solid"} line={liveDrawLook.color} fill={liveDrawLook.fill} dark={darkMode} />
+                ) : null}
               </defs>
               {/* committed shapes + markups, one group per panel in its local frame */}
               {panels.map((p) => {
@@ -7495,13 +7871,23 @@ export default function TakeoffCanvas() {
                     })}
                     {(() => {
                       const aiSheet = isAiDetectFloorPlan(p.key);
-                      const shown = aiDetectShownBySheet[p.key] || 0;
-                      const drawn = !aiSheet ? pShapes : pShapes.slice(0, shown);
+                      // Cutouts always paint; AI floor masks follow reveal. Deducts on top.
+                      const drawn = (!aiSheet ? pShapes : pShapes.filter((s) => aiDetectShapeRevealed(s)))
+                        .slice()
+                        .sort((a, b) => {
+                          const ad = a.measure_role === "deduct" ? 1 : 0;
+                          const bd = b.measure_role === "deduct" ? 1 : 0;
+                          return ad - bd;
+                        });
                       return drawn;
                     })().map((s) => {
                       const cond = condById[s.condition_id];
-                      const col = cond?.color || "#888";
-                      const sel = s.id === selectedId;
+                      const look = resolveShapeLook(s, cond) || cond;
+                      const sel = s.id === selectedId || selectedCutoutIds.has(s.id);
+                      // Selection focus: selected keeps its color; others go grey.
+                      // Nothing selected → every mask keeps its normal color.
+                      const dim = !!(selectedId || selectedCutoutIds.size) && !sel;
+                      const col = dim ? "#9aa0a6" : (look?.color || "#888");
                       const pts = dn(s.verts_norm);
                       // Screen-constant strokes: zoom is a CSS transform on the
                       // stage div, which never enters this SVG's CTM — so
@@ -7517,7 +7903,7 @@ export default function TakeoffCanvas() {
                       const pDash = `${4 / z} ${3 / z}`;
                       if (s.measure_role === "count") {
                         const [cx, cy] = pts[0], r = 7 / z;
-                        return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={sel ? "#1f3fc7" : "#fff"} strokeWidth={(sel ? 3 : 1.5) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
+                        return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={sel ? "#1f3fc7" : (dim ? "#9aa0a6" : "#fff")} strokeWidth={(sel ? 3 : 1.5) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
                       }
                       if (s.measure_role === "surface_area") {
                         return <polyline key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4.5 : 3.5) / z} strokeDasharray={pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`} strokeLinecap="round" strokeLinejoin="round" />;
@@ -7525,12 +7911,12 @@ export default function TakeoffCanvas() {
                       if (s.measure_role === "linear") {
                         // line_style governs linear outlines (surface_area keeps its dash-dot identity above)
                         const lpts = s.curved ? flattenCurve(pts) : pts;
-                        return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4 : 3) / z} strokeDasharray={pending ? pDash : dashArrayFor(cond?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
+                        return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4 : 3) / z} strokeDasharray={pending ? pDash : dashArrayFor(look?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       const ded = s.measure_role === "deduct";
-                      const fill = ded ? (pending ? "rgba(176,58,38,.10)" : "rgba(176,58,38,.28)") : pending ? col + "14" : shapeFill(cond);
-                      const stroke = ded ? "#b03a26" : (sel ? "#1f3fc7" : col);
-                      const dash = pending ? pDash : ded ? `${6 / z} ${4 / z}` : dashArrayFor(cond?.line_style || "solid", z);
+                      const fill = dim ? (col + (darkMode ? "4d" : "33")) : ded ? (pending ? "rgba(176,58,38,.10)" : "rgba(176,58,38,.28)") : pending ? col + "14" : shapeFill(look);
+                      const stroke = dim ? col : ded ? "#b03a26" : (sel ? "#1f3fc7" : col);
+                      const dash = pending ? pDash : ded ? `${6 / z} ${4 / z}` : dashArrayFor(look?.line_style || "solid", z);
                       const holes = s.holes_norm;
                       if (holes?.length) {
                         const outerD = `M ${pts.map((q) => q.join(",")).join(" L ")} Z`;
@@ -7550,11 +7936,7 @@ export default function TakeoffCanvas() {
                     })}
                     {/* vertex handles for the selected shape (drag to reshape) */}
                     {selectedId && (() => {
-                      const aiSheet = isAiDetectFloorPlan(p.key);
-                      const shown = aiDetectShownBySheet[p.key] || 0;
-                      if (aiSheet && shown <= 0) return null;
-                      const drawnIds = aiSheet ? new Set(pShapes.slice(0, shown).map((x) => x.id)) : null;
-                      const sel = pShapes.find((s) => s.id === selectedId && (!drawnIds || drawnIds.has(s.id)));
+                      const sel = pShapes.find((s) => s.id === selectedId && aiDetectShapeRevealed(s));
                       if (!sel || sel.measure_role === "count") return null;
                       const qs = dn(sel.verts_norm);
                       const closed = sel.measure_role !== "linear" && sel.measure_role !== "surface_area";
@@ -7955,13 +8337,13 @@ export default function TakeoffCanvas() {
                   (deduct keeps its danger red). Committed shapes wear the condition's own
                   color; the draft never mimics anyone's takeoff look. Solid, no dashes. */}
               <line ref={rubberRef} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={1.5 / tf.scale} strokeOpacity={0.85} strokeLinecap="round" style={{ display: "none" }} />
-              <rect ref={rectRef} fill={tool === "deduct" ? "rgba(176,58,38,.22)" : shapeFill(aCond)} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} style={{ display: "none" }} />
+              <rect ref={rectRef} fill={tool === "deduct" ? "rgba(176,58,38,.22)" : shapeFill(liveDrawLook)} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} style={{ display: "none" }} />
               <path ref={cloudRef} fill="rgba(37,99,235,.06)" stroke="#1f3fc7" strokeWidth={2 / tf.scale} strokeDasharray={`${5 / tf.scale} ${4 / tf.scale}`} style={{ display: "none" }} />
               <rect ref={highlightRef} fill="rgba(196,122,16,.18)" stroke="#c47a10" strokeWidth={2 / tf.scale} style={{ display: "none" }} />
               <path ref={hlPathRef} style={{ display: "none" }} />
               {poly.length >= 2 && (tool === "linear" || tool === "curve" || tool === "surface"
-                ? <polyline points={(tool === "curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={tool === "surface" ? activeColor : "#1f3fc7"} strokeWidth={(tool === "surface" ? 3.5 : 2.5) / tf.scale} strokeDasharray={tool === "surface" ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
-                : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : shapeFill(aCond)) : "none"} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} strokeDasharray={tool === "zone" ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
+                ? <polyline points={(tool === "curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={tool === "surface" ? (liveDrawLook?.color || activeColor) : "#1f3fc7"} strokeWidth={(tool === "surface" ? 3.5 : 2.5) / tf.scale} strokeDasharray={tool === "surface" ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
+                : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : shapeFill(liveDrawLook)) : "none"} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} strokeDasharray={tool === "zone" ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
               {/* bold the most recent segment so you see where you just clicked */}
               {poly.length >= 2 && (
                 <line x1={poly[poly.length - 2][0]} y1={poly[poly.length - 2][1]} x2={poly[poly.length - 1][0]} y2={poly[poly.length - 1][1]}
@@ -8047,6 +8429,242 @@ export default function TakeoffCanvas() {
               {darkMode ? "☀" : "☾"}</button>
           </div>
         </div>
+
+        {/* Cutout checklist — per open PDF/sheet; click flies to that cutout. */}
+        {(() => {
+          const sheetKeys = new Set(sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []));
+          const cutouts = shapes.filter((s) => s.measure_role === "deduct" && sheetKeys.has(s.sheet_id));
+          if (!cutouts.length) return null;
+          const checkedIds = cutouts.filter((s) => cutoutChecks[s.id]).map((s) => s.id);
+          const fa = (n) => `${(Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} SF`;
+          const pdfLabel = (() => {
+            const k = sheetGroup.length
+              ? ((focusKey && sheetGroup.includes(focusKey)) ? focusKey : sheetGroup[0])
+              : sheetKey;
+            return k ? (parseSheetKey(k).file || k).replace(/^.*[/\\]/, "") : "sheet";
+          })();
+          const left = cutoutPanelPos?.left;
+          const top = cutoutPanelPos?.top;
+          const pw = cutoutPanelSize?.w || 240;
+          const ph = cutoutPanelSize?.h || 280;
+          return (
+            <div
+              data-hover-scroll
+              onPointerDown={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute",
+                ...(cutoutPanelPos
+                  ? { left, top }
+                  : { right: 56, bottom: 14 }),
+                zIndex: 10, width: pw, height: ph,
+                display: "flex", flexDirection: "column",
+                overflow: "hidden", overscrollBehavior: "contain",
+                background: "var(--paper-bright)", border: "1px solid var(--ink-faint)",
+                boxShadow: "0 6px 18px rgba(14,26,46,.14)", fontSize: 12, color: "var(--ink)",
+              }}
+            >
+              <div
+                title="Drag to move"
+                style={{ padding: "8px 10px", borderBottom: "1px solid var(--ink-faint)", cursor: "grab", userSelect: "none", flexShrink: 0 }}
+                onPointerDown={(e) => {
+                  if (e.button !== 0 || e.target.closest("button, input, a")) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const host = e.currentTarget.parentElement;
+                  const parent = host?.offsetParent || containerRef.current;
+                  const pr = parent?.getBoundingClientRect();
+                  const hr = host?.getBoundingClientRect();
+                  if (!pr || !hr) return;
+                  const ox = e.clientX - hr.left;
+                  const oy = e.clientY - hr.top;
+                  const move = (ev) => {
+                    const cw = parent.clientWidth || 1200;
+                    const ch = parent.clientHeight || 800;
+                    const nl = Math.max(8, Math.min(cw - pw - 8, ev.clientX - pr.left - ox));
+                    const nt = Math.max(8, Math.min(ch - 80, ev.clientY - pr.top - oy));
+                    setCutoutPanelPos({ left: nl, top: nt });
+                  };
+                  const up = () => {
+                    window.removeEventListener("pointermove", move);
+                    window.removeEventListener("pointerup", up);
+                  };
+                  window.addEventListener("pointermove", move);
+                  window.addEventListener("pointerup", up);
+                }}
+              >
+                <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--cobalt)" }}>
+                  Cutouts · {cutouts.length}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--ink-muted)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={pdfLabel}>{pdfLabel}</div>
+              </div>
+              <div style={{ padding: "6px 8px", display: "grid", gap: 4, alignContent: "start", justifyItems: "stretch", flex: 1, minHeight: 0, overflowY: "auto" }}>
+                {cutouts.map((s, i) => {
+                  const on = !!cutoutChecks[s.id] || selectedCutoutIds.has(s.id);
+                  return (
+                    <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer", background: selectedCutoutIds.has(s.id) ? "var(--paper-cream)" : "transparent" }}>
+                      <input
+                        type="checkbox"
+                        checked={!!cutoutChecks[s.id]}
+                        onChange={() => setCutoutChecks((m) => ({ ...m, [s.id]: !m[s.id] }))}
+                      />
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        title="Go to this cutout"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                            setSelectedCutoutIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(s.id)) next.delete(s.id); else next.add(s.id);
+                              return next;
+                            });
+                            setSelectedId(s.id);
+                          } else {
+                            setSelectedCutoutIds(new Set([s.id]));
+                            flyToShape(s.id);
+                          }
+                        }}
+                        style={{ flex: 1, minWidth: 0, fontFamily: "var(--f-mono)", fontSize: 11.5, color: on ? "var(--ink)" : "var(--ink-muted)" }}
+                      >
+                        #{i + 1} · {fa(s.computed?.area_sf)}
+                      </span>
+                      <button
+                        type="button"
+                        title="Delete this cutout"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          dispatchShape({ type: "delete", ids: [s.id] });
+                          setSelectedCutoutIds((prev) => { const n = new Set(prev); n.delete(s.id); return n; });
+                          setCutoutChecks((m) => { const n = { ...m }; delete n[s.id]; return n; });
+                          if (selectedId === s.id) setSelectedId(null);
+                        }}
+                        style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--c-danger)", fontSize: 14, lineHeight: 1, padding: 2 }}
+                      >×</button>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ padding: "8px", borderTop: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  disabled={!selectedCutoutIds.size}
+                  onClick={() => applyCutoutsToParents([...selectedCutoutIds])}
+                  style={{
+                    flex: 1, padding: "6px 8px", border: "1px solid var(--ink-faint)",
+                    background: "transparent", color: selectedCutoutIds.size ? "var(--ink)" : "var(--ink-muted)",
+                    cursor: selectedCutoutIds.size ? "pointer" : "default", fontSize: 11, fontWeight: 600,
+                  }}
+                >
+                  Apply selected
+                </button>
+                <button
+                  type="button"
+                  disabled={!checkedIds.length}
+                  onClick={() => applyCutoutsToParents(checkedIds)}
+                  title="Punch checked cutouts into the parent floor mask"
+                  style={{
+                    flex: 1, padding: "6px 8px", border: "1px solid var(--cobalt)",
+                    background: checkedIds.length ? "var(--cobalt)" : "transparent",
+                    color: checkedIds.length ? "var(--accent-contrast, #fff)" : "var(--ink-muted)",
+                    cursor: checkedIds.length ? "pointer" : "default", fontWeight: 600, fontSize: 11,
+                  }}
+                >
+                  Apply checked{checkedIds.length ? ` · ${checkedIds.length}` : ""}
+                </button>
+              </div>
+              <div
+                title="Drag to resize"
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const host = e.currentTarget.parentElement;
+                  const parent = host?.offsetParent || containerRef.current;
+                  const hr = host?.getBoundingClientRect();
+                  if (!hr) return;
+                  const startW = hr.width, startH = hr.height, sx = e.clientX, sy = e.clientY;
+                  // Pin bottom-right default into left/top so resize keeps the corner anchored.
+                  if (!cutoutPanelPos && parent) {
+                    const pr = parent.getBoundingClientRect();
+                    setCutoutPanelPos({ left: hr.left - pr.left, top: hr.top - pr.top });
+                  }
+                  const move = (ev) => {
+                    const cw = parent?.clientWidth || 1200;
+                    const ch = parent?.clientHeight || 800;
+                    const nw = Math.max(200, Math.min(480, startW + (ev.clientX - sx)));
+                    const nh = Math.max(160, Math.min(ch - 24, startH + (ev.clientY - sy)));
+                    setCutoutPanelSize({ w: Math.min(nw, cw - 16), h: nh });
+                  };
+                  const up = () => {
+                    window.removeEventListener("pointermove", move);
+                    window.removeEventListener("pointerup", up);
+                  };
+                  window.addEventListener("pointermove", move);
+                  window.addEventListener("pointerup", up);
+                }}
+                style={{
+                  position: "absolute", right: 0, bottom: 0, width: 16, height: 16, cursor: "nwse-resize",
+                  background: "linear-gradient(135deg, transparent 50%, var(--ink-faint) 50%)",
+                }}
+              />
+            </div>
+          );
+        })()}
+
+        {/* Right-click menu — cutout apply/remove, or remove parent mask */}
+        {shapeCtxMenu && (() => {
+          const hit = shapes.find((s) => s.id === shapeCtxMenu.shapeId);
+          if (!hit) return null;
+          const isCut = hit.measure_role === "deduct";
+          const item = (label, onClick, danger = false) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => { onClick(); setShapeCtxMenu(null); }}
+              style={{
+                display: "block", width: "100%", textAlign: "left", padding: "8px 12px",
+                border: "none", background: "transparent", cursor: "pointer",
+                fontSize: 12.5, fontWeight: 600, color: danger ? "var(--c-danger)" : "var(--ink)",
+                fontFamily: "var(--f-body)",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--paper-cream)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+            >
+              {label}
+            </button>
+          );
+          return (
+            <div
+              role="menu"
+              onPointerDown={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute", left: shapeCtxMenu.x, top: shapeCtxMenu.y, zIndex: 20,
+                minWidth: 168, background: "var(--paper-bright)", border: "1px solid var(--ink)",
+                boxShadow: "var(--shadow-2)", padding: "4px 0",
+              }}
+            >
+              {isCut ? (
+                <>
+                  {item("Apply cutout to parent", () => applyCutoutsToParents(
+                    selectedCutoutIds.has(hit.id) && selectedCutoutIds.size ? [...selectedCutoutIds] : [hit.id],
+                  ))}
+                  {item("Remove cutout", () => {
+                    const ids = selectedCutoutIds.has(hit.id) && selectedCutoutIds.size > 1 ? [...selectedCutoutIds] : [hit.id];
+                    dispatchShape({ type: "delete", ids });
+                    setSelectedCutoutIds(new Set());
+                    setSelectedId(null);
+                  }, true)}
+                </>
+              ) : (
+                item("Remove mask", () => {
+                  dispatchShape({ type: "delete", ids: [hit.id] });
+                  setSelectedId(null);
+                }, true)
+              )}
+            </div>
+          );
+        })()}
 
         {/* status line — the transient message bar (was the right end of the old
             conditions bar): floats bottom-center over the canvas, never blocks input */}
@@ -8254,15 +8872,9 @@ export default function TakeoffCanvas() {
           </div>
         )}
 
-        {/* panel rail — markup/takeoffs toggles on the right edge (zoom-cluster
-            style). Moved out of the toolbar so it never wraps a third row. The
-            takeoffs toggle mirrors the DOCKED panel's collapsed pref — the rail
-            rides the canvas edge, so it stays visible either way. */}
+        {/* panel rail — takeoffs toggle on the right edge (zoom-cluster style).
+            Files/Markups/Stamps/RFIs live on the left floating rail. */}
         <div style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 8 }}>
-          {panelBtn(() => setLeftTab((t) => (t === "files" ? null : "files")), "sheets", "Project files — plans in this takeoff (upload folder, zip, or PDFs)", leftTab === "files", sheets.length)}
-          {panelBtn(() => setLeftTab((t) => (t === "markup" ? null : "markup")), "markup", "Markups on these sheets (clouds, callouts, notes)", leftTab === "markup", markupCount)}
-          {panelBtn(() => setLeftTab((t) => (t === "stamp" ? null : "stamp")), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
-          {panelBtn(() => setLeftTab((t) => (t === "rfi" ? null : "rfi")), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
           {panelBtn(toggleTakeoffs, "takeoffs", "Takeoffs — conditions + running totals", takeoffsOpen, visibleShapes.length)}
         </div>
 
@@ -8415,53 +9027,87 @@ export default function TakeoffCanvas() {
             sheetNames={sheets.map((s) => s.name)}
             galleryLabels={galleryLabels}
             initialQuestion={drawingsChatSeed}
+            getProjectContext={() => buildProjectChatContext({
+              projectName,
+              units,
+              shapes,
+              conditions,
+              planSymbols,
+              symbolNotes,
+              panelImgs,
+              roomLabelsBySheet,
+              scheduleKb,
+            })}
+            getLiveDetectionInput={() => ({ planSymbols, shapes, conditions })}
           />
         )}
 
         {showRates && (
-          <RatesPanel open={showRates} onClose={() => setShowRates(false)} onRatesChange={setMaterialRates} />
+          <FloatingWindow
+            defaultRect={{ x: 16, y: 72, w: 440, h: Math.min(720, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+            minW={360}
+            minH={320}
+          >
+            <RatesPanel open={showRates} onClose={() => setShowRates(false)} onRatesChange={setMaterialRates} />
+          </FloatingWindow>
         )}
 
         {showEstimate && (
-          <EstimatePanel
-            open={showEstimate}
-            onClose={() => setShowEstimate(false)}
-            conditions={conditions}
-            shapes={shapes}
-            materialRates={materialRates}
-            units={units}
-            projectSettings={projectSettings}
-            projectName={projectName}
-          />
+          <FloatingWindow
+            defaultRect={{ x: Math.max(16, ((typeof window !== "undefined" ? window.innerWidth : 1280) - 480) / 2 - 40), y: 72, w: 480, h: Math.min(720, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+            minW={360}
+            minH={320}
+          >
+            <EstimatePanel
+              open={showEstimate}
+              onClose={() => setShowEstimate(false)}
+              conditions={conditions}
+              shapes={boqShapes}
+              materialRates={materialRates}
+              units={units}
+              projectSettings={projectSettings}
+              projectName={projectName}
+              sheetLabel={tabLabel}
+              sheetLevels={sheetLevels}
+            />
+          </FloatingWindow>
         )}
 
-        {/* BOQ sidebar — right edge, opposite the Files panel on the left */}
-        <BoqPanel
-          open={showBoq}
-          onClose={() => { setShowBoq(false); setBoqFocusShapeId(null); }}
-          conditions={conditions}
-          shapes={boqShapes}
-          sheetLabel={tabLabel}
-          sheetLevels={sheetLevels}
-          boqLines={boqLines}
-          onBoqLinesChange={setBoqLines}
-          units={units}
-          projectName={projectName}
-          planSymbols={planSymbols}
-          symbolNotes={symbolNotes}
-          panelImgs={panelImgs}
-          roomLabelsBySheet={roomLabelsBySheet}
-          scheduleKb={scheduleKb}
-          focusShapeId={boqFocusShapeId}
-          activeShapeId={selectedId}
-          onShapeNavigate={flyToShape}
-          onShapeDelete={deleteShapeFromBoq}
-          onClearFocus={() => setBoqFocusShapeId(null)}
-          onOpenRates={() => setShowRates(true)}
-          materialRates={materialRates}
-          projectSettings={projectSettings}
-          pricingCtx={pricingCtx}
-        />
+        {/* BOQ — floating window (same content; drag header / resize edges) */}
+        {showBoq && (
+          <FloatingWindow
+            defaultRect={{ x: Math.max(16, (typeof window !== "undefined" ? window.innerWidth : 1280) - 456), y: 72, w: 440, h: Math.min(720, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+            minW={360}
+            minH={320}
+          >
+            <BoqPanel
+              open={showBoq}
+              onClose={() => { setShowBoq(false); setBoqFocusShapeId(null); }}
+              conditions={conditions}
+              shapes={boqShapes}
+              sheetLabel={tabLabel}
+              sheetLevels={sheetLevels}
+              boqLines={boqLines}
+              onBoqLinesChange={setBoqLines}
+              units={units}
+              projectName={projectName}
+              planSymbols={planSymbols}
+              symbolNotes={symbolNotes}
+              panelImgs={panelImgs}
+              roomLabelsBySheet={roomLabelsBySheet}
+              scheduleKb={scheduleKb}
+              focusShapeId={boqFocusShapeId}
+              activeShapeId={selectedId}
+              onShapeNavigate={flyToShape}
+              onShapeDelete={deleteShapeFromBoq}
+              onClearFocus={() => setBoqFocusShapeId(null)}
+              onOpenRates={() => setShowRates(true)}
+              materialRates={materialRates}
+              projectSettings={projectSettings}
+              pricingCtx={pricingCtx}
+            />
+          </FloatingWindow>
+        )}
 
         {/* Takeoffs panel — DOCKED in the layout row (reflows the canvas, not an
             overlay): every condition with its running totals, plus the Library,
@@ -8554,7 +9200,9 @@ export default function TakeoffCanvas() {
               <p id="overlap-prompt-desc" style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--ink-secondary)" }}>
                 {overlapPrompt.source === "oneclick"
                   ? <>The selected area overlaps {overlapPrompt.count === 1 ? "an existing takeoff" : `${overlapPrompt.count} existing takeoffs`} for <strong>{overlapPrompt.tag}</strong>. Choose how to resolve the overlap before creating.</>
-                  : <>This measurement overlaps {overlapPrompt.victims?.length === 1 ? "an existing takeoff" : `${overlapPrompt.victims?.length || 0} existing takeoffs`} for <strong>{overlapPrompt.tag}</strong>. Choose how to resolve the overlap.</>}
+                  : overlapPrompt.cutoutOverParent
+                    ? <>This cutout overlaps {overlapPrompt.victims?.length === 1 ? "a parent mask" : `${overlapPrompt.victims?.length || 0} parent masks`}. Choose how to resolve it.</>
+                    : <>This measurement overlaps {overlapPrompt.victims?.length === 1 ? "an existing takeoff" : `${overlapPrompt.victims?.length || 0} existing takeoffs`} for <strong>{overlapPrompt.tag}</strong>. Choose how to resolve the overlap.</>}
               </p>
             </div>
             <div style={{ padding: "14px 18px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
@@ -8562,18 +9210,26 @@ export default function TakeoffCanvas() {
                 type="button"
                 autoFocus
                 onClick={() => resolveOverlapPrompt("merge")}
-                title="Combine into one takeoff region (Enter)"
+                title={overlapPrompt.cutoutOverParent ? "Keep cutout on top of the parent (Enter)" : "Combine into one takeoff region (Enter)"}
                 style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "10px 12px", border: "1px solid var(--cobalt)", background: "rgba(31,63,199,.06)", cursor: "pointer", textAlign: "left" }}>
                 <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--cobalt)" }}>Merge</span>
-                <span style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.4 }}>Combine the overlapping areas into a single takeoff.</span>
+                <span style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.4 }}>
+                  {overlapPrompt.cutoutOverParent
+                    ? "Keep the cutout visible on top of the parent mask until you apply it."
+                    : "Combine the overlapping areas into a single takeoff."}
+                </span>
               </button>
               <button
                 type="button"
                 onClick={() => resolveOverlapPrompt("remove")}
-                title="Cut the overlapping portion from the existing takeoff"
+                title={overlapPrompt.cutoutOverParent ? "Punch the cutout out of the parent mask now" : "Cut the overlapping portion from the existing takeoff"}
                 style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "10px 12px", border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", textAlign: "left" }}>
                 <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)" }}>Remove overlap</span>
-                <span style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.4 }}>Cut the overlapping portion from the existing takeoff without adding a duplicate.</span>
+                <span style={{ fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.4 }}>
+                  {overlapPrompt.cutoutOverParent
+                    ? "Cut this region out of the parent mask now."
+                    : "Cut the overlapping portion from the existing takeoff without adding a duplicate."}
+                </span>
               </button>
               <button
                 type="button"

@@ -1,7 +1,15 @@
 // Drawings Q&A — integrated Volume 4 RAG chat.
 // Citations open a floating, draggable reference window with highlighted PDF preview.
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { citationImageUrl, sheetKeyForCitation, queryChat } from "../lib/rag.js";
+import {
+  citationImageUrl,
+  sheetKeyForCitation,
+  queryChat,
+  buildLiveCountsSummary,
+  answerFromLiveDetections,
+  resolveChatAnswer,
+} from "../lib/rag.js";
+import FloatingWindow from "./FloatingWindow.jsx";
 
 function hasImagePreview(citation) {
   return citation?.chunk_id > 0 && citation.doc_path?.toLowerCase().endsWith(".pdf");
@@ -486,7 +494,15 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
   );
 }
 
-export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNames = [], galleryLabels = {}, initialQuestion = "" }) {
+export default function DrawingsChatPanel({
+  onClose,
+  onOpenInWorkspace,
+  sheetNames = [],
+  galleryLabels = {},
+  initialQuestion = "",
+  getProjectContext,
+  getLiveDetectionInput,
+}) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -510,15 +526,37 @@ export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNam
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setInput("");
     try {
-      const result = await queryChat(question);
+      let projectContext = "";
+      let liveSummary = "";
+      let liveAnswer = null;
+      let live = null;
+      try {
+        projectContext = (typeof getProjectContext === "function" ? getProjectContext() : "") || "";
+      } catch { /* ignore */ }
+      try {
+        live = typeof getLiveDetectionInput === "function" ? getLiveDetectionInput() : null;
+        if (live) {
+          liveSummary = buildLiveCountsSummary(live.planSymbols || [], live.shapes || [], live.conditions || []);
+          liveAnswer = answerFromLiveDetections(
+            question,
+            live.planSymbols || [],
+            live.shapes || [],
+            live.conditions || [],
+          );
+        }
+      } catch { /* ignore */ }
+      // 1) Ask RAG + API first (with live context available).
+      // 2) Keep that answer when it is accurate; otherwise fall back to live detections.
+      const result = await queryChat(question, { projectContext, liveSummary });
       const citations = (result.citations || []).slice(0, 2);
+      const resolved = resolveChatAnswer(question, result, liveAnswer);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: result.answer,
+          content: resolved.content,
           citations,
-          abstained: result.abstained,
+          abstained: resolved.abstained,
           animate: true,
         },
       ]);
@@ -557,21 +595,36 @@ export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNam
           50%, 100% { opacity: 0; }
         }
       `}</style>
-      <div style={{ display: "flex", height: "100%", flexShrink: 0 }}>
+      <FloatingWindow
+        defaultRect={(() => {
+          const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+          const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+          const w = Math.min(800, Math.round(vw * 0.62));
+          const h = Math.min(Math.round(vh * 0.88), vh - 48);
+          return {
+            x: Math.max(16, Math.round((vw - w) / 2)),
+            y: Math.max(24, Math.round((vh - h) / 2)),
+            w,
+            h,
+          };
+        })()}
+        minW={300}
+        minH={280}
+      >
         <aside
           style={{
-            width: 360,
-            flexShrink: 0,
+            width: "100%",
+            height: "100%",
             display: "flex",
             flexDirection: "column",
-            borderLeft: "1px solid var(--ink-faint)",
             background: "var(--paper-bright)",
             fontFamily: "var(--f-body)",
             color: "var(--ink)",
-            height: "100%",
+            overflow: "hidden",
+            minHeight: 0,
           }}
         >
-          <header style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8 }}>
+          <header data-float-drag style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8, cursor: "grab", userSelect: "none", flexShrink: 0 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Drawings Q&A</div>
               <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>Tap a citation to open the floating reference</div>
@@ -579,7 +632,7 @@ export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNam
             <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "var(--ink-muted)" }}>×</button>
           </header>
 
-          <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
             {messages.length === 0 && !loading && (
               <div>
                 <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 8 }}>Ask about drawings, specs, schedules, or reports.</p>
@@ -653,7 +706,7 @@ export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNam
 
           <form
             onSubmit={(e) => { e.preventDefault(); sendMessage(input); }}
-            style={{ padding: 10, borderTop: "1px solid var(--ink-faint)", display: "flex", gap: 6 }}
+            style={{ padding: 10, borderTop: "1px solid var(--ink-faint)", display: "flex", gap: 6, flexShrink: 0 }}
           >
             <input
               value={input}
@@ -670,7 +723,7 @@ export default function DrawingsChatPanel({ onClose, onOpenInWorkspace, sheetNam
             </button>
           </form>
         </aside>
-      </div>
+      </FloatingWindow>
 
       <FloatingSourceWindow
         citation={activeCitation}

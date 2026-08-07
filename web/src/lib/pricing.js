@@ -137,18 +137,61 @@ export function priceMaskRow(row, catalog, displayUnits = "metric", projectSetti
 }
 
 /**
- * Priced wrapper over conditionTotals rows — explodes materials with catalog rates.
+ * Priced wrapper over conditionTotals rows — primary takeoff qty × finish rate,
+ * then supporting materials with catalog rates.
  * @param {Array<Record<string, any>>} rows conditionTotals() output
  * @param {Array<Record<string, any>>} catalog material_rates rows
  */
 export function pricedConditionTotals(rows, catalog, displayUnits = "metric", projectSettings = {}) {
   return rows.map((r) => {
-    const materials = (r.materials || []).map((m) => {
+    const materials = [];
+
+    // Primary finish from measured takeoff (SF / LF / EA) — matches BOQ qty × rate.
+    let pQty = 0;
+    let pUnit = "SF";
+    if ((Number(r.total_sf) || 0) !== 0 || (Number(r.floor_sf) || 0) !== 0 || (Number(r.wall_sf) || 0) !== 0) {
+      pQty = Number(r.total_sf) || ((Number(r.floor_sf) || 0) + (Number(r.wall_sf) || 0) + (Number(r.border_sf) || 0));
+      pUnit = "SF";
+    } else if (Number(r.lf) || 0) {
+      pQty = Number(r.lf) || 0;
+      pUnit = "LF";
+    } else if (Number(r.ea) || 0) {
+      pQty = Number(r.ea) || 0;
+      pUnit = "EA";
+    }
+    if (pQty || r.finish_tag) {
+      const rate = resolveRate(catalog, { finishTag: r.finish_tag, unit: pUnit });
+      const displayQty = qtyToDisplayUnit(pQty, pUnit, displayUnits);
+      const costs = rate
+        ? lineCost({ qty: displayQty, rate, wastePct: r.waste_pct ?? projectSettings.waste_pct })
+        : { qty: displayQty, material_ext: 0, labour_ext: 0, equipment_ext: 0, sub_ext: 0, line_total: 0 };
+      const unitLabel = rate?.unit
+        || (pUnit === "SF" ? (displayUnits === "metric" ? "m²" : "SF")
+          : pUnit === "LF" ? (displayUnits === "metric" ? "m" : "LF")
+            : "EA");
+      materials.push({
+        name: rate?.name || r.finish_tag || "Finish",
+        unit: unitLabel,
+        per: 0,
+        basis: pUnit === "LF" ? "linear" : pUnit === "EA" ? "count" : "area",
+        qty: costs.qty,
+        material_ext: costs.material_ext,
+        labour_ext: costs.labour_ext,
+        equipment_ext: costs.equipment_ext,
+        sub_ext: costs.sub_ext,
+        line_total: costs.line_total,
+        rate_row: rate || null,
+        primary: true,
+      });
+    }
+
+    for (const m of (r.materials || [])) {
       const rate = resolveRate(catalog, { materialName: m.name, unit: m.unit });
       const displayQty = qtyToDisplayUnit(m.qty, m.unit || "m²", displayUnits);
       const costs = rate ? lineCost({ qty: displayQty, rate, wastePct: r.waste_pct }) : null;
-      return { ...m, ...(costs || {}), rate_row: rate || null };
-    });
+      materials.push({ ...m, ...(costs || {}), rate_row: rate || null });
+    }
+
     const material_ext = round2(materials.reduce((n, m) => n + (m.material_ext || 0), 0));
     const labour_ext = round2(materials.reduce((n, m) => n + (m.labour_ext || 0), 0));
     const equipment_ext = round2(materials.reduce((n, m) => n + (m.equipment_ext || 0), 0));

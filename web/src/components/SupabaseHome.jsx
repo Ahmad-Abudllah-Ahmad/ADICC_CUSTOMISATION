@@ -20,6 +20,7 @@ const uploadBtn = {
   fontWeight: 700,
   fontSize: 13,
   fontFamily: "var(--f-body)",
+  borderRadius: 10,
 };
 
 export default function SupabaseHome() {
@@ -65,17 +66,10 @@ export default function SupabaseHome() {
       "--f-body": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       "--f-mono": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
     }}>
-      <div style={{ flex: 1, overflow: "auto", padding: "32px 18px 48px" }}>
-        <div style={{ maxWidth: 640, margin: "0 auto" }}>
-          <div style={{ fontFamily: "var(--f-display)", fontSize: 22, color: "var(--ink)", lineHeight: 1.3, marginBottom: 6 }}>
-            Recent projects
-          </div>
-          <div style={{ fontSize: 13.5, color: "var(--ink-muted)", lineHeight: 1.55, marginBottom: 24 }}>
-            Choose a project to open the takeoff canvas, or start a new one.
-          </div>
-
+      <div style={{ flex: 1, overflow: "auto", padding: "28px 20px 48px" }}>
+        <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
           {showNewProject && (
-            <div style={{ marginBottom: 24, padding: "24px 20px", border: "1px solid var(--cobalt)", background: "var(--paper-bright)", boxShadow: "inset 0 0 0 1px rgba(31,63,199,0.08)" }}>
+            <div style={{ padding: "24px 20px", border: "1px solid var(--cobalt)", background: "var(--paper-bright)", borderRadius: 12, boxShadow: "inset 0 0 0 1px rgba(31,63,199,0.08)" }}>
               <div style={{ fontFamily: "var(--f-display)", fontSize: 18, color: "var(--ink)", marginBottom: 6 }}>New project</div>
               <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.55, marginBottom: 18 }}>
                 Upload your plans to get started — PDFs, images, .zip plan sets, or an entire folder including subfolders.

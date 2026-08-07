@@ -96,8 +96,8 @@ export default function RatesPanel({ open, onClose, onRatesChange }) {
   const inp = { width: "100%", padding: "6px 8px", border: "1px solid var(--ink-faint)", fontSize: 12, fontFamily: "inherit", boxSizing: "border-box" };
 
   return (
-    <aside style={{ width: 440, flexShrink: 0, display: "flex", flexDirection: "column", borderLeft: "1px solid var(--ink-faint)", background: "var(--paper-bright)", height: "100%" }}>
-      <header style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8 }}>
+    <aside style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
+      <header data-float-drag style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8, cursor: "grab", userSelect: "none", flexShrink: 0 }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Material Rates</div>
           <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>AED catalog — used for live estimates</div>

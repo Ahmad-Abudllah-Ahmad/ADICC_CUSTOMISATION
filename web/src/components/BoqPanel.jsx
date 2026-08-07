@@ -420,8 +420,8 @@ export default function BoqPanel({
   };
 
   return (
-    <div style={{ width: 420, flexShrink: 0, display: "flex", flexDirection: "column", borderLeft: "1px solid var(--ink-faint)", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--cobalt)", color: "var(--accent-contrast)" }}>
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
+      <div data-float-drag style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: "grab", userSelect: "none", flexShrink: 0 }}>
         <Icon name="document" size={16} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: 13, letterSpacing: "0.02em" }}>Bill of Quantities</div>

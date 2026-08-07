@@ -1,7 +1,7 @@
 // Shared BOQ row detection — used by BoqPanel and canvas hover cards.
 import { round2 } from "./totals.js";
 import { areaUnit, lenUnit } from "./units";
-import { pointInPoly } from "./geometry.js";
+import { distToSeg, pointInPoly } from "./geometry.js";
 import { shapeLabelValue } from "./shapeLabels.js";
 import { resolveSymbolFields, symbolNoteKey } from "./planSymbols";
 import { lookupScheduleKb } from "./symbolScheduleKb";
@@ -45,11 +45,29 @@ function kbEntriesForRoomStrict(kb, roomName, minScore = 65) {
   return out;
 }
 
+function distToPolyEdgePx(x, y, poly) {
+  let best = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    const d = distToSeg(x, y, poly[i][0], poly[i][1], poly[j][0], poly[j][1]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/** Inside the mask, or within a small pad of its border (door/window marks sit on walls). */
+function maskHitKind(x, y, shape, dims, borderPadPx = 32) {
+  if (pointInShapePx(x, y, shape, dims)) return "inside";
+  const poly = shapePolyPx(shape, dims);
+  if (poly.length < 2) return null;
+  return distToPolyEdgePx(x, y, poly) <= borderPadPx ? "border" : null;
+}
+
 function tagsInsideMask(shape, planSymbols, panelImgs) {
   const dims = panelImgs[shape.sheet_id];
   const tags = new Set();
   for (const sym of (planSymbols || []).filter((s) => s.sheet_id === shape.sheet_id)) {
-    if (pointInShapePx(sym.x, sym.y, shape, dims)) tags.add(sym.tag.toUpperCase());
+    if (maskHitKind(sym.x, sym.y, shape, dims)) tags.add(sym.tag.toUpperCase());
   }
   return tags;
 }
@@ -133,14 +151,19 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
     refs.push(finishRef);
   }
 
-  // 2. In-mask plan marks with real schedule data (doors/windows, or other finish codes on plan)
+  // 2. In-mask + border plan marks with real schedule data (doors/windows sit on walls)
   const dims = panelImgs[shape.sheet_id];
   for (const sym of (planSymbols || []).filter((s) => s.sheet_id === shape.sheet_id)) {
-    if (!pointInShapePx(sym.x, sym.y, shape, dims)) continue;
+    const hit = maskHitKind(sym.x, sym.y, shape, dims);
+    if (!hit) continue;
 
     const symTag = (sym.tag || "").toUpperCase();
     if (sym.kind === "detail" || sym.kind === "type") continue;
     if (sym.kind === "finish" && symTag === finishTag && finishRef) continue;
+
+    const isOpening = sym.kind === "door" || sym.kind === "window";
+    // Border pad is for openings on the wall — don't pull finish marks from the next room.
+    if (hit === "border" && !isOpening) continue;
 
     const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
     const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
@@ -151,9 +174,12 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
     const manufacturer = fields.manufacturer || kbRef?.manufacturer || "";
     const size = fields.size || kbRef?.size || "";
     const color = fields.color || kbRef?.color || "";
+    const fire_rating = fields.fire_rating || kb?.fire_rating || "";
+    const floors = fields.floors || kb?.floors || "";
+    const remarks = fields.remarks || "";
+    const type = fields.type || "";
 
-    const isOpening = sym.kind === "door" || sym.kind === "window";
-    const hasData = !!(description || manufacturer || size || color);
+    const hasData = !!(description || manufacturer || size || color || fire_rating || floors || remarks || type);
     if (!isOpening && !hasData) continue;
     if (sym.kind === "finish" && symTag !== finishTag && !hasData) continue;
 
@@ -162,14 +188,19 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
     refs.push({
       tag: sym.tag,
       kind: sym.kind,
+      symbol_id: sym.id || "",
       description,
       manufacturer,
       color,
       size,
+      fire_rating,
+      floors,
+      remarks,
+      type,
       room_name: fields.room_name || kbRef?.room_name || sym.room_name || "",
-      source: kbRef?.source || sym.schedule?.source_title || "Plan mark",
+      source: kbRef?.source || sym.schedule?.source_title || (hit === "border" ? "Border mark" : "Plan mark"),
       source_sheet: kbRef?.source_sheet || sym.schedule?.source_sheet || "",
-      relevance: isOpening ? 35 : (symTag === finishTag ? 40 : 20),
+      relevance: isOpening ? (hit === "border" ? 38 : 35) : (symTag === finishTag ? 40 : 20),
     });
   }
 
@@ -204,6 +235,7 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
 
   const ranked = rankRefs(dedupeRefs(refs.filter((r) =>
     r.description || r.manufacturer || r.color || r.size
+    || r.fire_rating || r.floors || r.remarks || r.type
     || r.kind === "door" || r.kind === "window"
   )), finishTag, room);
 

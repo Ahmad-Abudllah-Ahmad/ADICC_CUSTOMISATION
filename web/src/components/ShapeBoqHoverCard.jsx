@@ -24,6 +24,8 @@ export default function ShapeBoqHoverCard({
   units = "imperial",
   pinned = false,
   onOpenBoq,
+  onOpenDoorDetect,
+  onMove,
   onClose,
   onPointerEnter,
   onPointerLeave,
@@ -31,11 +33,18 @@ export default function ShapeBoqHoverCard({
   if (!data) return null;
   const aU = areaUnit(units);
   const lU = lenUnit(units);
+  const doorRefs = (data.schedule_refs || []).filter(
+    (r) => (r.kind === "door" || r.kind === "window") && r.symbol_id,
+  );
 
   return (
     <div
+      data-hover-scroll
       style={{
         position: "absolute", left, top, zIndex: 12, width: 248,
+        maxHeight: pinned ? "min(420px, calc(100vh - 120px))" : undefined,
+        overflowY: pinned ? "auto" : undefined,
+        overscrollBehavior: "contain",
         background: "var(--paper-bright)", border: pinned ? "2px solid var(--cobalt)" : "1px solid var(--ink)",
         boxShadow: "var(--shadow-2)", pointerEvents: "auto", fontFamily: "var(--f-body)",
         fontSize: 12, color: "var(--ink)",
@@ -45,7 +54,26 @@ export default function ShapeBoqHoverCard({
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px 6px", borderBottom: "1px solid var(--ink-faint)" }}>
+      <div
+        title="Drag to move"
+        style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px 6px", borderBottom: "1px solid var(--ink-faint)", cursor: "grab", userSelect: "none" }}
+        onPointerDown={(e) => {
+          if (e.button !== 0 || e.target.closest("button")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const ox = e.clientX - left;
+          const oy = e.clientY - top;
+          const move = (ev) => {
+            onMove?.(ev.clientX - ox, ev.clientY - oy);
+          };
+          const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+        }}
+      >
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--cobalt)", marginBottom: 4 }}>
             BOQ · Mask{pinned ? " · Pinned" : ""}
@@ -83,19 +111,25 @@ export default function ShapeBoqHoverCard({
           <div style={{ fontSize: 9.5, color: "var(--ink-muted)", fontStyle: "italic" }}>{data.priced_from}</div>
         )}
       </div>
-      {data.schedule_refs?.length > 0 && (
-        <div style={{ padding: "6px 12px 4px", borderTop: "1px solid var(--ink-faint)", maxHeight: 120, overflowY: "auto" }}>
-          <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 4 }}>
-            From schedules · {data.schedule_refs.length}
-          </div>
-          {data.schedule_refs.slice(0, 2).map((ref) => (
-            <div key={`${ref.tag}-${ref.source}`} style={{ fontSize: 10.5, lineHeight: 1.35, marginBottom: 4 }}>
-              <span style={{ fontFamily: "var(--f-mono)", fontWeight: 700, color: "var(--cobalt)" }}>{ref.tag}</span>
-              {ref.description ? (
-                <span style={{ color: "var(--ink-muted)" }}> — {ref.description.length > 48 ? `${ref.description.slice(0, 48)}…` : ref.description}</span>
-              ) : null}
-              <div style={{ fontSize: 9.5, color: "var(--ink-faint)" }}>{ref.source}</div>
-            </div>
+      {doorRefs.length > 0 && (
+        <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", display: "grid", gap: 6 }}>
+          {doorRefs.slice(0, 4).map((ref) => (
+            <button
+              key={ref.symbol_id || `${ref.tag}-${ref.source}`}
+              type="button"
+              title={`Open ${ref.tag} details`}
+              onClick={(e) => { e.stopPropagation(); onOpenDoorDetect?.(ref); }}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                width: "100%", padding: "7px 10px",
+                border: "1px solid var(--cobalt)", borderRadius: 6,
+                background: "var(--cobalt)", color: "var(--accent-contrast, #fff)",
+                cursor: "pointer", fontWeight: 600, fontSize: 11.5, fontFamily: "inherit",
+              }}
+            >
+              {ref.kind === "window" ? "Window detect" : "Door detect"}
+              <span style={{ fontFamily: "var(--f-mono)", fontWeight: 700, opacity: 0.9 }}>· {ref.tag}</span>
+            </button>
           ))}
         </div>
       )}
