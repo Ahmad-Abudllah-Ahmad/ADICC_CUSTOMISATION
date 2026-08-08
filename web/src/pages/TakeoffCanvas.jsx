@@ -14,7 +14,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { store, isStaleTabError, STALE_TAB_MESSAGE, projectIdFromUrl } from "../lib/store.js";
@@ -72,8 +72,10 @@ import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
 import EstimatePanel from "../components/EstimatePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
+import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
 import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty } from "../lib/boqDetect.js";
+import { parseOpeningSize, openingsDeductSf, openingsDeductSfLinear, netWallFaceSf, openingDimsFromCutoutPx, bboxIntersectRing } from "../lib/wallOpenings.js";
 import { queryChat, finishForRoom, sheetKeyForCitation, buildProjectChatContext, buildLiveCountsSummary, answerFromLiveDetections, resolveChatAnswer } from "../lib/rag.js";
 import { priceMaskRow, pricedGrandTotals, pricedConditionTotals } from "../lib/pricing.js";
 import { money } from "../lib/num.js";
@@ -90,7 +92,6 @@ import { runVoiceCommand, isAgentHandoffTrigger, shouldOfferAgentHandoff } from 
 import { createVoiceRecognizerClient } from "../lib/voiceRecognizerClient";
 import { startCapture, captureSupported } from "../lib/voiceCapture";
 import { aiConfig, isAiConfigured } from "../lib/ai.js";
-import AccountChip from "../components/AccountChip.jsx";
 import { useGoogleAuth } from "../lib/google/AuthContext.jsx";
 import { projectHomeFolderId } from "../lib/projectHome.js";
 import { getTheme, toggleTheme, onThemeChange } from "../lib/theme.js";
@@ -122,6 +123,39 @@ import * as panelGeom from "../lib/panelGeometry.js";
 // Carpet roll width — a run reaching this needs a seam. The live cursor readout
 // turns amber at/past it so the estimator sees where seams fall while tracing.
 const CARPET_ROLL_FT = 12;
+
+/** Plan marks that can prefill wall-opening deducts (D/SD doors, CW/GD curtain & glass). */
+function isWallOpeningSymbol(sym) {
+  if (!sym) return false;
+  const tag = String(sym.tag || "").toUpperCase();
+  if (!tag) return false;
+  if (sym.kind === "door" || sym.kind === "window") return true;
+  if (sym.kind === "finish" && /^(CW|GD|LV)-\d/.test(tag)) return true;
+  return false;
+}
+function openingKindForSymbol(sym) {
+  const tag = String(sym?.tag || "").toUpperCase();
+  if (/^CW/.test(tag)) return "window";
+  if (sym?.kind === "window") return "window";
+  return "door";
+}
+function upsertWallOpening(list, opn, anchorThr = 0.025) {
+  // Each custom cutout is its own row — never merge/replace another opening.
+  if (opn.source === "cutout") return [...list, opn];
+  const tagU = String(opn.tag || "").toUpperCase();
+  let idx = -1;
+  if (tagU) idx = list.findIndex((o) => String(o.tag || "").toUpperCase() === tagU);
+  if (idx < 0 && Array.isArray(opn.anchor_norm)) {
+    idx = list.findIndex((o) => Array.isArray(o.anchor_norm)
+      && Math.hypot(o.anchor_norm[0] - opn.anchor_norm[0], o.anchor_norm[1] - opn.anchor_norm[1]) < anchorThr);
+  }
+  if (idx >= 0) {
+    const next = [...list];
+    next[idx] = { ...next[idx], ...opn, id: next[idx].id };
+    return next;
+  }
+  return [...list, opn];
+}
 
 // Click-select against a curved line's DRAWN path: flatten the control points and
 // hand hitShape a stand-in shape (lib/geometry.js stays byte-identical with Spline's).
@@ -165,6 +199,90 @@ const PALETTE_MAX = 9;
 
 // The materials/column editors (MaterialsEditor, ColumnSelects, AddValueInput)
 // live in components/TakeoffsPanel.jsx — the panel is their only surface now.
+
+/** Live takeoff-value sparkline — interactive hover shows point + delta. */
+function EstimateValueSpark({ series, currency }) {
+  const W = 88, H = 28, padX = 3, padY = 3;
+  const [hover, setHover] = useState(null);
+  const pts = useMemo(() => {
+    const raw = (series || []).filter((p) => Number.isFinite(p?.v));
+    if (raw.length === 0) return [{ t: Date.now(), v: 0 }];
+    return raw;
+  }, [series]);
+  const mapped = useMemo(() => {
+    const n = pts.length;
+    const vals = pts.map((p) => p.v);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (!(hi > lo)) { lo -= 1; hi += 1; }
+    const span = hi - lo;
+    return pts.map((p, i) => {
+      const x = padX + (n <= 1 ? (W - padX * 2) / 2 : (i / (n - 1)) * (W - padX * 2));
+      const y = padY + (1 - (p.v - lo) / span) * (H - padY * 2);
+      return { ...p, x, y, i };
+    });
+  }, [pts]);
+  const lineD = useMemo(() => {
+    if (!mapped.length) return "";
+    if (mapped.length === 1) return `M${mapped[0].x.toFixed(1)},${mapped[0].y.toFixed(1)}`;
+    if (mapped.length === 2) {
+      return `M${mapped[0].x.toFixed(1)},${mapped[0].y.toFixed(1)} L${mapped[1].x.toFixed(1)},${mapped[1].y.toFixed(1)}`;
+    }
+    // Smooth cubic Bezier through points (Catmull-Rom → cubic).
+    let d = `M${mapped[0].x.toFixed(1)},${mapped[0].y.toFixed(1)}`;
+    for (let i = 0; i < mapped.length - 1; i++) {
+      const p0 = mapped[i === 0 ? i : i - 1];
+      const p1 = mapped[i];
+      const p2 = mapped[i + 1];
+      const p3 = mapped[i + 2] || p2;
+      const c1x = p1.x + (p2.x - p0.x) / 6;
+      const c1y = p1.y + (p2.y - p0.y) / 6;
+      const c2x = p2.x - (p3.x - p1.x) / 6;
+      const c2y = p2.y - (p3.y - p1.y) / 6;
+      d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`;
+    }
+    return d;
+  }, [mapped]);
+  const trendUp = mapped.length >= 2 && mapped[mapped.length - 1].v >= mapped[0].v;
+  const stroke = trendUp ? "var(--c-positive)" : "var(--c-danger)";
+  const onMove = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * W;
+    let best = mapped[0], bestD = Infinity;
+    for (const p of mapped) {
+      const d = Math.abs(p.x - x);
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    const prev = best.i > 0 ? mapped[best.i - 1] : null;
+    const delta = prev ? best.v - prev.v : 0;
+    setHover({ ...best, delta, prev });
+  };
+  return (
+    <div className="estimate-spark" onMouseLeave={() => setHover(null)}>
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="estimate-spark-svg" onMouseMove={onMove} role="img" aria-label="Live takeoff value trend">
+        <path d={lineD} fill="none" stroke={stroke} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+        {mapped.map((p) => (
+          <circle key={p.i} cx={p.x} cy={p.y} r={hover?.i === p.i ? 3.2 : 1.6} fill={stroke} stroke="#fff" strokeWidth="0.8" />
+        ))}
+        {hover && (
+          <line x1={hover.x} y1={padY} x2={hover.x} y2={H - padY} stroke="rgba(31,63,199,0.35)" strokeWidth="1" strokeDasharray="2 2" />
+        )}
+      </svg>
+      {hover && (
+        <div className="estimate-spark-tip" style={{ left: Math.min(W - 8, Math.max(8, hover.x)) }}>
+          <div className="estimate-spark-tip-val">{money(hover.v || 0, currency)}</div>
+          <div className={`estimate-spark-tip-delta${hover.delta > 0 ? " is-up" : hover.delta < 0 ? " is-down" : ""}`}>
+            {hover.prev
+              ? `${hover.delta > 0 ? "+" : ""}${money(hover.delta, currency)} vs prior`
+              : "Start of session"}
+          </div>
+          <div className="estimate-spark-tip-time">
+            {new Date(hover.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function TakeoffCanvas() {
   // Client-only: a single local workspace in this browser (no project id, no backend).
@@ -221,6 +339,7 @@ export default function TakeoffCanvas() {
   const symbolSourceViewRef = useRef(null);
   useEffect(() => { symbolSourceViewRef.current = symbolSourceView; }, [symbolSourceView]);
   const [openFolderPaths, setOpenFolderPaths] = useState({}); // folder path → true when expanded (default collapsed)
+  const [filesSearch, setFilesSearch] = useState(""); // Files panel — name filter + highlight
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   const [zoneCheck, setZoneCheck] = useState(null);   // ephemeral zone-check region {key, pts (norm)} — never persisted (buildPayload doesn't read it)
@@ -234,7 +353,7 @@ export default function TakeoffCanvas() {
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
   // Floating LEFT panel — one at a time: null | "files" | "markup" | "stamp" | "rfi".
-  // Opens on left-edge hover (or rail click); closes on mouse leave. Fixed size, not resizable.
+  // Opens on rail button click only (not canvas / not hover); auto-closes on mouse leave. Fixed size, not resizable.
   const [leftTab, setLeftTab] = useState(null);
   const lastLeftTabRef = useRef("files");
   const leftHoverCloseRef = useRef(null);
@@ -386,6 +505,11 @@ export default function TakeoffCanvas() {
   const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
   const [hoverEdge, setHoverEdge] = useState(null);   // { shapeId, i, length, t } — edge length chip follows cursor along the segment (t ∈ [0,1])
   const [selectedMarkupId, setSelectedMarkupId] = useState(null); // selected markup — mutually exclusive with selectedId
+  const [wallCutoutDraft, setWallCutoutDraft] = useState(null); // { shapeId, a: [x,y]|null } — linear custom cutout on wall_area only
+  const wallCutoutDraftRef = useRef(null);
+  wallCutoutDraftRef.current = wallCutoutDraft;
+  const [wallCutoutFocus, setWallCutoutFocus] = useState(null); // { a:[x,y], b:[x,y] } stage px — highlight after fly-to
+  const wallCutoutFocusTimerRef = useRef(null);
   const [rfis, setRfis] = useState([]);                 // RFI register (Request For Information); linked to markups via markup.rfi_id === rfi.id
   // Deletion provenance: shapes leave no record once filtered out of `shapes`,
   // so every delete COMMAND yields a per-origin-method tally (`counted`, keyed
@@ -426,7 +550,7 @@ export default function TakeoffCanvas() {
     if (cmd?.type === "add" && Array.isArray(cmd.shapes) && drawAppearanceRef.current) {
       const da = drawAppearanceRef.current;
       const app = {};
-      for (const k of ["color", "fill", "hatch", "line_style"]) {
+      for (const k of ["color", "fill", "hatch", "line_style", "weight"]) {
         if (da[k] != null) app[k] = da[k];
       }
       if (Object.keys(app).length) {
@@ -650,6 +774,17 @@ export default function TakeoffCanvas() {
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
   }, []);
+  // Tell the ADICC TopNav a project/sheet canvas is open so "All projects" shows.
+  useEffect(() => {
+    try {
+      window.parent?.postMessage({ source: "opentakeoff", type: "adicc:sheets-view", active: true }, "*");
+    } catch { /* cross-origin embed */ }
+    return () => {
+      try {
+        window.parent?.postMessage({ source: "opentakeoff", type: "adicc:sheets-view", active: false }, "*");
+      } catch { /* cross-origin embed */ }
+    };
+  }, []);
   const [showDrawingsChat, setShowDrawingsChat] = useState(false);
   const [drawingsChatPill, setDrawingsChatPill] = useState(false);   // bottom-center search pill
   const [drawingsChatDraft, setDrawingsChatDraft] = useState("");
@@ -669,6 +804,8 @@ export default function TakeoffCanvas() {
   }, [drawingsChatPill]);
   const [showRates, setShowRates] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteRef = useRef(null);
   const [showCondEdit, setShowCondEdit] = useState(false);
   // Floating Condition Edit: appearance for the in-progress draw only (not all CPT-1).
   const [drawAppearance, setDrawAppearance] = useState(null);
@@ -753,6 +890,28 @@ export default function TakeoffCanvas() {
   // its onOpenChange effect when the callback identity changes, so an inline
   // arrow here would re-count an open menu on every canvas render
   const onMenuDepth = useCallback((o) => { menuDepthRef.current = Math.max(0, menuDepthRef.current + (o ? 1 : -1)); }, []);
+  useEffect(() => {
+    if (!paletteOpen) return;
+    onMenuDepth(true);
+    const placePanel = () => {
+      if (paletteRef.current) {
+        const r = paletteRef.current.getBoundingClientRect();
+        paletteRef.current.style.setProperty("--palette-panel-top", `${r.bottom + 70}px`);
+      }
+    };
+    placePanel();
+    window.addEventListener("resize", placePanel);
+    const onDown = (e) => { if (paletteRef.current && !paletteRef.current.contains(e.target)) setPaletteOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setPaletteOpen(false); };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      onMenuDepth(false);
+      window.removeEventListener("resize", placePanel);
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [paletteOpen, onMenuDepth]);
   const thumbCacheRef = useRef(new Map()); // sheetKey → thumbnail dataURL — survives gallery close
   const legacyPinnedRef = useRef(null);    // old `pinned` page numbers awaiting their one-shot tab migration
   const tabInitRef = useRef(false);        // snap to the first restored tab exactly once
@@ -1984,8 +2143,8 @@ export default function TakeoffCanvas() {
   }, [panelImgs, groupSig, status, shapes]);
 
   const boqDetectCtx = useMemo(() => ({
-    planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb,
-  }), [planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb]);
+    planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb, shapes,
+  }), [planSymbols, symbolNotes, panelImgs, roomLabelsBySheet, scheduleKb, shapes]);
 
   const projectSettings = useMemo(() => ({
     currency: projectCurrency,
@@ -2008,6 +2167,24 @@ export default function TakeoffCanvas() {
     );
     return pricedGrandTotals(rows, projectSettings).grand_total;
   }, [conditions, shapes, materialRates, units, projectSettings]);
+
+  const [estimateValuePulse, setEstimateValuePulse] = useState(false);
+  const [estimateHistory, setEstimateHistory] = useState(() => [{ t: Date.now(), v: 0 }]);
+  const prevEstimateTotalRef = useRef(projectEstimateTotal);
+  useEffect(() => {
+    setEstimateHistory((h) => {
+      const last = h[h.length - 1];
+      const v = Number(projectEstimateTotal) || 0;
+      if (last && Math.abs(last.v - v) < 1e-6) return h;
+      const next = [...h, { t: Date.now(), v }];
+      return next.length > 28 ? next.slice(next.length - 28) : next;
+    });
+    if (prevEstimateTotalRef.current === projectEstimateTotal) return;
+    prevEstimateTotalRef.current = projectEstimateTotal;
+    setEstimateValuePulse(true);
+    const t = setTimeout(() => setEstimateValuePulse(false), 480);
+    return () => clearTimeout(t);
+  }, [projectEstimateTotal]);
 
   useEffect(() => {
     listMaterialRates().then(setMaterialRates).catch(() => {});
@@ -2328,7 +2505,7 @@ export default function TakeoffCanvas() {
         if (agentOfferFnsRef.current?.pending()) { e.preventDefault(); agentOfferFnsRef.current.confirm(); return; }
         if (tool === "oneclick" && proposal?.regions.length) { e.preventDefault(); createProposal(); return; }
         if (tool === "walltrace" && wallProposal?.regions.length) { e.preventDefault(); createWallProposal(); return; }
-        const ok = ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
+        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve") && poly.length >= 2);
         if (ok) { e.preventDefault(); finishShape(); return; }
         // ⏎ with agent proposals pending on a visible sheet = accept them all —
         // the agent's analogue of one-click's Create gate. Only fires when no
@@ -2398,7 +2575,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { setWallCutoutFocus(null); if (wallCutoutFocusTimerRef.current) { clearTimeout(wallCutoutFocusTimerRef.current); wallCutoutFocusTimerRef.current = null; } if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (wallCutoutDraftRef.current) { e.preventDefault(); setWallCutoutDraft(null); if (rubberRef.current) rubberRef.current.style.display = "none"; setCommitMsg("Custom cutout cancelled."); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -2466,6 +2643,7 @@ export default function TakeoffCanvas() {
     // a vector vertex would shift the box off the schedule and misread the region
     const rawCursor = tool === "select" || tool === "schedule";
     const p = (!rawCursor && snapOn && snapRef.current) ? snapRef.current
+      : (!rawCursor && tool === "deduct" && snapRef.current) ? snapRef.current
       : (!rawCursor && angleOn && angleRef.current) ? angleRef.current
         : toImage(e.clientX, e.clientY);
     const fp = panelAt(p[0]);
@@ -2486,7 +2664,21 @@ export default function TakeoffCanvas() {
       e.currentTarget.setPointerCapture(e.pointerId);
       return;
     }
-    if (tool === "select") { selectAt(p, e); return; }
+    if (tool === "select") {
+      // Linear custom cutout on wall_area — two clicks snapped to that perimeter only.
+      if (wallCutoutDraftRef.current) {
+        const draft = wallCutoutDraftRef.current;
+        const snapped = snapPointToWallAreaLine(draft.shapeId, p[0], p[1]);
+        if (!snapped) {
+          setCommitMsg("Snap to the wall area line — custom cutouts only land on that line.");
+          return;
+        }
+        pendingClickRef.current = { p: snapped, cx: e.clientX, cy: e.clientY };
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+      selectAt(p, e); return;
+    }
     // One-Click proposal handles: a press on a corner/edge grip starts an EDIT drag
     // (select+move a vertex, move a whole edge, or Shift-click to insert a point) —
     // it must win here, before the deferred add-a-region click below.
@@ -2508,17 +2700,39 @@ export default function TakeoffCanvas() {
   // the deferred click — runs on pointer-up when the press didn't become a pan
   function performClick(p, ev) {
     if (scaleGuide) setScaleGuide(null);
+    if (wallCutoutDraftRef.current) {
+      const draft = wallCutoutDraftRef.current;
+      const snapped = snapPointToWallAreaLine(draft.shapeId, p[0], p[1]) || p;
+      if (!draft.a) {
+        setWallCutoutDraft({ shapeId: draft.shapeId, a: snapped });
+        setCommitMsg("Custom cutout — click the second point on the wall area line.");
+      } else {
+        commitWallCutoutLinear(draft.shapeId, draft.a, snapped);
+      }
+      return;
+    }
     if (tool === "calibrate") setCalib((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "check") setCheck((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "oneclick") oneClickAt(p, !!(ev && ev.altKey));
     else if (tool === "walltrace") wallTraceAt(p);
     else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") {
       // Join the end — click near the first vertex to close & commit (autosaves via shapes).
-      if ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) {
+      // Wall Area is an open linear run (like Surface) — no close-to-first.
+      if ((tool === "area" || tool === "deduct") && poly.length >= 3) {
         const thr = 12 / tfRef.current.scale;
         if (Math.hypot(p[0] - poly[0][0], p[1] - poly[0][1]) < thr) { finishShape(); return; }
       }
-      setPoly((q) => [...q, p]);
+      let pt = p;
+      if (tool === "deduct") {
+        const wallSnap = snapDeductToWallLine(p[0], p[1]);
+        if (wallSnap) pt = wallSnap;
+      } else if ((tool === "wallarea" || tool === "surface") && activeCond) {
+        const tp = panelAt(p[0]);
+        const joinThr = tool === "wallarea" ? (8 / tfRef.current.scale) : undefined;
+        const snapped = snapPointToSurfaceEndpoints(tp.key, activeCond, null, p[0] - tp.xOffset, p[1], joinThr);
+        if (snapped) pt = [snapped[0] + tp.xOffset, snapped[1]];
+      }
+      setPoly((q) => [...q, pt]);
     }
     else if (tool === "count") commitCount(p);
     else if (tool === "rect" || tool === "deduct-rect") {
@@ -2748,6 +2962,21 @@ export default function TakeoffCanvas() {
       revealSheetInFilesSidebar(hit.sheet_id);
       return;
     }
+    // Two separate Wall Area runs — Shift+click joins; nearby endpoints auto-join on click.
+    if (hit?.measure_role === "surface_area" && selectedId && selectedId !== hit.id) {
+      const cur = shapesRef.current.find((s) => s.id === selectedId);
+      if (cur?.measure_role === "surface_area"
+        && cur.sheet_id === hit.sheet_id
+        && cur.condition_id === hit.condition_id
+        && (e.shiftKey || e.metaKey || e.ctrlKey || surfaceEndpointJoin(selectedId, hit.id))) {
+        dragRef.current = null;
+        setSelVert(null);
+        setSelHole(null);
+        joinSurfaceRuns(selectedId, hit.id);
+        revealSheetInFilesSidebar(hit.sheet_id);
+        return;
+      }
+    }
     if (hit?.measure_role === "deduct") setSelectedCutoutIds(new Set([hit.id]));
     else setSelectedCutoutIds(new Set());
     selectShape(hit ? hit.id : null);
@@ -2841,7 +3070,10 @@ export default function TakeoffCanvas() {
         ? Number(s.height_ft) || 0
         : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
       const LF = openLen(pts) * u;
-      return { area_sf: +(LF * h).toFixed(2), perimeter_lf: +LF.toFixed(2) };
+      const gross_face_sf = +(LF * h).toFixed(2);
+      const opening_sf = openingsDeductSfLinear(s.openings, LF, h);
+      const area_sf = +Math.max(0, gross_face_sf - opening_sf).toFixed(2);
+      return { area_sf, perimeter_lf: +LF.toFixed(2), gross_face_sf, opening_sf };
     }
     if (s.measure_role === "wall_area") {
       const h = s.height_override === true
@@ -2860,7 +3092,9 @@ export default function TakeoffCanvas() {
       }
       const footprint_sf = +(areaPx * u * u).toFixed(2);
       const perimeter_lf = +(perimPx * u).toFixed(2);
-      const wall_face_sf = +(perimeter_lf * h).toFixed(2);
+      const gross_face_sf = +(perimeter_lf * h).toFixed(2);
+      const opening_sf = openingsDeductSf(s.openings);
+      const wall_face_sf = netWallFaceSf(gross_face_sf, s.openings);
       const volume_cf = +(footprint_sf * h).toFixed(2);
       return {
         area_sf: wall_face_sf,
@@ -2868,6 +3102,8 @@ export default function TakeoffCanvas() {
         wall_face_sf,
         volume_cf,
         perimeter_lf,
+        gross_face_sf,
+        opening_sf,
       };
     }
     if (s.measure_role === "linear") {
@@ -2894,11 +3130,26 @@ export default function TakeoffCanvas() {
     let cur = toImage(e.clientX, e.clientY);
     snapRef.current = null;
     if (snapMarkRef.current) snapMarkRef.current.style.display = "none";
-    if (snapOn && !panRef.current && snapGridsRef.current.size) {
+    // Cut Out: sticky snap to wall area / wall run lines only (overrides PDF snap).
+    if (tool === "deduct" && !panRef.current) {
+      const sc = tfRef.current.scale;
+      const wallSnap = snapDeductToWallLine(cur[0], cur[1]);
+      if (wallSnap) {
+        snapRef.current = wallSnap;
+        cur = wallSnap;
+        if (snapMarkRef.current) {
+          snapMarkRef.current.setAttribute("d", starPath(wallSnap[0], wallSnap[1], 5.5 / sc));
+          snapMarkRef.current.style.display = "block";
+        }
+      }
+    } else if (snapOn && !panRef.current && snapGridsRef.current.size) {
       const sc = tfRef.current.scale;
       const sp = panelAt(cur[0]);
       const grid = snapGridsRef.current.get(sp.key);
-      const hit = grid ? nearestSnap(grid, cur[0] - sp.xOffset, cur[1], 11 / sc) : null;
+      // Wall Area: skip PDF corner magnet — join snap below uses its own tight thr.
+      const hit = tool === "wallarea"
+        ? (grid ? nearestSnap(grid, cur[0] - sp.xOffset, cur[1], 7 / sc) : null)
+        : (grid ? nearestSnap(grid, cur[0] - sp.xOffset, cur[1], 11 / sc) : null);
       if (hit) {
         const pt = [hit[0] + sp.xOffset, hit[1]];
         snapRef.current = pt; cur = pt;
@@ -2908,6 +3159,14 @@ export default function TakeoffCanvas() {
 
     // rubber-band preview: last point → cur (area/deduct/zone); rect preview: corner → cur
     const drawing = (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone");
+    if (!snapRef.current && (tool === "wallarea" || tool === "surface") && activeCond && drawing) {
+      const sp = panelAt(cur[0]);
+      const sc = tfRef.current.scale;
+      // Wall Area only: ~2.5 screen-px join magnet (was max(18, 22/scale) — yanked to corners).
+      const joinThr = tool === "wallarea" ? (8 / sc) : undefined;
+      const epSnap = snapPointToSurfaceEndpoints(sp.key, activeCond, null, cur[0] - sp.xOffset, cur[1], joinThr);
+      if (epSnap) cur = [epSnap[0] + sp.xOffset, epSnap[1]];
+    }
 
     // polar tracking: endpoint snap wins (osnap beats polar); otherwise pull the
     // rubber band onto the 45° family. ⇧ forces the lock at any angle. The click
@@ -3060,7 +3319,8 @@ export default function TakeoffCanvas() {
       const h = s.height_override === true
         ? Number(s.height_ft) || 0
         : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
-      return `${tag} · ${fa(a)} wall (${fl(lf)} × ${num(h, 2)}′)`;
+      const opn = s.computed?.opening_sf || 0;
+      return `${tag} · ${fa(a)} wall (${fl(lf)} × ${num(h, 2)}′${opn > 0 ? ` − ${fa(opn)} openings` : ""})`;
     }
     if (s.measure_role === "wall_area") {
       const h = s.height_override === true
@@ -3068,7 +3328,8 @@ export default function TakeoffCanvas() {
         : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
       const fp = s.computed?.footprint_sf || 0;
       const vol = s.computed?.volume_cf || 0;
-      return `${tag} · ${fa(a)} face · ${fa(fp)} footprint · ${num(vol, 1)} CF (${num(h, 2)}′)`;
+      const opn = s.computed?.opening_sf || 0;
+      return `${tag} · ${fa(a)} face${opn > 0 ? ` (− ${fa(opn)} openings)` : ""} · ${fa(fp)} footprint · ${num(vol, 1)} CF (${num(h, 2)}′)`;
     }
     if (s.measure_role === "linear") return `${tag} · ${fl(lf)}${a > 0 ? ` · ${fa(a)} border` : ""}`;
     return `${tag} · ${faSY(a)}`;
@@ -3186,6 +3447,29 @@ export default function TakeoffCanvas() {
   function onPointerMove(e) {
     lastPtrRef.current = [e.clientX, e.clientY];   // paste targets the sheet under the cursor
     aimSeqRef.current++;                           // deixis freshness tick — see getAimSeed
+    // Custom cutout draft — live snap + rubber band on the wall_area line only.
+    if (wallCutoutDraftRef.current && !panRef.current) {
+      let cur = toImage(e.clientX, e.clientY);
+      const snapped = snapPointToWallAreaLine(wallCutoutDraftRef.current.shapeId, cur[0], cur[1]);
+      if (snapped) cur = snapped;
+      const sc = tfRef.current.scale;
+      if (snapMarkRef.current) {
+        if (snapped) {
+          snapMarkRef.current.setAttribute("d", starPath(cur[0], cur[1], 5.5 / sc));
+          snapMarkRef.current.style.display = "block";
+        } else snapMarkRef.current.style.display = "none";
+      }
+      const a = wallCutoutDraftRef.current.a;
+      if (a && rubberRef.current) {
+        rubberRef.current.setAttribute("x1", a[0]);
+        rubberRef.current.setAttribute("y1", a[1]);
+        rubberRef.current.setAttribute("x2", cur[0]);
+        rubberRef.current.setAttribute("y2", cur[1]);
+        rubberRef.current.style.display = "block";
+      } else if (!a && rubberRef.current) {
+        rubberRef.current.style.display = "none";
+      }
+    }
     if (hlRef.current) {
       // paint: distance-thin at capture, live preview via DOM (no React render per move)
       const st = hlRef.current;
@@ -3309,13 +3593,27 @@ export default function TakeoffCanvas() {
         } else {
           if (d.kind === "vertex") {
             const [slx, sly] = ocSnap(sp.key, p[0] - sp.xOffset, p[1], !!d.shape.origin?.raster_traced);   // snap the corner to true endpoints (never on a raster-traced shape — see ocSnap)
-            vn = d.prev.verts_norm.map((v, i) => (i === d.vIndex ? [slx / sp.img.w, sly / sp.img.h] : v));
+            let lx = slx, ly = sly;
+            if (d.shape.measure_role === "surface_area") {
+              const epSnap = snapPointToSurfaceEndpoints(sp.key, d.shape.condition_id, d.shapeId, slx, sly);
+              if (epSnap) { lx = epSnap[0]; ly = epSnap[1]; }
+            }
+            vn = d.prev.verts_norm.map((v, i) => (i === d.vIndex ? [lx / sp.img.w, ly / sp.img.h] : v));
           } else if (d.kind === "edge") {
             // translate BOTH endpoints of the line by the drag delta; each end snaps
             // to the linework independently (normalized → local px → snap → normalized)
             const dx = (p[0] - d.start[0]) / sp.img.w, dy = (p[1] - d.start[1]) / sp.img.h;
             const rt = !!d.shape.origin?.raster_traced;
-            const snapN = (nx, ny) => { const [lx, ly] = ocSnap(sp.key, nx * sp.img.w, ny * sp.img.h, rt); return [lx / sp.img.w, ly / sp.img.h]; };
+            const snapN = (nx, ny) => {
+              let lx = nx * sp.img.w, ly = ny * sp.img.h;
+              const hit = ocSnap(sp.key, lx, ly, rt);
+              lx = hit[0]; ly = hit[1];
+              if (d.shape.measure_role === "surface_area") {
+                const epSnap = snapPointToSurfaceEndpoints(sp.key, d.shape.condition_id, d.shapeId, lx, ly);
+                if (epSnap) { lx = epSnap[0]; ly = epSnap[1]; }
+              }
+              return [lx / sp.img.w, ly / sp.img.h];
+            };
             const na = snapN(d.oaN[0] + dx, d.oaN[1] + dy), nb = snapN(d.obN[0] + dx, d.obN[1] + dy);
             vn = d.prev.verts_norm.map((v, i) => (i === d.i ? na : i === d.j ? nb : v));
           } else {
@@ -3450,6 +3748,12 @@ export default function TakeoffCanvas() {
               const editedPoly = edited.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
               mergeIntoExistingShapes(editedPoly, edited.sheet_id, edited.condition_id, edited.measure_role, edited.id, res.shapes, d.kind);
             }
+          }
+          // Wall Area / Surface: dragging an endpoint onto another run joins them.
+          if (edited && edited.measure_role === "surface_area" && (d.kind === "vertex" || d.kind === "edge")) {
+            tryMergeSurfaceRun(edited.id);
+            setSelVert(null);
+            setSelHole(null);
           }
         }
       }
@@ -3703,10 +4007,11 @@ export default function TakeoffCanvas() {
 
   // Carve newPoly out of each overlapping takeoff — trim the parent fill/mask so
   // the overlapping region is physically removed (never a deduct overlay).
+  // Returns true when the parent geometry changed.
   function removeOverlapFromVictims(newPoly, sheetId, victims) {
     const tp = panelByKey(sheetId);
     const w = tp?.img?.w, h = tp?.img?.h;
-    if (!(w > 0 && h > 0) || !victims.length) return;
+    if (!(w > 0 && h > 0) || !victims.length) return false;
     const toNorm = (poly) => poly.map(([x, y]) => [x / w, y / h]);
     const toPx = (norm) => norm.map(([nx, ny]) => [nx * w, ny * h]);
     // Adjacent/touching holes must coalesce — polygonsOverlap is strict-interior only.
@@ -3800,8 +4105,14 @@ export default function TakeoffCanvas() {
       }
       return coalesceHolesPx([...keep, uni]).map(toNorm);
     };
+    // Keep wall_area parents as wall_area when punching cutouts (Wall Trace / Wall Area).
+    const trimRole = (live) => (
+      live.measure_role === "deduct" ? "deduct"
+        : live.measure_role === "wall_area" ? "wall_area"
+          : "floor_area"
+    );
     const applyInteriorTrim = (live, cutterPx, outerPx) => {
-      const role = live.measure_role === "deduct" ? "deduct" : "floor_area";
+      const role = trimRole(live);
       const holes_norm = mergeHoleIntoList(live.holes_norm, cutterPx, outerPx);
       if (holesEqual(holes_norm, live.holes_norm || [])) return false;
       dispatchShape({
@@ -3815,7 +4126,7 @@ export default function TakeoffCanvas() {
     };
     const applyTrimPolys = (live, polys, cutterPx, outerPx) => {
       if (live.holes_norm?.length) return applyInteriorTrim(live, cutterPx, outerPx);
-      const role = live.measure_role === "deduct" ? "deduct" : "floor_area";
+      const role = trimRole(live);
       const vnPolys = polys.map((poly) => toNorm(poly));
       if (polys.length === 1) {
         dispatchShape({
@@ -3832,7 +4143,7 @@ export default function TakeoffCanvas() {
     const toDelete = [];
     let carved = false;
     const primary = primaryTrimVictim(victims);
-    if (!primary) return;
+    if (!primary) return false;
     // Drop stray inner masks fully inside the parent — Remove trims one parent, never spawns siblings.
     for (const v of victims) {
       if (v.id === primary.id) continue;
@@ -3893,6 +4204,7 @@ export default function TakeoffCanvas() {
       : carved
         ? "Removed the overlapping part from the existing takeoff."
         : "No overlap could be removed.");
+    return carved || toDelete.length > 0;
   }
 
   function resolveOverlapPrompt(choice) {
@@ -3921,7 +4233,15 @@ export default function TakeoffCanvas() {
           return;
         }
         if (choice === "remove") {
-          removeOverlapFromVictims(p.newPoly, p.sheetId, p.victims);
+          const wallVictims = (p.victims || []).filter((v) => v.measure_role === "wall_area" || v.measure_role === "surface_area");
+          const floorVictims = (p.victims || []).filter((v) => v.measure_role === "floor_area");
+          // Wall face is perimeter×H — punching holes increases face. Door/opening
+          // cutouts on walls become openings[] deducts (W×H) instead.
+          if (wallVictims.length) {
+            applyWallCutoutAsOpening(p.newPoly, p.sheetId, wallVictims);
+          } else if (floorVictims.length) {
+            removeOverlapFromVictims(p.newPoly, p.sheetId, floorVictims);
+          }
           setPoly([]);
           return;
         }
@@ -3973,6 +4293,14 @@ export default function TakeoffCanvas() {
     const upp = uppFor(tp.key);
     if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
+    // Cut Out over wall lines: pull vertices onto the wall area / wall run when nearby.
+    if (asDeduct) {
+      const projected = points.map((pt) => snapDeductToWallLine(pt[0], pt[1], 28));
+      const hitN = projected.filter(Boolean).length;
+      if (hitN >= Math.max(2, Math.ceil(points.length * 0.5))) {
+        points = points.map((pt, i) => projected[i] || pt);
+      }
+    }
     const role = asDeduct ? "deduct" : "floor_area";
     const newPoly = points.map(([x, y]) => [x - tp.xOffset, y]);
     const victims = overlapVictimsFor(newPoly, tp.key, activeCond, role);
@@ -3988,14 +4316,32 @@ export default function TakeoffCanvas() {
       });
       return;
     }
-    // Cut Out only — finishing a deduct over a parent floor mask offers Merge / Remove.
+    // Cut Out only — finishing a deduct over a parent floor or wall mask offers Merge / Remove.
+    // Wall Area / Surface (open linear runs) count as wall parents when the cutout sits near the run.
     if (asDeduct && tp.img?.w) {
       const w = tp.img.w, h = tp.img.h;
       const polyOf = (s) => s.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
-      const parentVictims = shapesRef.current.filter((s) =>
-        s.sheet_id === tp.key
-        && s.measure_role === "floor_area"
-        && polygonsOverlap(newPoly, polyOf(s)));
+      const nearOpenWall = (wallPts, cutterPx, thr = 28) => {
+        if (!wallPts || wallPts.length < 2 || !cutterPx?.length) return false;
+        let cx = 0, cy = 0;
+        for (const [x, y] of cutterPx) { cx += x; cy += y; }
+        cx /= cutterPx.length; cy /= cutterPx.length;
+        const samples = [[cx, cy], ...cutterPx];
+        for (const [x, y] of samples) {
+          for (let i = 1; i < wallPts.length; i++) {
+            if (distToSeg(x, y, wallPts[i - 1][0], wallPts[i - 1][1], wallPts[i][0], wallPts[i][1]) < thr) return true;
+          }
+        }
+        return false;
+      };
+      const parentVictims = shapesRef.current.filter((s) => {
+        if (s.sheet_id !== tp.key) return false;
+        if (s.measure_role === "floor_area" || s.measure_role === "wall_area") {
+          return polygonsOverlap(newPoly, polyOf(s));
+        }
+        if (s.measure_role === "surface_area") return nearOpenWall(polyOf(s), newPoly);
+        return false;
+      });
       if (parentVictims.length) {
         setOverlapPrompt({
           source: "poly",
@@ -4040,8 +4386,351 @@ export default function TakeoffCanvas() {
       origin: { method: "manual" },
     }] });
   }
-  // Surface Area — trace the wall run in plan; SF = traced LF × the condition's
-  // height. The wall-tile "stack" workflow: set tile height once, trace walls.
+  // ── Wall Area / Surface open-run join ─────────────────────────────────────
+  // Screen-aware endpoint tolerance — a few px miss at any zoom still counts.
+  function surfaceJoinThr() {
+    return Math.max(18, 22 / (tfRef.current?.scale || 1));
+  }
+  function closestPointOnSegPx(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const x = ax + t * dx, y = ay + t * dy;
+    return { x, y, t, d: Math.hypot(px - x, py - y) };
+  }
+  function nearestPointOnPolylinePx(pts, px, py) {
+    if (!pts || pts.length < 2) return null;
+    let best = null;
+    for (const ei of [0, pts.length - 1]) {
+      const d = Math.hypot(px - pts[ei][0], py - pts[ei][1]);
+      if (!best || d < best.d) best = { d, point: [pts[ei][0], pts[ei][1]], kind: "endpoint", index: ei };
+    }
+    for (let i = 1; i < pts.length; i++) {
+      const hit = closestPointOnSegPx(px, py, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+      const interior = hit.t > 0.02 && hit.t < 0.98;
+      if (!best || hit.d < best.d) {
+        best = interior
+          ? { d: hit.d, point: [hit.x, hit.y], kind: "segment", segIndex: i }
+          : { d: hit.d, point: [hit.x, hit.y], kind: "endpoint", index: hit.t < 0.5 ? i - 1 : i };
+      }
+    }
+    return best;
+  }
+  function insertPointOnRunPx(pts, segIndex, point) {
+    const idx = Math.max(1, Math.min(segIndex, pts.length - 1));
+    return [...pts.slice(0, idx), [point[0], point[1]], ...pts.slice(idx)];
+  }
+  function hasVertexNearPx(pts, point, eps = 1.5) {
+    return pts.some((p) => Math.hypot(p[0] - point[0], p[1] - point[1]) < eps);
+  }
+  function dedupeRunPx(pts, eps = 0.5) {
+    if (!pts.length) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      if (Math.hypot(pts[i][0] - out[out.length - 1][0], pts[i][1] - out[out.length - 1][1]) > eps) out.push(pts[i]);
+    }
+    return out;
+  }
+  function mergeSurfacePolylinesAt(a, b, thr) {
+    const dPt = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+    const tryPair = (aPts, aIdx, bPts, bIdx) => {
+      if (dPt(aPts[aIdx], bPts[bIdx]) >= thr) return null;
+      if (aIdx === aPts.length - 1) return dedupeRunPx([...aPts.slice(0, -1), ...bPts.slice(bIdx)]);
+      if (aIdx === 0) return dedupeRunPx([...bPts.slice(0, bIdx + 1), ...aPts.slice(1)]);
+      return null;
+    };
+    for (const ai of [0, a.length - 1]) {
+      for (let bi = 0; bi < b.length; bi++) {
+        const m = tryPair(a, ai, b, bi);
+        if (m && m.length >= 2) return m;
+      }
+    }
+    for (const bi of [0, b.length - 1]) {
+      for (let ai = 0; ai < a.length; ai++) {
+        const m = tryPair(b, bi, a, ai);
+        if (m && m.length >= 2) return m;
+      }
+    }
+    return null;
+  }
+  function surfaceEndpointsPx(sheetKey, condId, excludeId = null) {
+    const tp = panelByKey(sheetKey);
+    if (!tp?.img?.w) return [];
+    const out = [];
+    for (const s of shapesRef.current) {
+      if (s.sheet_id !== sheetKey || s.condition_id !== condId || s.measure_role !== "surface_area") continue;
+      if (excludeId && s.id === excludeId) continue;
+      const pts = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+      if (pts.length >= 2) out.push(...[pts[0], pts[pts.length - 1]]);
+    }
+    return out;
+  }
+  // Snap onto peer run endpoints OR any point along a peer segment (T-attach).
+  // `thrOverride` — Wall Area live-draw uses a tight radius so corners don't yank from far away.
+  function snapPointToSurfaceEndpoints(sheetKey, condId, excludeId, lx, ly, thrOverride) {
+    const thr = thrOverride != null ? thrOverride : surfaceJoinThr();
+    const tp = panelByKey(sheetKey);
+    if (!tp?.img?.w) return null;
+    let best = null;
+    for (const s of shapesRef.current) {
+      if (s.sheet_id !== sheetKey || s.condition_id !== condId || s.measure_role !== "surface_area") continue;
+      if (excludeId && s.id === excludeId) continue;
+      const pts = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+      const hit = nearestPointOnPolylinePx(pts, lx, ly);
+      if (hit && hit.d < thr && (!best || hit.d < best.d)) best = hit;
+    }
+    return best ? best.point : null;
+  }
+  // Custom cutout linear — snap ONLY to the selected wall_area perimeter (closed ring).
+  function snapPointToWallAreaLine(shapeId, stageX, stageY) {
+    const wall = shapesRef.current.find((s) => s.id === shapeId);
+    if (!wall || wall.measure_role !== "wall_area") return null;
+    const tp = panelByKey(wall.sheet_id);
+    if (!tp?.img?.w) return null;
+    const lx = stageX - tp.xOffset, ly = stageY;
+    const pts = (wall.verts_norm || []).map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+    if (pts.length < 2) return null;
+    const closed = pts.length >= 3
+      && (Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) > 0.5);
+    const ring = closed ? [...pts, pts[0]] : pts;
+    const thr = 8 / tfRef.current.scale;
+    const hit = nearestPointOnPolylinePx(ring, lx, ly);
+    if (!hit || hit.d > thr) return null;
+    return [hit.point[0] + tp.xOffset, hit.point[1]];
+  }
+  // Cut Out (deduct) — sticky snap onto wall area / wall run lines only (not PDF vectors).
+  function snapDeductToWallLine(stageX, stageY, thrPx = 18) {
+    const thr = thrPx / (tfRef.current.scale || 1);
+    const sp = panelAt(stageX);
+    if (!sp?.img?.w) return null;
+    const lx = stageX - sp.xOffset, ly = stageY;
+    const walls = shapesRef.current.filter((s) =>
+      s.sheet_id === sp.key
+      && (s.measure_role === "wall_area" || s.measure_role === "surface_area")
+      && (s.verts_norm || []).length >= 2);
+    if (!walls.length) return null;
+    const preferred = selectedId ? walls.find((s) => s.id === selectedId) : null;
+    const ordered = preferred ? [preferred, ...walls.filter((s) => s.id !== preferred.id)] : walls;
+    let best = null;
+    for (const wall of ordered) {
+      const pts = wall.verts_norm.map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+      const closed = wall.measure_role === "wall_area" && pts.length >= 3
+        && (Math.hypot(pts[0][0] - pts[pts.length - 1][0], pts[0][1] - pts[pts.length - 1][1]) > 0.5);
+      const ring = closed ? [...pts, pts[0]] : pts;
+      const hit = nearestPointOnPolylinePx(ring, lx, ly);
+      if (!hit || hit.d > thr) continue;
+      if (!best || hit.d < best.d) best = { d: hit.d, point: [hit.point[0] + sp.xOffset, hit.point[1]] };
+    }
+    return best ? best.point : null;
+  }
+  function chainSurfacePolylines(polys, thr) {
+    let chains = polys.map((p) => p.map((q) => [q[0], q[1]]));
+    let changed = true;
+    let guard = 0;
+    while (changed && chains.length > 1 && guard++ < 64) {
+      changed = false;
+      outer: for (let i = 0; i < chains.length; i++) {
+        for (let j = i + 1; j < chains.length; j++) {
+          const merged = mergeSurfacePolylinesAt(chains[i], chains[j], thr);
+          if (!merged) continue;
+          chains = [...chains.slice(0, i), ...chains.slice(i + 1, j), ...chains.slice(j + 1), merged];
+          changed = true;
+          break outer;
+        }
+      }
+    }
+    return chains;
+  }
+  function surfaceRunsNear(a, b, thr) {
+    const dPt = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+    const ae = [a[0], a[a.length - 1]], be = [b[0], b[b.length - 1]];
+    for (const pa of ae) for (const pb of be) {
+      if (dPt(pa, pb) < thr) return true;
+    }
+    for (const pa of ae) {
+      if (nearestPointOnPolylinePx(b, pa[0], pa[1])?.d < thr) return true;
+    }
+    for (const pb of be) {
+      if (nearestPointOnPolylinePx(a, pb[0], pb[1])?.d < thr) return true;
+    }
+    return false;
+  }
+  // Merge 2+ touching surface_area runs on the same sheet/condition into one polyline.
+  function tryMergeSurfaceRun(primaryId) {
+    const primary = shapesRef.current.find((s) => s.id === primaryId);
+    if (!primary || primary.measure_role !== "surface_area") return false;
+    const tp = panelByKey(primary.sheet_id);
+    if (!tp?.img?.w) return false;
+    const thr = surfaceJoinThr();
+    const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+    const peers = shapesRef.current.filter((s) =>
+      s.sheet_id === primary.sheet_id
+      && s.condition_id === primary.condition_id
+      && s.measure_role === "surface_area");
+    const cluster = [];
+    const used = new Set();
+    const queue = [primary];
+    while (queue.length) {
+      const cur = queue.pop();
+      if (used.has(cur.id)) continue;
+      used.add(cur.id);
+      cluster.push(cur);
+      const curPx = toPx(cur);
+      for (const s of peers) {
+        if (used.has(s.id)) continue;
+        const pts = toPx(s);
+        if (pts.length >= 2 && surfaceRunsNear(curPx, pts, thr)) queue.push(s);
+      }
+    }
+    if (cluster.length < 2) return false;
+    const pxById = new Map(cluster.map((s) => [s.id, toPx(s)]));
+    // Single prep pass — avoid re-insert loops that freeze the UI.
+    for (const sa of cluster) for (const sb of cluster) {
+      if (sa.id === sb.id) continue;
+      const aPx = pxById.get(sa.id);
+      let bPx = pxById.get(sb.id);
+      if (!aPx || !bPx) continue;
+      for (const ei of [0, aPx.length - 1]) {
+        const hit = nearestPointOnPolylinePx(bPx, aPx[ei][0], aPx[ei][1]);
+        if (!hit || hit.d >= thr) continue;
+        aPx[ei] = hit.point;
+        if (hit.kind === "segment") {
+          if (!hasVertexNearPx(bPx, hit.point)) bPx = insertPointOnRunPx(bPx, hit.segIndex, hit.point);
+        } else {
+          bPx[hit.index] = hit.point;
+        }
+        pxById.set(sb.id, bPx);
+      }
+      pxById.set(sa.id, aPx);
+    }
+    const chained = chainSurfacePolylines([...pxById.values()], thr);
+    const mergedPts = chained[0];
+    if (!mergedPts || mergedPts.length < 2) {
+      const aligned = shapesRef.current.map((s) => {
+        const px = pxById.get(s.id);
+        if (!px) return s;
+        const vn = px.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+        const next = { ...s, verts_norm: vn };
+        return { ...next, computed: recomputeShape(next) };
+      });
+      shapesRef.current = aligned;
+      setShapes(aligned);
+      selectShape(primaryId);
+      setSelVert(null);
+      return false;
+    }
+    const keep = cluster.find((s) => s.id === primaryId)
+      || cluster.slice().sort((a, b) => (b.verts_norm?.length || 0) - (a.verts_norm?.length || 0))[0];
+    const others = cluster.filter((s) => s.id !== keep.id);
+    const vn = mergedPts.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+    const openings = [
+      ...(keep.openings || []),
+      ...others.flatMap((s) => s.openings || []),
+    ];
+    const drop = new Set(others.map((s) => s.id));
+    const nextShapes = shapesRef.current
+      .filter((s) => !drop.has(s.id))
+      .map((s) => {
+        if (s.id !== keep.id) return s;
+        const next = { ...s, verts_norm: vn, openings };
+        return { ...next, computed: recomputeShape(next) };
+      });
+    shapesRef.current = nextShapes;
+    setShapes(nextShapes);
+    selectShape(keep.id);
+    setSelVert(null);
+    const upp = uppFor(primary.sheet_id) || 0;
+    const h = keep.height_override === true
+      ? Number(keep.height_ft) || 0
+      : Number(keep.height_ft) || Number(condById[keep.condition_id]?.height_ft) || 0;
+    setCommitMsg(`Merged ${cluster.length} wall runs into one — ${fl(openLen(mergedPts) * upp)} × ${num(h, 2)}′.`);
+    return true;
+  }
+  function surfaceEndpointJoin(idA, idB) {
+    const a = shapesRef.current.find((s) => s.id === idA);
+    const b = shapesRef.current.find((s) => s.id === idB);
+    if (!a || !b || a.measure_role !== "surface_area" || b.measure_role !== "surface_area") return false;
+    if (a.sheet_id !== b.sheet_id || a.condition_id !== b.condition_id) return false;
+    const tp = panelByKey(a.sheet_id);
+    if (!tp?.img?.w) return false;
+    const thr = surfaceJoinThr();
+    const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+    const aPx = toPx(a), bPx = toPx(b);
+    if (aPx.length < 2 || bPx.length < 2) return false;
+    const dPt = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+    for (const pa of [aPx[0], aPx[aPx.length - 1]]) for (const pb of [bPx[0], bPx[bPx.length - 1]]) {
+      if (dPt(pa, pb) < thr) return true;
+    }
+    return false;
+  }
+  function surfaceRunsCanJoin(idA, idB) {
+    const a = shapesRef.current.find((s) => s.id === idA);
+    const b = shapesRef.current.find((s) => s.id === idB);
+    if (!a || !b || a.measure_role !== "surface_area" || b.measure_role !== "surface_area") return false;
+    if (a.sheet_id !== b.sheet_id || a.condition_id !== b.condition_id) return false;
+    const tp = panelByKey(a.sheet_id);
+    if (!tp?.img?.w) return false;
+    const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+    const aPx = toPx(a), bPx = toPx(b);
+    if (aPx.length < 2 || bPx.length < 2) return false;
+    return surfaceRunsNear(aPx, bPx, surfaceJoinThr());
+  }
+  // Join two separate wall runs — attach at endpoints or anywhere along the other run.
+  function joinSurfaceRuns(idA, idB) {
+    const a = shapesRef.current.find((s) => s.id === idA);
+    const b = shapesRef.current.find((s) => s.id === idB);
+    if (!a || !b || a.measure_role !== "surface_area" || b.measure_role !== "surface_area") return false;
+    if (a.sheet_id !== b.sheet_id || a.condition_id !== b.condition_id) return false;
+    const tp = panelByKey(a.sheet_id);
+    if (!tp?.img?.w) return false;
+    const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+    let aPx = toPx(a), bPx = toPx(b);
+    if (aPx.length < 2 || bPx.length < 2) return false;
+    let best = null;
+    for (const ai of [0, aPx.length - 1]) {
+      const hit = nearestPointOnPolylinePx(bPx, aPx[ai][0], aPx[ai][1]);
+      if (hit && (!best || hit.d < best.d)) best = { d: hit.d, moveA: true, endIndex: ai, target: hit };
+    }
+    for (const bi of [0, bPx.length - 1]) {
+      const hit = nearestPointOnPolylinePx(aPx, bPx[bi][0], bPx[bi][1]);
+      if (hit && (!best || hit.d < best.d)) best = { d: hit.d, moveA: false, endIndex: bi, target: hit };
+    }
+    if (!best) return false;
+    const join = best.target.point;
+    if (best.moveA) {
+      aPx = aPx.map((p, i) => (i === best.endIndex ? join : p));
+      if (best.target.kind === "segment") {
+        if (!hasVertexNearPx(bPx, join)) bPx = insertPointOnRunPx(bPx, best.target.segIndex, join);
+      } else {
+        bPx = bPx.map((p, i) => (i === best.target.index ? join : p));
+      }
+    } else {
+      bPx = bPx.map((p, i) => (i === best.endIndex ? join : p));
+      if (best.target.kind === "segment") {
+        if (!hasVertexNearPx(aPx, join)) aPx = insertPointOnRunPx(aPx, best.target.segIndex, join);
+      } else {
+        aPx = aPx.map((p, i) => (i === best.target.index ? join : p));
+      }
+    }
+    const newAVn = aPx.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+    const newBVn = bPx.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
+    const next = shapesRef.current.map((s) => {
+      if (s.id === idA) {
+        const n = { ...s, verts_norm: newAVn };
+        return { ...n, computed: recomputeShape(n) };
+      }
+      if (s.id === idB) {
+        const n = { ...s, verts_norm: newBVn };
+        return { ...n, computed: recomputeShape(n) };
+      }
+      return s;
+    });
+    shapesRef.current = next;
+    setShapes(next);
+    return tryMergeSurfaceRun(idA);
+  }
+
+  // Surface Area / Wall Area — open linear wall run in plan; SF = traced LF × H.
   function commitSurface(points) {
     if (points.length < 2) return;
     const tp = panelAt(points[0][0]);
@@ -4049,15 +4738,28 @@ export default function TakeoffCanvas() {
     if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
     const h = Number(aCond?.height_ft) || 0;
-    if (!(h > 0)) { setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Surface Area = traced LF × height.`); return; }
-    const LF = openLen(points) * upp;
-    dispatchShape({ type: "add", shapes: [{
+    if (!(h > 0)) { setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Wall Area = traced LF × height.`); return; }
+    let local = points.map(([x, y]) => [x - tp.xOffset, y]);
+    for (const idx of [0, local.length - 1]) {
+      // Wall Area: keep the same tight draw thr so finish doesn't yank ends to far corners.
+      const joinThr = tool === "wallarea" ? (8 / tfRef.current.scale) : undefined;
+      const snapped = snapPointToSurfaceEndpoints(tp.key, activeCond, null, local[idx][0], local[idx][1], joinThr);
+      if (snapped) local[idx] = [snapped[0], snapped[1]];
+    }
+    const LF = openLen(local) * upp;
+    const gross = +(LF * h).toFixed(2);
+    const beforeIds = new Set(shapesRef.current.map((s) => s.id));
+    const res = dispatchShape({ type: "add", shapes: [{
       sheet_id: tp.key, condition_id: activeCond, measure_role: "surface_area", height_ft: h,
-      verts_norm: points.map(([x, y]) => [(x - tp.xOffset) / tp.img.w, y / tp.img.h]),
-      computed: { area_sf: +(LF * h).toFixed(2), perimeter_lf: +LF.toFixed(2) },
+      verts_norm: local.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
+      computed: { area_sf: gross, perimeter_lf: +LF.toFixed(2), gross_face_sf: gross, opening_sf: 0 },
       ...(activeLabel ? { label: activeLabel } : {}),
       origin: { method: "manual" },
     }] });
+    const added = res.shapes.find((s) => !beforeIds.has(s.id) && s.measure_role === "surface_area");
+    // Wall Area: keep separate rooms as separate runs — no auto-merge on Enter.
+    // Explicit join remains via Shift+click on another run.
+    if (added && tool !== "wallarea") tryMergeSurfaceRun(added.id);
   }
   function commitWallPoly(points) {
     if (points.length < 3) return;
@@ -4825,7 +5527,11 @@ export default function TakeoffCanvas() {
   // `from` remembers the source sheet so paste knows same-sheet vs cross-sheet
   const clipEntry = (sel) => ({ condition_id: sel.condition_id, measure_role: sel.measure_role,
                                 verts_norm: sel.verts_norm.map((v) => [...v]), from: sel.sheet_id, height_ft: sel.height_ft,
-                                ...(sel.height_override ? { height_override: true } : {}), ...(sel.label ? { label: sel.label } : {}), ...cloneOrigin(sel.origin) });
+                                ...(sel.height_override ? { height_override: true } : {}),
+                                ...(Array.isArray(sel.openings) && sel.openings.length
+                                  ? { openings: sel.openings.map((o) => ({ ...o, id: o.id || uid("opn") })) }
+                                  : {}),
+                                ...(sel.label ? { label: sel.label } : {}), ...cloneOrigin(sel.origin) });
   function copySelected() {
     const sel = shapes.find((s) => s.id === selectedId);
     if (!sel) { setCommitMsg("Select a takeoff to copy."); return; }
@@ -4844,7 +5550,15 @@ export default function TakeoffCanvas() {
       // same sheet: nudge so the copy is visible; other sheet: same relative spot
       const vn = c.verts_norm.map(([x, y]) => (same ? [Math.min(0.999, x + offset), Math.min(0.999, y + offset)] : [x, y]));
       // != null, not truthy: an overridden height of 0 must survive the paste
-      const s = { sheet_id: tp.key, condition_id: c.condition_id, measure_role: c.measure_role, verts_norm: vn, ...(c.height_ft != null ? { height_ft: c.height_ft } : {}), ...(c.height_override ? { height_override: true } : {}), ...(c.label ? { label: c.label } : {}), ...cloneOrigin(c.origin) };
+      const s = {
+        sheet_id: tp.key, condition_id: c.condition_id, measure_role: c.measure_role, verts_norm: vn,
+        ...(c.height_ft != null ? { height_ft: c.height_ft } : {}),
+        ...(c.height_override ? { height_override: true } : {}),
+        ...(Array.isArray(c.openings) && c.openings.length
+          ? { openings: c.openings.map((o) => ({ ...o, id: uid("opn") })) }
+          : {}),
+        ...(c.label ? { label: c.label } : {}), ...cloneOrigin(c.origin),
+      };
       return { ...s, computed: recomputeShape(s) };
     });
     // the add command mints id/created_at; a plain add appends, so the minted
@@ -5220,6 +5934,135 @@ export default function TakeoffCanvas() {
     if (!panelKeySet.has(s.sheet_id)) { pendingFlyShapeRef.current = shapeId; openSheets([s.sheet_id], false); return; }
     if (!centerOnShape(s)) pendingFlyShapeRef.current = shapeId;
   }
+  /** Jump to a wall-opening door mark (or cutout anchor) on the plan. */
+  function flyToWallOpening(opn, wall) {
+    if (!opn || !wall) return;
+    const sheet = wall.sheet_id;
+    if (!panelKeySet.has(sheet)) {
+      pendingFlyShapeRef.current = wall.id;
+      openSheets([sheet], false);
+    }
+    const sp = panelByKey(sheet);
+    const el = containerRef.current;
+    if (!sp?.img?.w || !el) {
+      flyToShape(wall.id);
+      return;
+    }
+    const tag = String(opn.tag || "").toUpperCase();
+    const ax = Array.isArray(opn.anchor_norm) ? opn.anchor_norm[0] * sp.img.w : null;
+    const ay = Array.isArray(opn.anchor_norm) ? opn.anchor_norm[1] * sp.img.h : null;
+    const distToSeg = (px, py, x1, y1, x2, y2) => {
+      const dx = x2 - x1, dy = y2 - y1;
+      const len2 = dx * dx + dy * dy || 1;
+      const t = Math.min(1, Math.max(0, ((px - x1) * dx + (py - y1) * dy) / len2));
+      return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+    };
+    const nearestDoor = (preferTag, maxD, fromX, fromY) => {
+      let best = null, bestD = Infinity;
+      for (const p of planSymbols) {
+        if (p.sheet_id !== sheet || !isWallOpeningSymbol(p)) continue;
+        if (preferTag && String(p.tag || "").toUpperCase() !== preferTag) continue;
+        let d;
+        if (fromX != null && fromY != null) d = Math.hypot(p.x - fromX, p.y - fromY);
+        else d = 0;
+        if (d < bestD && d <= maxD) { bestD = d; best = p; }
+      }
+      return best;
+    };
+    let sym = opn.symbol_id ? planSymbols.find((p) => p.id === opn.symbol_id) : null;
+    // Stored id can go stale after re-extract — fall back by tag near the opening.
+    if (!sym && tag) sym = nearestDoor(tag, Infinity, ax, ay);
+    // Cutout / untagged rows: door mark closest to the opening anchor.
+    if (!sym && ax != null && ay != null) sym = nearestDoor(null, 160, ax, ay);
+    // Legacy openings with no anchor: door on/near this wall outline.
+    if (!sym) {
+      const wallPx = (wall.verts_norm || []).map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+      if (wallPx.length >= 2) {
+        let best = null, bestD = Infinity;
+        for (const p of planSymbols) {
+          if (p.sheet_id !== sheet || !isWallOpeningSymbol(p)) continue;
+          let d = pointInPoly(p.x, p.y, wallPx) ? 0 : Infinity;
+          if (d !== 0) {
+            for (let i = 0; i < wallPx.length; i++) {
+              const a = wallPx[i], b = wallPx[(i + 1) % wallPx.length];
+              d = Math.min(d, distToSeg(p.x, p.y, a[0], a[1], b[0], b[1]));
+            }
+          }
+          if (d < bestD && d < 120) { bestD = d; best = p; }
+        }
+        sym = best;
+      }
+    }
+    const r = el.getBoundingClientRect();
+    const scale = clamp(Math.max(tfRef.current.scale, 2.5));
+    const focusAt = (sx, sy, msg, focusId) => {
+      setTfNow({ x: r.width / 2 - sx * scale, y: r.height / 2 - sy * scale, scale });
+      if (focusId) {
+        setSymbolFocus(focusId);
+        setSymbolHover({
+          id: focusId,
+          cx: Math.min(r.width - 320, Math.max(8, r.width / 2 + 24)),
+          cy: Math.min(r.height - 360, Math.max(8, 72)),
+        });
+      } else {
+        selectShape(wall.id);
+      }
+      if (msg) setCommitMsg(msg);
+    };
+    // Custom cutouts: zoom in on the exact span and highlight it.
+    if (opn.source === "cutout") {
+      if (ax != null && ay != null) {
+        const cutScale = clamp(Math.max(tfRef.current.scale, 4.5));
+        setTfNow({
+          x: r.width / 2 - (ax + sp.xOffset) * cutScale,
+          y: r.height / 2 - ay * cutScale,
+          scale: cutScale,
+        });
+        selectShape(wall.id);
+        let aPt = null, bPt = null;
+        if (Array.isArray(opn.span_a_norm) && Array.isArray(opn.span_b_norm)) {
+          aPt = [opn.span_a_norm[0] * sp.img.w + sp.xOffset, opn.span_a_norm[1] * sp.img.h];
+          bPt = [opn.span_b_norm[0] * sp.img.w + sp.xOffset, opn.span_b_norm[1] * sp.img.h];
+        } else {
+          // Legacy cutouts: reconstruct span from width along the wall line.
+          const upp = uppFor(wall.sheet_id) || 0;
+          const half = upp > 0 ? ((Number(opn.width_ft) || 0) / 2) / upp : 12;
+          const wallPx = (wall.verts_norm || []).map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+          const closed = wallPx.length >= 3
+            && (Math.hypot(wallPx[0][0] - wallPx[wallPx.length - 1][0], wallPx[0][1] - wallPx[wallPx.length - 1][1]) > 0.5);
+          const ring = closed ? [...wallPx, wallPx[0]] : wallPx;
+          const hit = nearestPointOnPolylinePx(ring, ax, ay);
+          if (hit?.kind === "segment" && hit.segIndex > 0) {
+            const p0 = ring[hit.segIndex - 1], p1 = ring[hit.segIndex];
+            const dx = p1[0] - p0[0], dy = p1[1] - p0[1];
+            const len = Math.hypot(dx, dy) || 1;
+            const ux = dx / len, uy = dy / len;
+            aPt = [hit.point[0] - ux * half + sp.xOffset, hit.point[1] - uy * half];
+            bPt = [hit.point[0] + ux * half + sp.xOffset, hit.point[1] + uy * half];
+          } else {
+            aPt = [ax + sp.xOffset - half, ay];
+            bPt = [ax + sp.xOffset + half, ay];
+          }
+        }
+        if (wallCutoutFocusTimerRef.current) clearTimeout(wallCutoutFocusTimerRef.current);
+        setWallCutoutFocus({ a: aPt, b: bPt });
+        wallCutoutFocusTimerRef.current = setTimeout(() => setWallCutoutFocus(null), 4500);
+        setCommitMsg("Jumped to custom cutout.");
+        return;
+      }
+      flyToShape(wall.id);
+      return;
+    }
+    if (sym) {
+      focusAt(sym.x + sp.xOffset, sym.y, sym.tag ? `Door ${sym.tag}` : "Door", sym.id);
+      return;
+    }
+    if (ax != null && ay != null) {
+      focusAt(ax + sp.xOffset, ay, "Jumped to wall opening.", null);
+      return;
+    }
+    flyToShape(wall.id);
+  }
   function deleteShapeFromBoq(shapeId) {
     dispatchShape({ type: "delete", ids: [shapeId] });
     if (selectedId === shapeId) setSelectedId(null);
@@ -5263,8 +6106,7 @@ export default function TakeoffCanvas() {
       setPoly([]);
       return;
     }
-    if (tool === "surface") commitSurface(poly);
-    else if (tool === "wallarea") commitWallPoly(poly);
+    if (tool === "surface" || tool === "wallarea") commitSurface(poly);
     else if (tool === "linear") commitLinear(poly);
     else if (tool === "curve") commitLinear(poly, true);
     else commitPoly(poly, tool === "deduct");
@@ -5290,8 +6132,141 @@ export default function TakeoffCanvas() {
       setSelectedId(null);
     }
   }
-  // Punch checked/selected deduct cutouts into overlapping parent floor masks (holes_norm),
-  // then remove the deduct overlays. Uses existing trim path — no schema change; autosaves via shapes.
+  // Wall cutout → openings[] face deduct (W × H). Floor cutouts still punch holes_norm.
+  // Closed wall_area: uses cutout∩wall. Open Wall Area / Surface (surface_area): cutout
+  // near the linear run uses the cutout ring itself for W×H.
+  // Writes shapesRef synchronously so a following delete does not drop the opening.
+  function applyWallCutoutAsOpening(cutterPx, sheetId, wallParents) {
+    const tp = panelByKey(sheetId);
+    const pool = (wallParents || []).filter((s) => s && (s.measure_role === "wall_area" || s.measure_role === "surface_area"));
+    if (!pool.length || !cutterPx || cutterPx.length < 3 || !tp?.img?.w) return false;
+    const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+    const nearOpenWall = (wallPts, thr = 28) => {
+      if (!wallPts || wallPts.length < 2) return false;
+      let cx = 0, cy = 0;
+      for (const [x, y] of cutterPx) { cx += x; cy += y; }
+      cx /= cutterPx.length; cy /= cutterPx.length;
+      const samples = [[cx, cy], ...cutterPx];
+      for (const [x, y] of samples) {
+        for (let i = 1; i < wallPts.length; i++) {
+          if (distToSeg(x, y, wallPts[i - 1][0], wallPts[i - 1][1], wallPts[i][0], wallPts[i][1]) < thr) return true;
+        }
+      }
+      return false;
+    };
+    let target = null;
+    let clipped = null;
+    if (selectedId) {
+      const sel = pool.find((s) => s.id === selectedId);
+      if (sel) target = sel;
+    }
+    if (!target) {
+      // Prefer closed wall with largest intersection; else nearest open linear run.
+      let bestArea = -1;
+      let bestOpen = null;
+      for (const s of pool) {
+        const outer = toPx(s);
+        if (s.measure_role === "surface_area") {
+          if (nearOpenWall(outer) && !bestOpen) bestOpen = s;
+          continue;
+        }
+        const hit = intersectPolygons(outer, cutterPx);
+        const ring = (hit && hit.length >= 3) ? hit : bboxIntersectRing(cutterPx, outer);
+        const a = ring && ring.length >= 3 ? ringArea(ring) : 0;
+        if (a > bestArea) { bestArea = a; target = s; clipped = ring; }
+      }
+      if (!target && bestOpen) { target = bestOpen; clipped = cutterPx; }
+    }
+    if (!target) {
+      setCommitMsg("Cutout does not overlap the wall area — adjust the cutout onto the wall, then Apply.");
+      return false;
+    }
+    const live = shapesRef.current.find((s) => s.id === target.id) || target;
+    const outerPx = toPx(live);
+    if (!clipped) {
+      if (live.measure_role === "surface_area") {
+        if (!nearOpenWall(outerPx)) {
+          setCommitMsg("Cutout does not overlap the wall area — adjust the cutout onto the wall, then Apply.");
+          return false;
+        }
+        clipped = cutterPx;
+      } else {
+        const hit = intersectPolygons(outerPx, cutterPx);
+        clipped = (hit && hit.length >= 3) ? hit : bboxIntersectRing(cutterPx, outerPx);
+      }
+    }
+    if (!clipped || clipped.length < 3) {
+      setCommitMsg("Cutout does not overlap the wall area — adjust the cutout onto the wall, then Apply.");
+      return false;
+    }
+    const h = live.height_override === true
+      ? Number(live.height_ft) || 0
+      : Number(live.height_ft) || Number(condById[live.condition_id]?.height_ft) || 0;
+    const dims = openingDimsFromCutoutPx(clipped, uppFor(sheetId), h);
+    if (!dims) {
+      setCommitMsg("Set wall height (H) before applying a wall cutout — face deduct needs W × H.");
+      return false;
+    }
+    let cx = 0, cy = 0;
+    for (const [x, y] of clipped) { cx += x; cy += y; }
+    cx /= clipped.length; cy /= clipped.length;
+    const anchor_norm = [cx / tp.img.w, cy / tp.img.h];
+    // Link nearest door / CW / GD mark on this sheet (inside/near the cutout) for fly-to.
+    let nearSym = null, nearD = Infinity;
+    for (const p of planSymbols) {
+      if (p.sheet_id !== sheetId || !isWallOpeningSymbol(p)) continue;
+      const inside = pointInPoly(p.x, p.y, clipped);
+      const d = Math.hypot(p.x - cx, p.y - cy);
+      if ((inside || d < 160) && d < nearD) { nearD = d; nearSym = p; }
+    }
+    let width_ft = dims.width_ft;
+    let height_ft = dims.height_ft;
+    if (live.measure_role === "surface_area") {
+      const runLf = openLen(outerPx) * (uppFor(sheetId) || 0);
+      if (nearSym) {
+        const nk = symbolNoteKey(nearSym.sheet_id, nearSym.tag, nearSym.x, nearSym.y);
+        const fields = resolveSymbolFields(nearSym.schedule || {}, symbolNotes[nk], nearSym.room_name);
+        const parsed = parseOpeningSize(fields.size || nearSym.schedule?.size || "");
+        if (parsed) {
+          width_ft = parsed.width_ft;
+          height_ft = parsed.height_ft;
+        }
+      } else if (height_ft >= h * 0.95) {
+        // Cutout bbox defaults to full wall height — use a typical door leaf instead.
+        height_ft = units === "metric" ? 2.1 / M_PER_FT : 7;
+      }
+      if (runLf > 0) {
+        width_ft = Math.min(width_ft, runLf);
+        if (!nearSym && width_ft >= runLf * 0.9) {
+          width_ft = units === "metric" ? 0.9 / M_PER_FT : 3;
+        }
+      }
+    }
+    const opn = {
+      id: uid("opn"),
+      kind: nearSym ? openingKindForSymbol(nearSym) : "door",
+      tag: nearSym?.tag || "",
+      symbol_id: nearSym?.id || "",
+      anchor_norm,
+      width_ft,
+      height_ft,
+      source: "cutout",
+    };
+    const nextShapes = shapesRef.current.map((s) => {
+      if (s.id !== live.id) return s;
+      const openings = upsertWallOpening([...(s.openings || [])], opn);
+      const next = { ...s, openings };
+      return { ...next, computed: recomputeShape(next) };
+    });
+    shapesRef.current = nextShapes;
+    setShapes(nextShapes);
+    const deductSf = width_ft * height_ft;
+    setCommitMsg(`Wall opening deducted from wall only — ${deductSf.toFixed(1)} SF (edit door H in openings if shorter than wall).`);
+    return true;
+  }
+
+  // Punch checked/selected deduct cutouts into overlapping parents, then remove overlays.
+  // Floors: holes_norm trim. Walls: openings[] W×H face deduct. Autosaves via shapes.
   function applyCutoutsToParents(ids) {
     const list = [...new Set(ids)].filter(Boolean);
     if (!list.length) return;
@@ -5304,16 +6279,51 @@ export default function TakeoffCanvas() {
       const cutterPx = cut.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
       if (cutterPx.length < 3) continue;
       const parents = shapesRef.current.filter((s) => {
-        if (s.id === cut.id || s.sheet_id !== cut.sheet_id || s.measure_role !== "floor_area") return false;
-        if (!aiDetectShapeRevealed(s) && isAiDetectFloorPlan(s.sheet_id)) return false;
+        if (s.id === cut.id || s.sheet_id !== cut.sheet_id) return false;
+        if (s.measure_role !== "floor_area" && s.measure_role !== "wall_area" && s.measure_role !== "surface_area") return false;
+        if (s.measure_role === "floor_area" && !aiDetectShapeRevealed(s) && isAiDetectFloorPlan(s.sheet_id)) return false;
         const outer = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+        if (s.measure_role === "surface_area") {
+          if (outer.length < 2) return false;
+          let cx = 0, cy = 0;
+          for (const [x, y] of cutterPx) { cx += x; cy += y; }
+          cx /= cutterPx.length; cy /= cutterPx.length;
+          const thr = 28;
+          for (const [x, y] of [[cx, cy], ...cutterPx]) {
+            for (let i = 1; i < outer.length; i++) {
+              if (distToSeg(x, y, outer[i - 1][0], outer[i - 1][1], outer[i][0], outer[i][1]) < thr) return true;
+            }
+          }
+          return false;
+        }
         return polygonsOverlap(cutterPx, outer) || cutterPx.some(([x, y]) => pointInPoly(x, y, outer));
       });
-      if (parents.length) {
-        removeOverlapFromVictims(cutterPx, cut.sheet_id, parents);
-        applied += 1;
+      const wallParents = parents.filter((s) => s.measure_role === "wall_area" || s.measure_role === "surface_area");
+      const floorParents = parents.filter((s) => s.measure_role === "floor_area");
+      // Cutout centered on a floor mask must punch that floor — never divert to a
+      // surrounding wall_area (its outer ring contains rooms as “inside”).
+      let cx = 0, cy = 0;
+      for (const [x, y] of cutterPx) { cx += x; cy += y; }
+      cx /= cutterPx.length; cy /= cutterPx.length;
+      const floorCovering = floorParents.filter((s) => {
+        const outer = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+        if (!pointInPoly(cx, cy, outer)) return false;
+        if ((s.holes_norm || []).some((hole) => {
+          const hp = hole.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+          return pointInPoly(cx, cy, hp);
+        })) return false;
+        return true;
+      });
+      let ok = false;
+      if (floorCovering.length) {
+        ok = !!removeOverlapFromVictims(cutterPx, cut.sheet_id, floorCovering);
+      } else if (wallParents.length) {
+        ok = applyWallCutoutAsOpening(cutterPx, cut.sheet_id, wallParents);
+      } else if (floorParents.length) {
+        ok = !!removeOverlapFromVictims(cutterPx, cut.sheet_id, floorParents);
       }
-      if (shapesRef.current.some((s) => s.id === id)) {
+      if (ok) applied += 1;
+      if (ok && shapesRef.current.some((s) => s.id === id)) {
         dispatchShape({ type: "delete", ids: [id] });
       }
     }
@@ -6275,7 +7285,13 @@ export default function TakeoffCanvas() {
   // VISIBLE shapes through the same conditionTotals rules the Report uses —
   // one source of role math, two scopes. Memoized: visRowById is a prop of the
   // memoized panel, so its identity must only change when the totals can.
-  const visRows = useMemo(() => conditionTotals(conditions, visibleShapes), [conditions, visibleShapes]);
+  const visibleShapesMeasured = useMemo(() => visibleShapes.map((s) => {
+    if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
+      return { ...s, computed: recomputeShape(s) };
+    }
+    return s;
+  }), [visibleShapes, scales, conditions]);
+  const visRows = useMemo(() => conditionTotals(conditions, visibleShapesMeasured), [conditions, visibleShapesMeasured]);
   const visRowById = useMemo(() => new Map(visRows.map((r) => [r.id, r])), [visRows]);
   // Zone check: the SAME conditionTotals rules on the shapes whose center point
   // sits inside the traced zone (lib/zone.js) — third scope of the one role math.
@@ -6312,7 +7328,14 @@ export default function TakeoffCanvas() {
   const checkErrPct = checkFeet && checkStatedFeet > 0 ? ((checkFeet - checkStatedFeet) / checkStatedFeet) * 100 : null;
 
   const markupCount = markups.filter((m) => panelKeySet.has(m.sheet_id)).length;
-  const selShape = selectedId ? visibleShapes.find((s) => s.id === selectedId) : null;
+  const selShapeRaw = selectedId ? visibleShapes.find((s) => s.id === selectedId) : null;
+  const selShape = useMemo(() => {
+    if (!selShapeRaw) return null;
+    if (selShapeRaw.measure_role === "surface_area" || selShapeRaw.measure_role === "wall_area") {
+      return { ...selShapeRaw, computed: recomputeShape(selShapeRaw) };
+    }
+    return selShapeRaw;
+  }, [selShapeRaw, visibleShapes, scales, conditions]);
   const setShapeHeight = (raw) => {
     const v = Math.max(0, parseFloat(raw) || 0);
     setShapes((ss) => ss.map((s) => {
@@ -6328,10 +7351,152 @@ export default function TakeoffCanvas() {
       return { ...next, computed: recomputeShape(next) };
     }));
   };
+  // Door/window openings on wall face — qty deduct only (not floor-style holes).
+  const patchWallOpeningsFor = (shapeId, mutate) => {
+    if (!shapeId) return;
+    setShapes((ss) => ss.map((s) => {
+      if (s.id !== shapeId) return s;
+      if (s.measure_role !== "wall_area" && s.measure_role !== "surface_area" && s.measure_role !== "floor_area") return s;
+      const openings = mutate([...(s.openings || [])]);
+      const next = { ...s, openings };
+      return { ...next, computed: recomputeShape(next) };
+    }));
+  };
+  const patchSelectedWallOpenings = (mutate) => patchWallOpeningsFor(selectedId, mutate);
+  // Start a linear custom cutout on the selected wall_area — snaps only to that perimeter.
+  const startWallCutoutLinear = () => {
+    const s = selectedId ? shapesRef.current.find((x) => x.id === selectedId) : null;
+    if (!s || s.measure_role !== "wall_area") {
+      setCommitMsg("Select a wall area line first — custom cutouts snap only to wall area.");
+      return;
+    }
+    setTool("select");
+    setWallCutoutDraft({ shapeId: s.id, a: null });
+    setCommitMsg("Custom cutout — click two points on the wall area line (snaps to that line). Esc cancels · click again for another.");
+  };
+  const commitWallCutoutLinear = (shapeId, a, b) => {
+    const wall = shapesRef.current.find((s) => s.id === shapeId);
+    if (!wall || wall.measure_role !== "wall_area") return;
+    const tp = panelByKey(wall.sheet_id);
+    if (!tp?.img?.w) return;
+    const upp = uppFor(wall.sheet_id);
+    if (!(upp > 0)) {
+      setCommitMsg("Calibrate scale before adding a custom cutout.");
+      return;
+    }
+    const width_ft = Math.hypot(b[0] - a[0], b[1] - a[1]) * upp;
+    if (!(width_ft > 0.05)) {
+      setCommitMsg("Cutout too short — click a longer span on the wall area line.");
+      return;
+    }
+    const hWall = wall.height_override === true
+      ? Number(wall.height_ft) || 0
+      : Number(wall.height_ft) || Number(condById[wall.condition_id]?.height_ft) || 0;
+    const defaultH = units === "metric" ? 2.1 / M_PER_FT : 7;
+    const height_ft = hWall > 0 ? Math.min(defaultH, hWall) : defaultH;
+    const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    const anchor_norm = [(mx - tp.xOffset) / tp.img.w, my / tp.img.h];
+    addWallOpening({
+      source: "cutout",
+      tag: "",
+      kind: "door",
+      width_ft: +width_ft.toFixed(4),
+      height_ft: +height_ft.toFixed(4),
+      anchor_norm,
+      span_a_norm: [(a[0] - tp.xOffset) / tp.img.w, a[1] / tp.img.h],
+      span_b_norm: [(b[0] - tp.xOffset) / tp.img.w, b[1] / tp.img.h],
+    }, shapeId);
+    setSelectedId(shapeId);
+    setCommitMsg(`Custom cutout added — ${units === "metric" ? `${(width_ft * M_PER_FT).toFixed(2)} m` : `${width_ft.toFixed(2)} ft`} wide. Click again for another, or Esc to finish.`);
+    setWallCutoutDraft({ shapeId, a: null });
+    if (rubberRef.current) rubberRef.current.style.display = "none";
+  };
+  const addWallOpening = (partial = {}, shapeId = selectedId) => {
+    const parsed = partial.size ? parseOpeningSize(partial.size) : null;
+    const defaultW = units === "metric" ? 0.9 / M_PER_FT : 3;
+    const defaultH = units === "metric" ? 2.1 / M_PER_FT : 7;
+    const wall = shapeId ? shapesRef.current.find((s) => s.id === shapeId) : null;
+    const tp = wall ? panelByKey(wall.sheet_id) : null;
+    let symbol_id = partial.symbol_id || "";
+    let anchor_norm = Array.isArray(partial.anchor_norm) ? partial.anchor_norm : null;
+    const tag = partial.tag || "";
+    let symKind = partial.kind || "door";
+    if ((!symbol_id || !anchor_norm) && tag && wall && tp?.img?.w) {
+      const sym = planSymbols.find((p) =>
+        p.sheet_id === wall.sheet_id
+        && isWallOpeningSymbol(p)
+        && String(p.tag || "").toUpperCase() === String(tag).toUpperCase());
+      if (sym) {
+        symbol_id = symbol_id || sym.id;
+        symKind = openingKindForSymbol(sym);
+        if (!anchor_norm) anchor_norm = [sym.x / tp.img.w, sym.y / tp.img.h];
+      }
+    }
+    const opn = {
+      id: uid("opn"),
+      kind: symKind,
+      tag,
+      ...(symbol_id ? { symbol_id } : {}),
+      ...(anchor_norm ? { anchor_norm } : {}),
+      ...(Array.isArray(partial.span_a_norm) ? { span_a_norm: partial.span_a_norm } : {}),
+      ...(Array.isArray(partial.span_b_norm) ? { span_b_norm: partial.span_b_norm } : {}),
+      width_ft: Number(partial.width_ft) > 0 ? Number(partial.width_ft) : (parsed?.width_ft || defaultW),
+      height_ft: Number(partial.height_ft) > 0 ? Number(partial.height_ft) : (parsed?.height_ft || defaultH),
+      source: partial.source || (tag || parsed ? "schedule" : "manual"),
+    };
+    patchWallOpeningsFor(shapeId, (list) => upsertWallOpening(list, opn));
+  };
+  const deductDoorOnWall = (shapeId, ref) => {
+    if (!shapeId || !ref?.tag) return;
+    const sym = ref.symbol_id ? planSymbols.find((p) => p.id === ref.symbol_id) : null;
+    const wall = shapesRef.current.find((s) => s.id === shapeId);
+    const tp = wall ? panelByKey(wall.sheet_id) : null;
+    let size = ref.size || "";
+    if (sym && tp?.img?.w) {
+      const nk = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+      const fields = resolveSymbolFields(sym.schedule || {}, symbolNotes[nk], sym.room_name);
+      size = fields.size || sym.schedule?.size || size;
+    }
+    setSelectedId(shapeId);
+    addWallOpening({
+      tag: ref.tag,
+      kind: sym ? openingKindForSymbol(sym) : (ref.kind || "door"),
+      size,
+      symbol_id: ref.symbol_id || sym?.id || "",
+      source: "schedule",
+    }, shapeId);
+    setCommitMsg(`Door ${ref.tag} deducted from wall face — edit H in the readout if net looks off.`);
+  };
+  const updateWallOpening = (opnId, patch) => {
+    patchSelectedWallOpenings((list) => list.map((o) => (o.id === opnId ? { ...o, ...patch } : o)));
+  };
+  const removeWallOpening = (opnId) => {
+    patchSelectedWallOpenings((list) => list.filter((o) => o.id !== opnId));
+  };
+  const doorScheduleOptions = useMemo(() => {
+    if (!selShape || (selShape.measure_role !== "wall_area" && selShape.measure_role !== "surface_area")) return [];
+    const seen = new Set();
+    const out = [];
+    for (const sym of planSymbols) {
+      if (sym.sheet_id !== selShape.sheet_id || !isWallOpeningSymbol(sym)) continue;
+      const tag = String(sym.tag || "").toUpperCase();
+      if (!tag || seen.has(tag)) continue;
+      seen.add(tag);
+      const nk = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+      const fields = resolveSymbolFields(sym.schedule || {}, symbolNotes[nk], sym.room_name);
+      out.push({
+        tag,
+        size: fields.size || sym.schedule?.size || "",
+        symbol_id: sym.id,
+        kind: openingKindForSymbol(sym),
+      });
+    }
+    return out.sort((a, b) => a.tag.localeCompare(b.tag));
+  }, [selShape, planSymbols, symbolNotes]);
   // Floating Condition Edit — apply only to the selected takeoff and/or the
   // in-progress draw. Appearance rides on the shape (saved in annotations);
   // other fields clone a private condition for that one shape so peers keep theirs.
-  const FLOAT_APPEARANCE_KEYS = ["color", "fill", "hatch", "line_style"];
+  const FLOAT_APPEARANCE_KEYS = ["color", "fill", "hatch", "line_style", "weight"];
   const resolveShapeLook = (shape, cond) => {
     if (!cond) return null;
     if (!shape?.appearance_override) return cond;
@@ -6341,6 +7506,7 @@ export default function TakeoffCanvas() {
       ...(shape.fill != null ? { fill: shape.fill } : {}),
       ...(shape.hatch != null ? { hatch: shape.hatch } : {}),
       ...(shape.line_style != null ? { line_style: shape.line_style } : {}),
+      ...(shape.weight != null ? { weight: shape.weight } : {}),
     };
   };
   const isolateShapeCondition = (shapeId, patch) => {
@@ -6457,13 +7623,13 @@ export default function TakeoffCanvas() {
   const liveDrawLook = drawAppearance && aCond ? { ...aCond, ...drawAppearance } : aCond;
   const measureActive = MEASURE_TOOLS.some((t) => t.id === tool);
   const faceTool = MEASURE_TOOLS.find((t) => t.id === (measureActive ? tool : lastMeasureRef.current)) || MEASURE_TOOLS[0];
-  const finishOk = ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "curve") && poly.length >= 2);
+  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve") && poly.length >= 2);
 
-  // panel-toggle for the right-edge rail — square like the zoom cluster, count as a
+  // panel-toggle for the right-edge rail — circular like the zoom cluster, count as a
   // tiny mono line under the icon. Lives on the canvas, costs the toolbar zero rows.
   const panelBtn = (onClick, iconName, label, isOn, count) => (
-    <button onClick={onClick} title={label}
-      style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, width: 34, minHeight: 34, padding: "5px 0 4px", border: `1px solid ${isOn ? "var(--ink)" : "var(--ink-faint)"}`, background: isOn ? "var(--ink)" : "var(--paper-bright)", color: isOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, lineHeight: 1 }}>
+    <button className="canvas-circle-btn" onClick={onClick} title={label}
+      style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, width: 40, height: 40, padding: 0, borderRadius: 999, border: `1px solid ${isOn ? "var(--ink)" : "var(--ink-faint)"}`, background: isOn ? "var(--ink)" : "var(--paper-bright)", color: isOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, lineHeight: 1, flexShrink: 0, boxShadow: isOn ? "none" : "0 1px 3px rgba(14, 26, 46, 0.12)" }}>
       <Icon name={iconName} size={15} />{count ? <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5 }}>{count}</span> : null}
     </button>
   );
@@ -6764,6 +7930,9 @@ export default function TakeoffCanvas() {
   const scaleItems = [];
   // one-step revert after a rescale that changed committed quantities on this
   // sheet — the oops-hatch for a mistyped recalibrate (ephemeral, one slot)
+  scaleItems.push({ id: "calibrate", icon: "measure", label: "Calibrate two points…", title: "Calibrate — click two points of a known dimension", active: tool === "calibrate", onSelect: () => setTool("calibrate") });
+  scaleItems.push({ id: "check", icon: "target", label: "Check a dimension…", shortcut: "K", title: "Check a dimension (K) — click both ends of a printed dimension string; compares the measured length against what the drawing says", active: tool === "check", onSelect: () => setTool("check") });
+  scaleItems.push("divider");
   if (prevScale && prevScale.key === focusPanel.key && scales[focusPanel.key] !== prevScale.upp) {
     const wasLabel = STANDARD_SCALES.find((x) => Math.abs(x.upp - prevScale.upp) < 1e-9)?.label
       || (prevScale.source === "calibrated" ? "calibrated" : "custom");
@@ -6793,9 +7962,6 @@ export default function TakeoffCanvas() {
   }
   scaleItems.push({ section: "Standard" });
   for (const s of STANDARD_SCALES) scaleItems.push({ id: s.label, label: s.label, active: stdValue === s.label, onSelect: () => { rescaleSheet(focusPanel.key, s.upp); setScaleSources((sc) => ({ ...sc, [focusPanel.key]: "standard" })); showScaleGuide(focusPanel.key, s.upp, s.label); } });
-  scaleItems.push("divider");
-  scaleItems.push({ id: "calibrate", icon: "calibrate", label: "Calibrate two points…", title: "Calibrate — click two points of a known dimension", active: tool === "calibrate", onSelect: () => setTool("calibrate") });
-  scaleItems.push({ id: "check", icon: "check", label: "Check a dimension…", shortcut: "K", title: "Check a dimension (K) — click both ends of a printed dimension string; compares the measured length against what the drawing says", active: tool === "check", onSelect: () => setTool("check") });
   scaleItems.push({ note: "Remembered per sheet." });
 
   // One-Click fill sensitivity — lives in the render menu now, so arming
@@ -6848,229 +8014,281 @@ export default function TakeoffCanvas() {
           the SHEET (arm tools, toggle aids, set scale). Neither row wraps, and
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
-      <div style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 14px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", whiteSpace: "nowrap" }}>
-        <button type="button" onClick={runAiDetection}
-          title="Auto-Takeoff — reveal masks one by one on this floor plan. Click again to restart. Revealed masks stay visible when switching between A1105–A1109."
-          style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 14px", border: "1px solid var(--cobalt)", borderRadius: 999, background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1, whiteSpace: "nowrap" }}>
-          <Icon name="sparkle" size={15} />
-          Auto-Takeoff
-        </button>
-        {/* team cloud mode: always a way to leave this project, plus a way to
-            browse the rest of the team's projects when the build names a root
-            — fixed presence for the whole session (cloudMode is set before the
-            canvas mounts), so neither ever shifts deck-1 mid-work */}
-        {cloudMode && (
-          <button type="button" onClick={closeProject} title="Close this project and return to the local canvas"
-            style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12.5, lineHeight: 1 }}>
-            Close project
-          </button>
-        )}
-        {cloudMode && browseProjects && (
-          <button type="button" onClick={browseProjects} title="Back to your team's projects"
-            style={{ padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12.5, lineHeight: 1 }}>
-            Projects
-          </button>
-        )}
-        <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }}
-          onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-        <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
-          onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-        <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: "var(--ink-muted)", minWidth: 44, fontFamily: "var(--f-mono)" }}>{saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : ""}</span>
-        {materialRates.length > 0 && projectEstimateTotal > 0 && (
-          <span title="Running project estimate (priced conditions)" style={{ fontSize: 11, fontWeight: 700, color: "var(--cobalt)", fontFamily: "var(--f-mono)", padding: "4px 8px", border: "1px solid var(--cobalt)", borderRadius: 4 }}>
-            {money(projectEstimateTotal, projectCurrency)}
-          </span>
-        )}
-        <button onClick={() => setShowBoq((v) => !v)} disabled={!shapes.length && !conditions.length}
-          title="Bill of Quantities — floor-plan masked takeoff by sheet, with editable line details"
-          style={{ padding: "8px 14px", border: `1px solid ${showBoq ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showBoq ? "var(--cobalt)" : "transparent", color: showBoq ? "var(--paper-bright)" : "var(--ink)", cursor: shapes.length || conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: shapes.length || conditions.length ? 1 : 0.5 }}>BOQ</button>
-        <button onClick={() => setShowEstimate((v) => !v)} disabled={!conditions.length}
-          title="Unit-cost estimate worksheet — material and labour breakdown"
-          style={{ padding: "8px 14px", border: `1px solid ${showEstimate ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showEstimate ? "var(--cobalt)" : "transparent", color: showEstimate ? "var(--paper-bright)" : "var(--ink)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", opacity: conditions.length ? 1 : 0.5 }}>Estimate</button>
-        <button onClick={() => setShowRates((v) => !v)}
-          title="Material rates catalog — AED per m² / m / EA"
-          style={{ padding: "8px 14px", border: `1px solid ${showRates ? "var(--cobalt)" : "var(--ink-faint)"}`, background: showRates ? "var(--cobalt)" : "transparent", color: showRates ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Rates</button>
-        <button onClick={() => setShowReport(true)} disabled={!conditions.length} title="Open the takeoff report — per-condition breakdown with waste, plus CSV / JSON export."
-          style={{ padding: "8px 14px", border: "none", background: conditions.length ? "var(--ink)" : "var(--text-faint)", color: "var(--paper-bright)", cursor: conditions.length ? "pointer" : "default", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase" }}>Report</button>
-        {/* Deliberately subtle, not a button: local-first app, cloud mode is an
-            opt-in extra. Only when ALREADY signed in (never a sign-in entry
-            point in the toolbar — that lives solely on the landing link), no
-            cloud project is open, and the build names a Projects root. */}
-        {!cloudMode && googleUser && isGoogleConfigured() && projectHomeFolderId() && (
-          <Link to="/projects" style={{ fontSize: 11.5, color: "var(--ink-muted)", whiteSpace: "nowrap" }}>
-            browse team projects
-          </Link>
-        )}
-        <AccountChip note={cloudMode ? "Synced to Google Drive" : "Local workspace"} onOpenChange={onMenuDepth} />
-      </div>
+      {/* Unified Floating Toolbar */}
+      <div style={{ position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "transparent", userSelect: "none" }}>
+        <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+        <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
-      {/* deck 2 — the work bar: drafting-style captions above each cluster */}
-      <div style={{ display: "flex", gap: 7, alignItems: "center", padding: "20px 14px 8px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)", whiteSpace: "nowrap" }}>
-        {cluster("Mode",
-          <span style={{ display: "inline-flex", border: "1px solid var(--ink-faint)" }}>
-            {segBtn("pan", "pan", "Pan (P) — or hold right-click / Space mid-measure")}
-            {segBtn("select", "select", "Select (V) — pick a takeoff, drag points", true)}
-          </span>
-        )}
-        {vRule}
-        {cluster("Draw", <>
-          <ToolMenu
-            title="Measure — the face shows the armed tool"
-            active={measureActive}
-            onOpenChange={onMenuDepth}
-            face={<><Icon name={faceTool.icon} size={15} /><span style={{ opacity: measureActive ? 1 : 0.6 }}>{faceTool.label}</span></>}
-            items={MEASURE_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))}
-          />
-          <ToolMenu
-            title="Cut Out — subtract voids/columns (counts negative)"
-            active={tool === "deduct"} accent="danger"
-            onOpenChange={onMenuDepth}
-            face={<><Icon name="deduct" size={15} /><span>Cut Out</span></>}
-            items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))}
-          />
-          <span style={{ position: "relative", display: "inline-flex" }}>
-            <ToolMenu
-              title="Markup — annotations, not measurements"
-              active={MARKUP_IDS.includes(tool)}
-              onOpenChange={onMenuDepth}
-              face={<><Icon name="markup" size={15} /><span>Markup</span></>}
-              items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))}
-            />
-            {/* highlighter style popover — visible while the tool is armed (hatch-picker chrome) */}
-            {tool === "highlighter" && (
-              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, boxShadow: "0 6px 22px rgba(0,0,0,.16)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
-                <div style={{ display: "flex", gap: 6 }} title="Ink">
-                  {HL_INKS.map((c) => (
-                    <button key={c} onClick={() => setHlStyle((st) => ({ ...st, color: c }))}
-                      style={{ width: 16, height: 16, padding: 0, background: c, border: hlStyle.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />
-                  ))}
+        {/* Central Toolbars - The Pill UI */}
+        <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+          
+          {/* Pill 1 */}
+          <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, background: "light-dark(#dbe3e6, var(--paper-shadow))", borderRadius: 14, border: "1px solid var(--ink-faint)", padding: "3px 12px", boxShadow: "var(--shadow-1)", whiteSpace: "nowrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
+                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>ESTIMATION & TAKEOFF</div>
+                <div
+                  className={estimateValuePulse ? "estimate-value-live is-pulse" : "estimate-value-live"}
+                  style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--f-mono)", lineHeight: 1.1 }}
+                  title="Live takeoff value — updates as quantities and rates change"
+                >
+                  {money(projectEstimateTotal || 0, projectCurrency)}
                 </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  {HL_SIZES.map(([lbl, px]) => (
-                    <button key={lbl} onClick={() => setHlStyle((st) => ({ ...st, size: px }))} title={`${lbl === "F" ? "Fine" : lbl === "M" ? "Medium" : "Broad"} tip`}
-                      style={{ width: 22, height: 20, padding: 0, fontFamily: "var(--f-mono)", fontSize: 10, cursor: "pointer", border: hlStyle.size === px ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: hlStyle.size === px ? "var(--ink)" : "transparent", color: hlStyle.size === px ? "var(--paper-bright)" : "var(--ink)" }}>{lbl}</button>
-                  ))}
-                  <span style={{ width: 1, alignSelf: "stretch", background: "var(--ink-faint)" }} />
-                  {[["chisel", "M4 16 L14 6 L18 10 L8 20 Z"], ["round", "M5 17 Q12 3 19 13"]].map(([tip, d]) => (
-                    <button key={tip} onClick={() => setHlStyle((st) => ({ ...st, tip }))} title={`${tip} tip`}
-                      style={{ width: 24, height: 20, padding: 1, cursor: "pointer", border: hlStyle.tip === tip ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: "transparent" }}>
-                      <svg viewBox="0 0 24 24" width="18" height="14">{tip === "chisel"
-                        ? <path d={d} fill="currentColor" stroke="none" />
-                        : <path d={d} fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />}</svg>
-                    </button>
-                  ))}
-                </div>
+                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>TAKE-OFF VALUE</div>
               </div>
-            )}
-          </span>
-          <ToolMenu
-            title="Edit takeoffs"
-            onOpenChange={onMenuDepth}
-            face={<span>Edit</span>}
-            items={[
-              { id: "copy", icon: "copy", label: "Copy", shortcut: "⌘C", disabled: !selectedId, onSelect: copySelected },
-              { id: "paste", icon: "paste", label: "Paste", shortcut: "⌘V", disabled: !clipRef.current.length, onSelect: () => pasteClipboard() },
-              { id: "dup", icon: "duplicate", label: "Duplicate", shortcut: "⌘D", disabled: !selectedId, onSelect: duplicateSelected },
-              "divider",
-              { id: "flipH", label: "Flip Horizontal", disabled: !selectedId, onSelect: () => flipSelected("h") },
-              { id: "flipV", label: "Flip Vertical", disabled: !selectedId, onSelect: () => flipSelected("v") },
-              "divider",
-              { id: "finish", icon: "check", label: `Finish shape${poly.length ? ` (${poly.length} pts)` : ""}`, shortcut: "↵", disabled: !finishOk, onSelect: finishShape },
-              { id: "undopt", icon: "undo", label: "Undo last point", shortcut: "⌘Z", disabled: !poly.length, onSelect: () => setPoly((q) => q.slice(0, -1)) },
-              { id: "undoshape", icon: "undo", label: "Undo last shape", disabled: !visibleShapes.length, onSelect: undoLast },
-              { id: "redo", label: "Redo", shortcut: "⇧⌘Z", onSelect: redoShapeCommand },
-              "divider",
-              { id: "del", icon: "close", label: "Delete selected", shortcut: "⌫", disabled: !selectedId, tint: "var(--c-danger)", onSelect: deleteSelected },
-            ]}
-          />
-        </>)}
-        {vRule}
-        {cluster("Aids", <>
-          <button onClick={() => setTool((t) => (t === "zone" ? "select" : "zone"))}
-            title="Zone check — trace a region (an apartment, a wing) to read every condition's quantities inside it, materials included. Nothing is saved; the outline clears when you leave the tool."
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${tool === "zone" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: tool === "zone" ? "var(--cobalt)" : "transparent", color: tool === "zone" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-            <Icon name="zone" size={15} />Zone
-          </button>
-          <button onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${snapOn ? "var(--c-positive)" : "var(--ink-faint)"}`, background: snapOn ? "var(--c-positive)" : "transparent", color: snapOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-            <Icon name="snap" size={15} />Snap
-          </button>
-          <button onClick={() => setAngleOn((v) => !v)} title="45°/90° angle guides — the next segment locks to the 45° family as you draw (hold ⇧ to force the lock at any angle)"
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: `1px solid ${angleOn ? "var(--cobalt)" : "var(--ink-faint)"}`, background: angleOn ? "var(--cobalt)" : "transparent", color: angleOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12.5, lineHeight: 1 }}>
-            <Icon name="angle" size={15} />45°
-          </button>
-          <ToolMenu
-            title="Render & fill settings — Hi-Res and One-Click fill sensitivity"
-            onOpenChange={onMenuDepth}
-            face={<Icon name="sliders" size={15} />}
-            menuStyle={{ minWidth: 252 }}
-            items={[
-              {
-                id: "hires", icon: "hiRes", label: "Hi-Res render (this sheet)", checked: hiResOn(focusPanel.key), stayOpen: true, onSelect: toggleHiRes,
-                title: `Hi-Res rendering for ${labelFor(focusPanel)} — the sheet re-rasters at an auto quality budget (~28MP), so memory stays bounded even side-by-side; crisper when zoomed in. Saved per sheet, per user. Quantities are unaffected.`,
-              },
-              "divider",
-              { id: "fill", custom: fillRow },
-              { id: "wall", custom: wallSensRow },
-            ]}
-          />
-        </>)}
-        {aCond && vRule}
-        {aCond && cluster("Condition",
-          <button
-            type="button"
-            onClick={() => setShowCondEdit(true)}
-            title={`Edit appearance for ${aCond.finish_tag}`}
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 7,
-              padding: "6px 12px", border: "1px solid var(--ink-faint)", borderRadius: 999,
-              background: showCondEdit ? "var(--cobalt)" : "var(--paper-bright)",
-              color: showCondEdit ? "var(--paper-bright)" : "var(--ink)",
-              cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "var(--f-mono)",
-              lineHeight: 1, whiteSpace: "nowrap",
-            }}
-          >
-            <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0 }}>
-              <HatchSwatch type={aCond.hatch || "solid"} line={aCond.color} fill={aCond.fill} />
-            </span>
-            Edit {aCond.finish_tag}
-          </button>
-        )}
-        {/* The caption always shows the ACTIVE label (+ the cobalt highlight keyed
-            on it) so what a new trace will get is never hidden — even in Select
-            mode, where the dropdown VALUE instead shows the selected shape's label
-            so changing it reliably re-labels that shape (a value-always-active
-            select couldn't reassign to the already-active label — onChange wouldn't fire). */}
-        {shapeLabels.length > 0 && cluster(
-          tool === "select" && selectedId ? `Label · ${activeLabel || "none"} → shape` : (activeLabel ? `Label · ${activeLabel}` : "Label"),
-          <select
-            value={tool === "select" && selectedId ? shapeLabelValue(shapes.find((s) => s.id === selectedId)) : (activeLabel || "")}
-            onChange={(e) => activateLabel(e.target.value || null)}
-            title="Phase/area label. The caption shows the ACTIVE label (what new takeoffs get). With a shape selected (Select tool), the dropdown shows and re-labels that shape. Manage the list in the Columns tab."
-            style={{ fontFamily: "var(--f-mono)", fontSize: 11.5, padding: "5px 6px", border: `1px solid ${activeLabel ? "var(--cobalt)" : "var(--ink-faint)"}`, background: activeLabel ? "var(--cobalt)" : "transparent", color: activeLabel ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", maxWidth: 150 }}>
-            <option value="">No label</option>
-            {shapeLabels.map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        )}
-        <div style={{ flex: 1 }} />
-        {cluster(`Scale — ${labelFor(focusPanel)}`,
-          <>
-            <button onClick={() => setUnits((u) => (u === "metric" ? "imperial" : "metric"))}
-              title={units === "metric" ? "Metric display (m² / m) — click for imperial. Calibrate in meters; 1:50-style scales in the list. Display only — stored takeoffs never change." : "Imperial display (SF / LF) — click for metric (m² / m, calibrate in meters, 1:50-style scales). Display only — stored takeoffs never change."}
-              style={{ padding: "6px 10px", border: `1px solid ${units === "metric" ? "var(--cobalt)" : "var(--ink-faint)"}`, background: units === "metric" ? "var(--cobalt)" : "transparent", color: units === "metric" ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 700, fontFamily: "var(--f-mono)", fontSize: 11, lineHeight: 1 }}>
-              {units === "metric" ? "m" : "ft"}
-            </button>
-            <ToolMenu
-              title={scaleTitle}
-              onOpenChange={onScaleMenuDepth}
-              face={<span>{scaleFace}</span>}
-              faceStyle={{ fontFamily: "var(--f-mono)", fontSize: 11.5, ...scaleFaceStyle }}
-              menuStyle={{ minWidth: 250 }}
-              items={scaleItems}
+              <EstimateValueSpark series={estimateHistory} currency={projectCurrency} />
+            </div>
+
+            {/* Auto-Takeoff + Takeoff Tool Palette — side by side on the bottom */}
+            <div className="takeoff-sticky-stack">
+              <button type="button" onClick={runAiDetection}
+                title="Auto-Takeoff"
+                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "4px 10px", border: "1px solid var(--c-positive)", borderRadius: 999, background: "transparent", color: "var(--c-positive)", cursor: "pointer", fontWeight: 600, fontSize: 11, lineHeight: 1, whiteSpace: "nowrap" }}>
+                <Icon name="sparkle" size={11} />
+                Auto-Takeoff
+              </button>
+
+              <span ref={paletteRef} className="takeoff-sticky-menu takeoff-sticky-menu--stack">
+                <button
+                  type="button"
+                  className={`takeoff-sticky-trigger takeoff-sticky-trigger--compact${paletteOpen ? " is-open" : ""}`}
+                  title="Takeoff Tool Palette"
+                  onClick={() => setPaletteOpen((v) => !v)}
+                  aria-expanded={paletteOpen}
+                >
+                  <Icon name="takeoffs" size={11} />
+                  Takeoff Tool Palette
+                </button>
+                {paletteOpen && (
+                  <div className="takeoff-sticky-panel-shell">
+                    <svg className="takeoff-sticky-panel-curve takeoff-sticky-panel-curve--left" viewBox="0 0 22 34" aria-hidden="true">
+                      <path d="M 3 0 C 3 11, 17 22, 20 34" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                    <div className="takeoff-sticky-panel" role="menu">
+                      <div className="takeoff-sticky-panel-inner">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={`takeoff-sticky-opt${showBoq ? " is-active" : ""}`}
+                        disabled={!shapes.length && !conditions.length}
+                        onClick={() => { setShowBoq((v) => !v); setPaletteOpen(false); }}
+                      >
+                        <Icon name="sheets" size={15} /> BOQ
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={`takeoff-sticky-opt${showEstimate ? " is-active" : ""}`}
+                        disabled={!conditions.length}
+                        onClick={() => { setShowEstimate((v) => !v); setPaletteOpen(false); }}
+                      >
+                        <Icon name="spec" size={15} /> Estimate
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={`takeoff-sticky-opt${showRates ? " is-active" : ""}`}
+                        onClick={() => { setShowRates((v) => !v); setPaletteOpen(false); }}
+                      >
+                        <Icon name="takeoffs" size={15} /> Rates
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="takeoff-sticky-opt is-report"
+                        disabled={!conditions.length}
+                        onClick={() => { setShowReport(true); setPaletteOpen(false); }}
+                      >
+                        <Icon name="document" size={15} /> Report
+                      </button>
+                    </div>
+                    </div>
+                    <svg className="takeoff-sticky-panel-curve takeoff-sticky-panel-curve--right" viewBox="0 0 22 34" aria-hidden="true">
+                      <path d="M 19 0 C 19 11, 5 22, 2 34" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                )}
+              </span>
+            </div>
+          </div>
+
+          {/* Pill 2 */}
+          <div style={{ display: "flex", alignItems: "stretch", background: "light-dark(#dbe3e6, var(--paper-shadow))", borderRadius: 14, border: "1px solid var(--ink-faint)", padding: "3px 12px", gap: 10, boxShadow: "var(--shadow-1)", whiteSpace: "nowrap" }}>
+            
+            {/* Mode */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>MODE</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <span className="mode-circle-wrap">
+                  <button type="button" onClick={() => setTool("select")} title="Select"
+                    className={`mode-circle-btn${tool === "select" ? " is-on" : ""}`}>
+                    <Icon name="select" size={14} />
+                  </button>
+                  <span className="mode-circle-hint" aria-hidden="true">Select · V</span>
+                </span>
+                <span className="mode-circle-wrap">
+                  <button type="button" onClick={() => setTool("pan")} title="Pan (P) — or hold right-click / Space mid-measure"
+                    className={`mode-circle-btn${tool === "pan" ? " is-on" : ""}`}>
+                    <Icon name="pan" size={14} />
+                  </button>
+                  <span className="mode-circle-hint" aria-hidden="true">Pan · P</span>
+                </span>
+              </div>
+            </div>
+
+            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+
+            {/* Draw */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>DRAW</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <ToolMenu variant="palette" compactFace title="Measure" active={measureActive} onOpenChange={onMenuDepth} face={<><Icon name={faceTool.icon} size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Measure</span></>} items={MEASURE_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))} />
+                <ToolMenu variant="palette" compactFace title="Cut Out — subtract voids/columns" active={tool === "deduct"} accent="danger" onOpenChange={onMenuDepth} face={<><Icon name="cutOut" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Cut Out</span></>} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))} />
+                <span style={{ position: "relative" }}>
+                  <ToolMenu variant="palette" compactFace title="Markup — annotations, not measurements" active={MARKUP_IDS.includes(tool)} onOpenChange={onMenuDepth} face={<><Icon name="markup" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Markup</span></>} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
+                  {tool === "highlighter" && (
+                    <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, boxShadow: "0 6px 22px rgba(0,0,0,.16)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+                      <div style={{ display: "flex", gap: 6 }} title="Ink">
+                        {HL_INKS.map((c) => (
+                          <button key={c} onClick={() => setHlStyle((st) => ({ ...st, color: c }))} style={{ width: 16, height: 16, padding: 0, background: c, border: hlStyle.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {HL_SIZES.map(([lbl, px]) => (
+                          <button key={lbl} onClick={() => setHlStyle((st) => ({ ...st, size: px }))} title={`${lbl === "F" ? "Fine" : lbl === "M" ? "Medium" : "Broad"} tip`} style={{ width: 22, height: 20, padding: 0, fontFamily: "var(--f-mono)", fontSize: 10, cursor: "pointer", border: hlStyle.size === px ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: hlStyle.size === px ? "var(--ink)" : "transparent", color: hlStyle.size === px ? "var(--paper-bright)" : "var(--ink)" }}>{lbl}</button>
+                        ))}
+                        <span style={{ width: 1, alignSelf: "stretch", background: "var(--ink-faint)" }} />
+                        {[["chisel", "M4 16 L14 6 L18 10 L8 20 Z"], ["round", "M5 17 Q12 3 19 13"]].map(([tip, d]) => (
+                          <button key={tip} onClick={() => setHlStyle((st) => ({ ...st, tip }))} title={`${tip} tip`} style={{ width: 24, height: 20, padding: 1, cursor: "pointer", border: hlStyle.tip === tip ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: "transparent" }}>
+                            <svg viewBox="0 0 24 24" width="18" height="14">{tip === "chisel" ? <path d={d} fill="currentColor" stroke="none" /> : <path d={d} fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />}</svg>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </span>
+                <ToolMenu variant="palette" compactFace title="Edit takeoffs" onOpenChange={onMenuDepth} face={<><Icon name="edit" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Edit</span></>} items={[{ id: "copy", icon: "copy", label: "Copy", shortcut: "⌘C", disabled: !selectedId, onSelect: copySelected }, { id: "paste", icon: "paste", label: "Paste", shortcut: "⌘V", disabled: !clipRef.current.length, onSelect: () => pasteClipboard() }, { id: "dup", icon: "duplicate", label: "Duplicate", shortcut: "⌘D", disabled: !selectedId, onSelect: duplicateSelected }, "divider", { id: "flipH", label: "Flip Horizontal", disabled: !selectedId, onSelect: () => flipSelected("h") }, { id: "flipV", label: "Flip Vertical", disabled: !selectedId, onSelect: () => flipSelected("v") }, "divider", { id: "finish", icon: "check", label: `Finish shape${poly.length ? ` (${poly.length} pts)` : ""}`, shortcut: "↵", disabled: !finishOk, onSelect: finishShape }, { id: "undopt", icon: "undo", label: "Undo last point", shortcut: "⌘Z", disabled: !poly.length, onSelect: () => setPoly((q) => q.slice(0, -1)) }, { id: "undoshape", icon: "undo", label: "Undo last shape", disabled: !visibleShapes.length, onSelect: undoLast }, { id: "redo", label: "Redo", shortcut: "⇧⌘Z", onSelect: redoShapeCommand }, "divider", { id: "del", icon: "close", label: "Delete selected", shortcut: "⌫", disabled: !selectedId, tint: "var(--c-danger)", onSelect: deleteSelected }]} />
+              </div>
+            </div>
+
+            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+
+            {/* Aids */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>AIDS</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <span className="angle-dial-wrap">
+                  <span className="mode-circle-wrap">
+                    <button
+                      type="button"
+                      className={`angle-dial-btn${angleOn ? " is-on" : ""}`}
+                      onClick={() => setAngleOn((v) => !v)}
+                      title="45°/90° angle guides"
+                    >
+                      45°
+                    </button>
+                    <span className="mode-circle-hint" aria-hidden="true">Angle · ⇧</span>
+                  </span>
+                  <svg className="angle-dial-arc" width="14" height="28" viewBox="0 0 14 28" aria-hidden="true">
+                    <path d="M 2 26 A 12 12 0 0 1 2 2" fill="none" stroke="rgba(14, 26, 46, 0.28)" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <span className="mode-circle-wrap">
+                  <button type="button" onClick={() => setSnapOn((v) => !v)} title="Snap to plan lines/corners (beta)"
+                    className={`angle-dial-btn is-snap${snapOn ? " is-on" : ""}`}>
+                    <Icon name="snap" size={14} />
+                  </button>
+                  <span className="mode-circle-hint" aria-hidden="true">Snap</span>
+                </span>
+                <span className="mode-circle-wrap">
+                  <ToolMenu circleTrigger paletteAnchor title="Render & fill settings" onOpenChange={onMenuDepth} face={<Icon name="sliders" size={14} />} menuStyle={{ minWidth: 396 }} items={[{ id: "hires", icon: "hiRes", label: "Hi-Res render", checked: hiResOn(focusPanel.key), stayOpen: true, onSelect: toggleHiRes }, "divider", { id: "fill", custom: fillRow }, { id: "wall", custom: wallSensRow }]} />
+                  <span className="mode-circle-hint" aria-hidden="true">Render</span>
+                </span>
+              </div>
+            </div>
+
+            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+
+            {/* Condition & Label */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>CONDITION / LABEL</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                {aCond ? (
+                  <button type="button" onClick={() => setShowCondEdit(true)} title={`Edit appearance for ${aCond.finish_tag}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", border: "1px solid var(--ink-faint)", borderRadius: 16, background: showCondEdit ? "var(--cobalt)" : "var(--paper-bright)", color: showCondEdit ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "var(--f-mono)", lineHeight: 1 }}>
+                    <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, marginTop: 1 }}><HatchSwatch type={aCond.hatch || "solid"} line={aCond.color} fill={aCond.fill} /></span>
+                    Edit {aCond.finish_tag}
+                  </button>
+                ) : (
+                  <div style={{ padding: "5px 12px", borderRadius: 16, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", fontSize: 11, fontWeight: 600 }}>No condition</div>
+                )}
+                {shapeLabels.length > 0 && (
+                  <select value={tool === "select" && selectedId ? shapeLabelValue(shapes.find((s) => s.id === selectedId)) : (activeLabel || "")} onChange={(e) => activateLabel(e.target.value || null)} title="Phase/area label" style={{ fontFamily: "var(--f-mono)", fontSize: 11, padding: "4px 6px", borderRadius: 16, border: `1px solid ${activeLabel ? "var(--cobalt)" : "var(--ink-faint)"}`, background: activeLabel ? "var(--cobalt)" : "transparent", color: activeLabel ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", maxWidth: 100 }}>
+                    <option value="">No label</option>
+                    {shapeLabels.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                )}
+              </div>
+            </div>
+
+            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+
+            {/* Scale */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>SCALE</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button type="button" onClick={() => setUnits((u) => (u === "metric" ? "imperial" : "metric"))} title="Toggle metric/imperial"
+                  className={`angle-dial-btn${units === "metric" ? " is-on" : ""}`}
+                  style={{ fontFamily: "var(--f-mono)", fontSize: 10.5 }}>
+                  {units === "metric" ? "m" : "ft"}
+                </button>
+                <ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} faceStyle={{ borderRadius: 16, fontFamily: "var(--f-mono)", fontSize: 11, fontWeight: 600, ...scaleFaceStyle }} face={scaleFace} menuStyle={{ minWidth: 250 }} items={scaleItems} />
+              </div>
+            </div>
+            
+          </div>
+
+          {/* Live readout — condition totals + in-progress measure */}
+          <div style={{ display: "flex", alignItems: "stretch", background: "light-dark(#dbe3e6, var(--paper-shadow))", borderRadius: 14, border: "1px solid var(--ink-faint)", padding: "3px 10px", boxShadow: "var(--shadow-1)" }}>
+            <LiveReadoutBar
+              tool={tool}
+              aCond={aCond}
+              activeCond={activeCond}
+              units={units}
+              unitsPerPx={unitsPerPx}
+              poly={poly}
+              liveUpp={liveUpp}
+              liveArea={liveArea}
+              livePerim={livePerim}
+              zoneTraceCross={zoneTraceCross}
+              condH={condH}
+              proposal={proposal}
+              wallProposal={wallProposal}
+              ocSel={ocSel}
+              selShape={selShape}
+              doorScheduleOptions={doorScheduleOptions}
+              condRow={condRow}
+              condMult={condMult}
+              condTotal={condTotal}
+              wallTotal={wallTotal}
+              borderTotal={borderTotal}
+              lfTotal={lfTotal}
+              countTotal={countTotal}
+              vertTotal={vertTotal}
+              sheetFloorSf={sheetFloorSf}
+              sheetWallSf={sheetWallSf}
+              visibleShapeCount={visibleShapes.length}
+              groupKeyCount={groupKeys.length}
+              zoomScale={tf.scale}
+              onSetShapeHeight={setShapeHeight}
+              onClearShapeHeight={clearShapeHeight}
+              onAddWallOpening={addWallOpening}
+              onStartWallCutout={startWallCutoutLinear}
+              onUpdateWallOpening={updateWallOpening}
+              onRemoveWallOpening={removeWallOpening}
+              onFlyToWallOpening={flyToWallOpening}
             />
-          </>
-        )}
+          </div>
+        </div>
       </div>
 
       {showCondEdit && aCond && (
@@ -7215,10 +8433,9 @@ export default function TakeoffCanvas() {
       {/* canvas + issue desk */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
        {/* Left icon rail + floating Files panel — sits in the canvas band (below
-           the toolbar), never overlaps the decks. Rail stays visible; hover opens
-           the fixed-size panel (not resizable). */}
+           the toolbar), never overlaps the decks. Rail stays visible; click a rail
+           button to open the panel (canvas click / hover does not open it). */}
        <div
-         onMouseEnter={() => openLeftHover()}
          onMouseLeave={scheduleLeftHoverClose}
          onPointerDown={(e) => e.stopPropagation()}
          style={{
@@ -7243,10 +8460,10 @@ export default function TakeoffCanvas() {
              flexDirection: "column",
              gap: 6,
              padding: "6px 4px",
-             background: "var(--paper-bright)",
-             border: "1px solid var(--ink-faint)",
-             borderRadius: 8,
-             boxShadow: "0 6px 18px rgba(14, 26, 46, 0.12)",
+             background: "transparent",
+             border: "none",
+             borderRadius: 999,
+             boxShadow: "none",
            }}
          >
            {panelBtn(() => openLeftHover("files"), "sheets", "Project files — plans in this takeoff (upload folder, zip, or PDFs)", leftTab === "files", sheets.length)}
@@ -7302,15 +8519,32 @@ export default function TakeoffCanvas() {
                      Gallery
                    </button>
                  </div>
-                 <div style={{ padding: "8px 12px", fontSize: 11.5, color: "var(--ink-muted)", borderBottom: "1px solid var(--ink-faint)" }}>
-                   Upload a <b>Folder</b> to keep the directory tree — PDF and DWG files are supported. Click a folder row to expand or collapse its contents.
-                 </div>
+                 <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--ink-faint)" }}>
+                  <div style={{ position: "relative" }}>
+                    <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--ink-muted)", pointerEvents: "none", display: "inline-flex" }}>
+                      <Icon name="search" size={14} />
+                    </span>
+                    <input
+                      name="files-search"
+                      value={filesSearch}
+                      onChange={(e) => setFilesSearch(e.target.value)}
+                      placeholder="Search files…"
+                      aria-label="Search files by name"
+                      style={{
+                        width: "100%", boxSizing: "border-box", padding: "9px 12px 9px 36px",
+                        border: "1px solid var(--divider-soft)", background: "var(--paper-bright)",
+                        fontSize: 13, color: "var(--ink)", borderRadius: 10,
+                      }}
+                    />
+                  </div>
+                </div>
                  {sheets.length === 0 ? (
                    <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
                      No project files yet. Use <b>Add files</b> or <b>Folder</b> to upload the whole plan set.
                    </div>
                  ) : (() => {
                    // Nest sheets under Folder-upload paths; loose files stay at the root.
+                   const q = filesSearch.trim().toLowerCase();
                    const root = { folders: {}, files: [] };
                    for (const s of sheets) {
                      const parts = (fileFolders[s.name] || "").split("/").filter(Boolean);
@@ -7321,17 +8555,45 @@ export default function TakeoffCanvas() {
                      }
                      node.files.push(s);
                    }
-                   const isOpen = (path) => openFolderPaths[path] === true;
+                   const fileName = (s) => s.name.split("/").pop();
+                   const fileMatches = (s) => !q || fileName(s).toLowerCase().includes(q);
+                   const filterNode = (node) => {
+                     const files = node.files.filter(fileMatches);
+                     const folders = {};
+                     for (const [name, child] of Object.entries(node.folders)) {
+                       const filtered = filterNode(child);
+                       if (filtered.files.length > 0 || Object.keys(filtered.folders).length > 0) {
+                         folders[name] = filtered;
+                       }
+                     }
+                     return { folders, files };
+                   };
+                   const tree = q ? filterNode(root) : root;
+                   const highlightName = (name) => {
+                     if (!q) return name;
+                     const lower = name.toLowerCase();
+                     const i = lower.indexOf(q);
+                     if (i < 0) return name;
+                     return (
+                       <>
+                         {name.slice(0, i)}
+                         <span style={{ background: "rgba(31, 63, 199, 0.28)", color: "var(--ink)", borderRadius: 3, padding: "0 2px" }}>{name.slice(i, i + q.length)}</span>
+                         {name.slice(i + q.length)}
+                       </>
+                     );
+                   };
+                   const isOpen = (path) => (q ? true : openFolderPaths[path] === true);
                    const toggle = (path) => setOpenFolderPaths((m) => ({ ...m, [path]: !isOpen(path) }));
                    const fileRow = (s, depth) => {
                      const on = active === s.name;
                      const open = openTabs.some((k) => parseSheetKey(k).file === s.name);
+                     const match = q && fileMatches(s);
                      return (
-                       <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: `7px 10px 7px ${12 + depth * 14}px`, borderBottom: "1px solid var(--ink-faint)", background: on ? "var(--paper-cream)" : "transparent" }}>
+                       <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: `7px 10px 7px ${12 + depth * 14}px`, borderBottom: "1px solid var(--ink-faint)", background: on ? "var(--paper-cream)" : match ? "rgba(31, 63, 199, 0.12)" : "transparent", boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : "none" }}>
                          <button type="button" onClick={() => { openSheets([s.name]); setLeftTab("files"); }}
                            title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}
                            style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
-                           <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{s.name.split("/").pop()}</span>
+                           <span style={{ fontSize: 12.5, fontWeight: on || match ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{highlightName(fileName(s))}</span>
                            <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{open ? "open" : "in project"}{on ? " · viewing" : ""}</span>
                          </button>
                          <button type="button" onClick={() => closePdf(s.name)} title={`Remove ${s.name} from this project`}
@@ -7360,7 +8622,7 @@ export default function TakeoffCanvas() {
                                <button type="button" onClick={() => toggle(childPath)}
                                  title={open ? `Collapse ${name}` : `Expand ${name}`}
                                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: `8px 10px 8px ${12 + depth * 14}px`, border: "none", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 12.5 }}>
-                                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, width: 12, color: "var(--cobalt)" }}>{open ? "▾" : "▸"}</span>
+                                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, width: 12, color: "light-dark(var(--cobalt), var(--ink))" }}>{open ? "▾" : "▸"}</span>
                                  <Icon name="sheets" size={13} />
                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
                                  <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{nFiles}</span>
@@ -7373,7 +8635,16 @@ export default function TakeoffCanvas() {
                        </>
                      );
                    };
-                   return <div>{renderNode(root, "", 0)}</div>;
+                   const emptySearch = q && tree.files.length === 0 && Object.keys(tree.folders).length === 0;
+                   return (
+                     <div>
+                       {emptySearch ? (
+                         <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
+                           No files match “{filesSearch.trim()}”.
+                         </div>
+                       ) : renderNode(tree, "", 0)}
+                     </div>
+                   );
                  })()}
                </div>
              )}
@@ -7619,7 +8890,10 @@ export default function TakeoffCanvas() {
             const s = shapes.find((x) => x.id === cardId);
             if (!s || !shapeBoqHover) return null;
             if (isAiDetectFloorPlan(s.sheet_id) && !aiDetectShapeRevealed(s)) return null;
-            const data = resolveShapeBoq(s, conditions, boqDetectCtx, boqLines, units, pricingCtx);
+            const boqShape = (s.measure_role === "surface_area" || s.measure_role === "wall_area" || s.measure_role === "floor_area")
+              ? { ...s, computed: recomputeShape(s) }
+              : s;
+            const data = resolveShapeBoq(boqShape, conditions, boqDetectCtx, boqLines, units, pricingCtx);
             if (!data) return null;
             const pinned = !!shapeBoqFocus;
             return (
@@ -7640,6 +8914,7 @@ export default function TakeoffCanvas() {
                   setSymbolHover({ id: sid, cx: Math.max(8, cx), cy: Math.max(8, cy) });
                   setSymbolFocus(sid);
                 }}
+                onDeductDoor={(ref) => deductDoorOnWall(s.id, ref)}
                 onMove={(nx, ny) => {
                   const cw = containerRef.current?.clientWidth || 1200;
                   const ch = containerRef.current?.clientHeight || 800;
@@ -7895,7 +9170,8 @@ export default function TakeoffCanvas() {
                       // overview zoom (invisible conditions). Divide by scale
                       // like every other screen-relative size here.
                       const z = tf.scale;
-                      const sw = (sel ? 4 : 2) / z;
+                      const lw = clampWeight(look?.weight);
+                      const sw = ((sel ? 4 : 2) * lw) / z;
                       // Committed-but-unreviewed machine shapes (an imported MCP
                       // takeoff) render dashed pencil — same invariant as the
                       // ephemeral agent proposals, until Accept flips reviewed.
@@ -7903,15 +9179,15 @@ export default function TakeoffCanvas() {
                       const pDash = `${4 / z} ${3 / z}`;
                       if (s.measure_role === "count") {
                         const [cx, cy] = pts[0], r = 7 / z;
-                        return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={sel ? "#1f3fc7" : (dim ? "#9aa0a6" : "#fff")} strokeWidth={(sel ? 3 : 1.5) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
+                        return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={sel ? "#1f3fc7" : (dim ? "#9aa0a6" : "#fff")} strokeWidth={((sel ? 3 : 1.5) * lw) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
                       }
                       if (s.measure_role === "surface_area") {
-                        return <polyline key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4.5 : 3.5) / z} strokeDasharray={pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`} strokeLinecap="round" strokeLinejoin="round" />;
+                        return <polyline key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={((sel ? 4.5 : 3.5) * lw) / z} strokeDasharray={pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       if (s.measure_role === "linear") {
                         // line_style governs linear outlines (surface_area keeps its dash-dot identity above)
                         const lpts = s.curved ? flattenCurve(pts) : pts;
-                        return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={(sel ? 4 : 3) / z} strokeDasharray={pending ? pDash : dashArrayFor(look?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
+                        return <polyline key={s.id} points={lpts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={((sel ? 4 : 3) * lw) / z} strokeDasharray={pending ? pDash : dashArrayFor(look?.line_style || "solid", z)} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       const ded = s.measure_role === "deduct";
                       const fill = dim ? (col + (darkMode ? "4d" : "33")) : ded ? (pending ? "rgba(176,58,38,.10)" : "rgba(176,58,38,.28)") : pending ? col + "14" : shapeFill(look);
@@ -8337,17 +9613,37 @@ export default function TakeoffCanvas() {
                   (deduct keeps its danger red). Committed shapes wear the condition's own
                   color; the draft never mimics anyone's takeoff look. Solid, no dashes. */}
               <line ref={rubberRef} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={1.5 / tf.scale} strokeOpacity={0.85} strokeLinecap="round" style={{ display: "none" }} />
+              {wallCutoutDraft?.a && (
+                <path d={starPath(wallCutoutDraft.a[0], wallCutoutDraft.a[1], 4.5 / tf.scale)} fill="#fff" stroke="#1f3fc7" strokeWidth={2 / tf.scale} />
+              )}
+              {wallCutoutFocus?.a && wallCutoutFocus?.b && (
+                <g pointerEvents="none">
+                  <line
+                    x1={wallCutoutFocus.a[0]} y1={wallCutoutFocus.a[1]}
+                    x2={wallCutoutFocus.b[0]} y2={wallCutoutFocus.b[1]}
+                    stroke="#1f3fc7" strokeWidth={6 / tf.scale} strokeOpacity={0.35} strokeLinecap="round"
+                  />
+                  <line
+                    x1={wallCutoutFocus.a[0]} y1={wallCutoutFocus.a[1]}
+                    x2={wallCutoutFocus.b[0]} y2={wallCutoutFocus.b[1]}
+                    stroke="#1f3fc7" strokeWidth={2.5 / tf.scale} strokeLinecap="round"
+                  />
+                  <path d={starPath(wallCutoutFocus.a[0], wallCutoutFocus.a[1], 5 / tf.scale)} fill="#1f3fc7" stroke="#fff" strokeWidth={1.2 / tf.scale} />
+                  <path d={starPath(wallCutoutFocus.b[0], wallCutoutFocus.b[1], 5 / tf.scale)} fill="#1f3fc7" stroke="#fff" strokeWidth={1.2 / tf.scale} />
+                  <path d={starPath((wallCutoutFocus.a[0] + wallCutoutFocus.b[0]) / 2, (wallCutoutFocus.a[1] + wallCutoutFocus.b[1]) / 2, 6 / tf.scale)} fill="#fff" stroke="#1f3fc7" strokeWidth={2 / tf.scale} />
+                </g>
+              )}
               <rect ref={rectRef} fill={tool === "deduct" ? "rgba(176,58,38,.22)" : shapeFill(liveDrawLook)} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} style={{ display: "none" }} />
               <path ref={cloudRef} fill="rgba(37,99,235,.06)" stroke="#1f3fc7" strokeWidth={2 / tf.scale} strokeDasharray={`${5 / tf.scale} ${4 / tf.scale}`} style={{ display: "none" }} />
               <rect ref={highlightRef} fill="rgba(196,122,16,.18)" stroke="#c47a10" strokeWidth={2 / tf.scale} style={{ display: "none" }} />
               <path ref={hlPathRef} style={{ display: "none" }} />
-              {poly.length >= 2 && (tool === "linear" || tool === "curve" || tool === "surface"
-                ? <polyline points={(tool === "curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={tool === "surface" ? (liveDrawLook?.color || activeColor) : "#1f3fc7"} strokeWidth={(tool === "surface" ? 3.5 : 2.5) / tf.scale} strokeDasharray={tool === "surface" ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
-                : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : shapeFill(liveDrawLook)) : "none"} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={2 / tf.scale} strokeDasharray={tool === "zone" ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
+              {poly.length >= 2 && (tool === "linear" || tool === "curve" || tool === "surface" || tool === "wallarea"
+                ? <polyline points={(tool === "curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={(tool === "surface" || tool === "wallarea") ? (liveDrawLook?.color || activeColor) : "#1f3fc7"} strokeWidth={(((tool === "surface" || tool === "wallarea") ? 3.5 : 2.5) * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeDasharray={(tool === "surface" || tool === "wallarea") ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
+                : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : shapeFill(liveDrawLook)) : "none"} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={(2 * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeDasharray={tool === "zone" ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
               {/* bold the most recent segment so you see where you just clicked */}
               {poly.length >= 2 && (
                 <line x1={poly[poly.length - 2][0]} y1={poly[poly.length - 2][1]} x2={poly[poly.length - 1][0]} y2={poly[poly.length - 1][1]}
-                  stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={3.5 / tf.scale} strokeLinecap="round" />
+                  stroke={tool === "deduct" ? "#b03a26" : ((tool === "surface" || tool === "wallarea") ? (liveDrawLook?.color || "#1f3fc7") : "#1f3fc7")} strokeWidth={(3.5 * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeLinecap="round" />
               )}
               {poly.map((p, i) => {
                 const isLast = i === poly.length - 1;
@@ -8420,12 +9716,12 @@ export default function TakeoffCanvas() {
           <div onPointerDown={(e) => { if (e.button === 0 && !spaceRef.current) e.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}
             style={{ position: "absolute", left: 14, bottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
             {[["+", 1.25], ["−", 0.8]].map(([lbl, f]) => (
-              <button key={lbl} onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, f); }}
-                style={{ width: 34, height: 34, borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 18, fontWeight: 700 }}>{lbl}</button>
+              <button key={lbl} className="canvas-circle-btn" onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, f); }}
+                style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 18, fontWeight: 700 }}>{lbl}</button>
             ))}
-            <button onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ width: 34, height: 34, borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12 }}>fit</button>
-            <button onClick={() => setDarkMode((d) => !d)} title={darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)"}
-              style={{ width: 34, height: 34, borderRadius: 0, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, background: darkMode ? "var(--cobalt)" : "var(--paper-bright)", color: darkMode ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontSize: 13 }}>
+            <button className="canvas-circle-btn" onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12 }}>fit</button>
+            <button className="canvas-circle-btn" onClick={() => setDarkMode((d) => !d)} title={darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)"}
+              style={{ width: 34, height: 34, borderRadius: 999, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, background: darkMode ? "var(--cobalt)" : "var(--paper-bright)", color: darkMode ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontSize: 13 }}>
               {darkMode ? "☀" : "☾"}</button>
           </div>
         </div>
@@ -8695,118 +9991,6 @@ export default function TakeoffCanvas() {
           </button>
         )}
 
-        {/* live readout — top-right. Height is capped short of the panel rail's centered
-            band (same right:14 column) so populated totals never cover the rail buttons. */}
-        <div style={{ position: "absolute", right: 14, top: 14, background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, padding: "12px 16px", minWidth: 200, maxWidth: 260, maxHeight: "calc(50% - 110px)", overflowY: "auto", boxShadow: "0 4px 18px rgba(0,0,0,.12)", fontVariantNumeric: "tabular-nums", zIndex: 6 }}>
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.55, marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tool === "zone" ? "Zone check" : (aCond?.finish_tag || "No condition")}</div>
-          {tool === "oneclick" && proposal?.regions.length ? (() => {
-            const pos = proposal.regions.filter((r) => r.kind === "pos");
-            const neg = proposal.regions.filter((r) => r.kind === "neg");
-            const sf = pos.reduce((n, r) => n + r.area_sf, 0) - neg.reduce((n, r) => n + r.area_sf, 0);
-            return (
-              <>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(sf, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} selected</span></div>
-                <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{pos.length} space{pos.length === 1 ? "" : "s"}{neg.length ? ` − ${neg.length} cutout${neg.length === 1 ? "" : "s"}` : ""}{units === "metric" ? "" : ` · ${num(sf / 9)} SY`}</div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>{ocSel ? "drag to move · Delete drops this point · Esc deselects" : "hover a fill to edit: drag a corner or edge · shift-click an edge adds a point"}</div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>click adds a space · ⌥-click carves a cutout · ⏎ Create · ⌫ undo · Esc cancel</div>
-                {proposal.regions.some((r) => r.rt) && (
-                  <div style={{ fontSize: 11.5, color: "var(--c-warning)", marginTop: 4 }}>Traced from scan pixels — verify edges before Create.</div>
-                )}
-              </>
-            );
-          })() : tool === "walltrace" && wallProposal?.regions.length ? (() => {
-            const face = wallProposal.regions.reduce((n, r) => n + r.wall_face_sf, 0);
-            const fp = wallProposal.regions.reduce((n, r) => n + r.footprint_sf, 0);
-            const vol = wallProposal.regions.reduce((n, r) => n + r.volume_cf, 0);
-            return (
-              <>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(face, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} face</span></div>
-                <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{num(areaVal(fp, units))} {areaUnit(units)} footprint · {num(vol, 1)} CF · {wallProposal.regions.length} network{wallProposal.regions.length === 1 ? "" : "s"}</div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>click adds a wall island · ⏎ Create · Esc cancel</div>
-                {wallProposal.regions.some((r) => r.hf) && (
-                  <div style={{ fontSize: 11.5, color: "var(--c-warning)", marginTop: 4 }}>Hatch-filled walls included — verify edges before Create.</div>
-                )}
-              </>
-            );
-          })() : tool === "surface" && poly.length >= 2 && liveUpp ? (
-            (() => {
-              const liveLF = openLen(poly) * liveUpp;
-              return condH > 0 ? (
-                <>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: "var(--ink)" }}>{num(areaVal(liveLF * condH, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} wall</span></div>
-                  <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{fl(liveLF)} × {num(condH, 2)} ft</div>
-                </>
-              ) : <div style={{ fontSize: 12.5, color: "var(--c-danger)" }}>Set a height for {aCond?.finish_tag || "this condition"} — H in the condition editor</div>;
-            })()
-          ) : tool === "zone" && poly.length >= 1 ? (
-            zoneTraceCross ? (
-              <span style={{ color: "var(--c-danger)", fontSize: 12.5 }}>Zone on one sheet — that point landed on a different sheet. Finish is disabled; Esc or Undo last point to fix it.</span>
-            ) : (
-              <>
-                {liveArea != null && poly.length >= 3 && <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(liveArea, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} in zone</span></div>}
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>⏎, double-click, or the Finish button closes the zone and lists everything inside · Esc cancels</div>
-              </>
-            )
-          ) : liveArea != null && poly.length >= 3 ? (
-            <>
-              <div style={{ fontSize: 22, fontWeight: 700, color: tool === "deduct" ? "var(--c-danger)" : "var(--ink)" }}>{tool === "deduct" ? "−" : ""}{num(areaVal(liveArea, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)}</span></div>
-              <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{units === "metric" ? `${fl(livePerim)} perim` : `${num(liveArea / 9)} SY  ·  ${num(livePerim)} LF perim`}</div>
-              {condH > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>@H {num(condH, 2)}′: {fa(livePerim * condH)} vert{units === "metric" ? "" : ` · ${num((liveArea * condH) / 27)} CY`}</div>}
-            </>
-          ) : (
-            <div style={{ fontSize: 12.5, opacity: 0.6 }}>{!unitsPerPx ? "Set scale first" : tool === "zone" ? "Trace a region (an apartment, a wing) — ⏎ closes it and lists every condition inside" : !activeCond ? "Pick a condition" : tool === "oneclick" ? "Click inside a room — it selects itself" : tool === "walltrace" ? "Click a wall line — connected network traces" : tool === "wallarea" ? "Click corners around the wall poché — ⏎ finishes · Deduct carves room holes" : tool === "surface" ? "Trace the wall run" : "Click to trace an area"}</div>
-          )}
-          {tool !== "oneclick" && proposal?.regions.length > 0 && (() => {
-            const pos = proposal.regions.filter((r) => r.kind === "pos");
-            const neg = proposal.regions.filter((r) => r.kind === "neg");
-            const sf = pos.reduce((n, r) => n + r.area_sf, 0) - neg.reduce((n, r) => n + r.area_sf, 0);
-            return (
-              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
-                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Pending rooms</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cobalt)", marginTop: 2 }}>{num(areaVal(sf, units))} {areaUnit(units)} · {pos.length} space{pos.length === 1 ? "" : "s"}</div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>Switch to One-Click (O) or press Create rooms</div>
-              </div>
-            );
-          })()}
-          {tool !== "walltrace" && wallProposal?.regions.length > 0 && (() => {
-            const face = wallProposal.regions.reduce((n, r) => n + r.wall_face_sf, 0);
-            return (
-              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
-                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Pending walls</div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cobalt)", marginTop: 2 }}>{num(areaVal(face, units))} {areaUnit(units)} face · {wallProposal.regions.length} network{wallProposal.regions.length === 1 ? "" : "s"}</div>
-                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>Switch to Wall Trace (W) or press Create walls</div>
-              </div>
-            );
-          })()}
-          {selShape?.measure_role === "surface_area" && (
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }} title="Height for THIS wall only — full-height tile here, 4-ft wainscot there, same condition. ↺ returns to the condition height.">
-              <Icon name="height" size={12} />
-              <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>this wall</span>
-              <input name="shape-height-ft" type="number" min="0" step="0.25" value={selShape.height_ft ?? ""}
-                onChange={(e) => setShapeHeight(e.target.value)}
-                style={{ width: 56, padding: "2px 5px", border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-              <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>ft → {fa(selShape.computed?.area_sf || 0)}</span>
-              {condH > 0 && Number(selShape.height_ft) !== condH && (
-                <button onClick={clearShapeHeight} title="Set this wall to the condition height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
-              )}
-            </div>
-          )}
-          <div style={{ height: 1, background: "var(--divider-soft)", margin: "8px 0" }} />
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, opacity: 0.5 }}>{aCond?.finish_tag || "—"} total ({condRow?.shape_count || 0}{condMult > 1 ? ` ×${condMult}` : ""})</div>
-          {condTotal !== 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(condTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)}</span> {units === "imperial" && <span style={{ fontSize: 12, fontWeight: 500, color: "var(--ink-secondary)" }}>· {num(condTotal / 9)} SY</span>}</div>}
-          {wallTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(wallTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} wall</span></div>}
-          {borderTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(borderTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} border</span></div>}
-          {lfTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(lenVal(lfTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{lenUnit(units)}</span></div>}
-          {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
-          {vertTotal > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }} title="Display only — floor-area perimeters × this condition's height (not committed)">{fa(vertTotal)} vert (perim × H)</div>}
-          {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
-          {(sheetFloorSf > 0 || sheetWallSf > 0) && (sheetFloorSf !== condTotal || sheetWallSf !== wallTotal) && (
-            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 6 }} title="All conditions on this sheet — estimate keeps every committed mask">
-              Sheet: {sheetFloorSf > 0 ? `${fa(sheetFloorSf)} floor` : ""}{sheetFloorSf > 0 && sheetWallSf > 0 ? " · " : ""}{sheetWallSf > 0 ? `${fa(sheetWallSf)} wall` : ""}
-            </div>
-          )}
-          <div style={{ fontSize: 10.5, opacity: 0.45, marginTop: 6 }}>{visibleShapes.length} shapes on {groupKeys.length > 1 ? `${groupKeys.length} sheets` : "sheet"} · zoom {(tf.scale * 100).toFixed(0)}%</div>
-        </div>
 
         {/* zone check results — ephemeral, clears with the tool/outline. Docked at
             right:56 so it never covers the panel rail (right:14, 34px wide), and
@@ -8896,20 +10080,22 @@ export default function TakeoffCanvas() {
             {!drawingsChatPill ? (
               <button
                 type="button"
+                className="canvas-circle-btn"
                 title="Ask the Volume 4 drawings corpus"
                 onClick={() => setDrawingsChatPill(true)}
                 style={{
                   width: 48,
                   height: 48,
-                  borderRadius: 999,
+                  borderRadius: "50%",
                   border: "1px solid var(--ink-faint)",
                   background: "var(--cobalt)",
-                  color: "var(--paper-bright)",
+                  color: "var(--accent-contrast)",
                   cursor: "pointer",
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
                   boxShadow: "var(--shadow-2, 0 6px 18px rgba(0,0,0,.18))",
+                  padding: 0,
                 }}
               >
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -8967,25 +10153,26 @@ export default function TakeoffCanvas() {
                 />
                 <button
                   type="submit"
-                  title="Search"
+                  className="canvas-circle-btn"
+                  title="Send"
                   disabled={!drawingsChatDraft.trim()}
                   style={{
                     width: 36,
                     height: 36,
-                    borderRadius: 999,
+                    borderRadius: "50%",
                     border: "none",
                     background: drawingsChatDraft.trim() ? "var(--cobalt)" : "var(--ink-faint)",
-                    color: "var(--paper-bright)",
+                    color: "var(--accent-contrast)",
                     cursor: drawingsChatDraft.trim() ? "pointer" : "default",
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
                     flexShrink: 0,
+                    padding: 0,
                   }}
                 >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2"/>
-                    <path d="M16.5 16.5 20 20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4.5 11.2 19.2 4.4c.7-.3 1.4.4 1.1 1.1L13.5 20.2c-.3.7-1.3.6-1.5-.2l-1.6-6.1-6.1-1.6c-.8-.2-.9-1.2-.2-1.5Z" fill="currentColor"/>
                   </svg>
                 </button>
               </form>

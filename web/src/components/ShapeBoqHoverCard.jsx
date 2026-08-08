@@ -1,12 +1,12 @@
 // Hover card — BOQ summary for a masked area; double-click mask to pin, then open BOQ.
 import React from "react";
-import { areaUnit, lenUnit } from "../lib/units";
+import { areaUnit, lenUnit, areaVal, lenVal } from "../lib/units";
 
 const num = (v, d = 2) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
 const dash = "—";
 
-function BoqField({ label, value, mono = true }) {
-  const empty = value == null || value === "" || value === 0;
+function BoqField({ label, value, mono = true, allowZero = false }) {
+  const empty = value == null || value === "" || (!allowZero && value === 0);
   return (
     <div style={{ display: "grid", gridTemplateColumns: "52px 1fr", gap: 6, alignItems: "baseline" }}>
       <span style={{ fontSize: 10, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
@@ -17,6 +17,22 @@ function BoqField({ label, value, mono = true }) {
   );
 }
 
+/** Takeoff math is feet/SF; convert for display when project units are metric. */
+function displayArea(sf, units) {
+  return areaVal(Number(sf) || 0, units);
+}
+function displayLen(lf, units) {
+  return lenVal(Number(lf) || 0, units);
+}
+function displayQty(qty, unit, units) {
+  const u = String(unit || "").toLowerCase();
+  if (u.includes("m²") || u.includes("m2") || u === "sf" || u === "sq ft" || u === "sqft") {
+    return displayArea(qty, units);
+  }
+  if (u === "m" || u === "lf" || u === "lm") return displayLen(qty, units);
+  return Number(qty) || 0;
+}
+
 export default function ShapeBoqHoverCard({
   data,
   left,
@@ -25,6 +41,7 @@ export default function ShapeBoqHoverCard({
   pinned = false,
   onOpenBoq,
   onOpenDoorDetect,
+  onDeductDoor,
   onMove,
   onClose,
   onPointerEnter,
@@ -36,6 +53,19 @@ export default function ShapeBoqHoverCard({
   const doorRefs = (data.schedule_refs || []).filter(
     (r) => (r.kind === "door" || r.kind === "window") && r.symbol_id,
   );
+  const showWall = data.role === "surface_area" || data.role === "wall_area" || data.role === "floor_area";
+  const showFloor = data.role === "floor_area" || data.role === "deduct" || (Number(data.floor_sf) || 0) > 0;
+  const wallNet = Number(data.wall_sf) || 0;
+  const wallGross = Number(data.gross_wall_sf) || 0;
+  const openingSf = Number(data.opening_sf) || 0;
+  const wallLabel = showWall && (wallGross > 0 || wallNet > 0)
+    ? (wallNet > 0
+      ? `${num(displayArea(wallNet, units))} ${aU} net`
+      : `${num(0)} ${aU} net (${num(displayArea(wallGross, units))} ${aU} gross${openingSf > 0 ? ` · −${num(displayArea(openingSf, units))} ${aU} openings` : ""})`)
+    : null;
+  const floorLabel = showFloor
+    ? `${num(displayArea(Number(data.floor_sf) || 0, units))} ${aU}`
+    : null;
 
   return (
     <div
@@ -96,11 +126,11 @@ export default function ShapeBoqHoverCard({
         )}
       </div>
       <div style={{ padding: "8px 12px", display: "grid", gap: 5 }}>
-        <BoqField label="Floor" value={data.floor_sf ? `${num(data.floor_sf)} ${aU}` : null} />
-        <BoqField label="Wall" value={data.wall_sf ? `${num(data.wall_sf)} ${aU}` : null} />
-        <BoqField label="LF" value={data.lf ? `${num(data.lf)} ${lU}` : null} />
+        <BoqField label="Floor" value={floorLabel} allowZero={showFloor} />
+        <BoqField label="Wall" value={wallLabel} allowZero={showWall} />
+        <BoqField label="LF" value={data.lf ? `${num(displayLen(data.lf, units))} ${lU}` : null} />
         <BoqField label="EA" value={data.ea ? num(data.ea, 0) : null} />
-        <BoqField label="Qty" value={`${num(data.qty)} ${data.unit}`} />
+        <BoqField label="Qty" value={`${num(displayQty(data.qty, data.unit, units))} ${data.unit}`} />
         {data.rate != null && data.rate > 0 && (
           <BoqField label="Rate" value={`${num(data.rate)} ${data.currency || "AED"}`} />
         )}
@@ -114,22 +144,41 @@ export default function ShapeBoqHoverCard({
       {doorRefs.length > 0 && (
         <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", display: "grid", gap: 6 }}>
           {doorRefs.slice(0, 4).map((ref) => (
-            <button
-              key={ref.symbol_id || `${ref.tag}-${ref.source}`}
-              type="button"
-              title={`Open ${ref.tag} details`}
-              onClick={(e) => { e.stopPropagation(); onOpenDoorDetect?.(ref); }}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                width: "100%", padding: "7px 10px",
-                border: "1px solid var(--cobalt)", borderRadius: 6,
-                background: "var(--cobalt)", color: "var(--accent-contrast, #fff)",
-                cursor: "pointer", fontWeight: 600, fontSize: 11.5, fontFamily: "inherit",
-              }}
-            >
-              {ref.kind === "window" ? "Window detect" : "Door detect"}
-              <span style={{ fontFamily: "var(--f-mono)", fontWeight: 700, opacity: 0.9 }}>· {ref.tag}</span>
-            </button>
+            <div key={ref.symbol_id || `${ref.tag}-${ref.source}`} style={{ display: "flex", gap: 6, alignItems: "stretch" }}>
+              {onDeductDoor && (data.role === "surface_area" || data.role === "wall_area") && (
+                <button
+                  type="button"
+                  title={`Cut out ${ref.tag} from this wall — deducts opening from wall face`}
+                  onClick={(e) => { e.stopPropagation(); onDeductDoor(ref); }}
+                  style={{
+                    flex: 1, minWidth: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+                    padding: "7px 6px",
+                    border: "1px solid var(--cobalt)", borderRadius: 6,
+                    background: "var(--cobalt)", color: "var(--accent-contrast, #fff)",
+                    cursor: "pointer", fontWeight: 600, fontSize: 10.5, fontFamily: "inherit",
+                  }}
+                >
+                  Cut out door · {ref.tag}
+                </button>
+              )}
+              <button
+                type="button"
+                title={`Open ${ref.tag} on plan`}
+                onClick={(e) => { e.stopPropagation(); onOpenDoorDetect?.(ref); }}
+                style={{
+                  flex: 1, minWidth: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+                  padding: "7px 6px",
+                  border: "1px solid var(--ink-faint)", borderRadius: 6,
+                  background: "var(--paper)", color: "var(--ink)",
+                  cursor: "pointer", fontWeight: 600, fontSize: 10.5, fontFamily: "inherit",
+                }}
+              >
+                {ref.kind === "window" ? "Window" : "Door detect"}
+                <span style={{ fontFamily: "var(--f-mono)", fontWeight: 700, opacity: 0.85 }}>· {ref.tag}</span>
+              </button>
+            </div>
           ))}
         </div>
       )}

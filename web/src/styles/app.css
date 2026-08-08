@@ -200,12 +200,75 @@ textarea {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: none; }
 }
+
+@keyframes projects-pop {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.992);
+    filter: blur(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+.animate-projects-pop {
+  animation: projects-pop 820ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.blur-reveal {
+  opacity: 0;
+  filter: blur(12px);
+  transform: translateY(16px) scale(0.985);
+  transition:
+    opacity 1s cubic-bezier(0.22, 1, 0.36, 1),
+    filter 1.05s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 1s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, filter, transform;
+}
+
+.blur-reveal-in {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0) scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-projects-pop {
+    animation: none;
+  }
+  .blur-reveal,
+  .blur-reveal-in {
+    opacity: 1;
+    filter: none;
+    transform: none;
+    transition: none;
+  }
+}
+
 @keyframes shimmer {
   100% { transform: translateX(100%); }
 }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: .35; }
+}
+@keyframes stickyPanelDropIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes stickyPanelCurveIn {
+  from { opacity: 0; stroke-dashoffset: 32; }
+  to   { opacity: 1; stroke-dashoffset: 0; }
 }
 
 /* honor the user's motion preference */
@@ -310,4 +373,455 @@ textarea {
   /* …but the flow-table's single wrapper row MUST break, or the whole report
      tries to fit one page */
   .report-flow > tbody > tr { break-inside: auto; }
+}
+
+/* ── sticky glass estimation dropdown (Takeoff Tool Palette) ─────────────── */
+
+.takeoff-sticky-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.takeoff-sticky-stack {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding-left: 0;
+  align-items: center;
+  justify-content: flex-start;
+  width: auto;
+  background: transparent;
+}
+
+.takeoff-sticky-menu--stack {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.takeoff-sticky-trigger--compact {
+  width: auto;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+}
+
+.estimate-value-live {
+  transition: color 180ms var(--ease), transform 180ms var(--ease);
+}
+
+.estimate-value-live.is-pulse {
+  color: var(--cobalt) !important;
+  transform: scale(1.03);
+  transform-origin: left center;
+}
+
+.estimate-spark {
+  position: relative;
+  flex: 0 0 auto;
+  width: 88px;
+  height: 28px;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  overflow: visible;
+}
+
+.estimate-spark-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+.estimate-spark-tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  z-index: 80;
+  min-width: 118px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: var(--paper-bright);
+  border: 1px solid var(--ink-faint);
+  box-shadow: var(--shadow-1);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.estimate-spark-tip-val {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.estimate-spark-tip-delta {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--ink-muted);
+  margin-top: 1px;
+}
+
+.estimate-spark-tip-delta.is-up { color: var(--c-positive); }
+.estimate-spark-tip-delta.is-down { color: var(--c-danger); }
+
+.estimate-spark-tip-time {
+  font-size: 9px;
+  color: var(--ink-muted);
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+
+.takeoff-sticky-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 12px;
+  border-radius: 999px !important;
+  border: 1px solid var(--cobalt);
+  background: var(--cobalt);
+  color: var(--accent-contrast);
+  font-family: var(--f-body);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow:
+    0 2px 10px rgba(31, 63, 199, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transition:
+    box-shadow var(--t-fast) var(--ease),
+    filter var(--t-fast) var(--ease);
+  white-space: nowrap;
+}
+
+.takeoff-sticky-trigger:hover {
+  filter: brightness(1.05);
+}
+
+.takeoff-sticky-trigger.is-open {
+  box-shadow:
+    0 4px 16px rgba(31, 63, 199, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.takeoff-sticky-chevron {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+  opacity: 0.92;
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.takeoff-sticky-trigger.is-open .takeoff-sticky-chevron {
+  transform: rotate(180deg);
+}
+
+.takeoff-sticky-panel-shell {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: var(--palette-panel-top, 166px);
+  z-index: 70;
+  pointer-events: none;
+  animation: stickyPanelDropIn 340ms var(--ease) both;
+}
+
+.takeoff-sticky-panel-curve {
+  position: absolute;
+  bottom: calc(100% - 1px);
+  width: 22px;
+  height: 34px;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.takeoff-sticky-panel-curve path {
+  stroke-dasharray: 40;
+  animation: stickyPanelCurveIn 420ms var(--ease) both;
+  stroke: var(--ink-faint) !important;
+  stroke-opacity: 0.65;
+}
+
+.takeoff-sticky-panel-curve--left {
+  left: 14px;
+}
+
+.takeoff-sticky-panel-curve--right {
+  right: 14px;
+}
+
+.takeoff-sticky-panel {
+  position: relative;
+  left: auto;
+  top: auto;
+  transform: none;
+  z-index: 1;
+  pointer-events: auto;
+  padding: 8px 10px;
+  border-radius: 18px !important;
+  border: 1px solid var(--ink-faint);
+  background: var(--paper-bright);
+  box-shadow: var(--shadow-2);
+}
+
+.takeoff-sticky-panel-inner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.takeoff-sticky-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border-radius: 999px !important;
+  border: 1px solid var(--ink-faint);
+  background: var(--paper-shadow);
+  color: var(--ink);
+  font-family: var(--f-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.takeoff-sticky-opt:hover:not(:disabled) {
+  background: var(--paper-cream);
+  border-color: rgba(26, 82, 118, 0.35);
+}
+
+.takeoff-sticky-opt.is-active {
+  background: var(--cobalt);
+  border-color: var(--cobalt);
+  box-shadow: 0 4px 16px rgba(26, 82, 118, 0.28);
+  color: var(--accent-contrast);
+}
+
+.takeoff-sticky-opt.is-report {
+  background: var(--paper-bright);
+  border-color: var(--ink-faint);
+  color: var(--ink);
+}
+
+.takeoff-sticky-opt.is-report:hover:not(:disabled) {
+  background: var(--paper-cream);
+}
+
+.takeoff-sticky-opt:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.takeoff-sticky-opt.is-danger {
+  border-color: rgba(146, 43, 33, 0.35);
+  color: var(--c-danger);
+}
+
+.takeoff-sticky-opt.is-danger.is-active,
+.takeoff-sticky-opt.is-danger:hover:not(:disabled) {
+  background: rgba(146, 43, 33, 0.08);
+  border-color: var(--c-danger);
+  color: var(--c-danger);
+}
+
+/* Draw-toolbar ToolMenu — same glass palette shell, centered like Takeoff Tool Palette */
+.tool-menu-palette-shell {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  top: var(--tool-menu-panel-top, 166px);
+  z-index: 70;
+  pointer-events: none;
+  animation: stickyPanelDropIn 340ms var(--ease) both;
+}
+
+.tool-menu-palette-panel {
+  max-width: min(92vw, 760px);
+}
+
+.tool-menu-palette-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.tool-menu-anchored-panel {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  background: var(--paper-bright);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-2);
+  padding: 4px 0;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.tool-menu-palette-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 2px;
+  background: var(--ink-faint);
+  flex-shrink: 0;
+}
+
+/* MODE — circular select / pan toggles */
+.canvas-circle-btn {
+  border-radius: 50% !important;
+}
+
+.mode-circle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50% !important;
+  border: 1px solid var(--ink-faint);
+  background: var(--paper-bright);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow:
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+
+.mode-circle-btn:hover:not(.is-on) {
+  border-color: rgba(31, 63, 199, 0.35);
+  background: var(--paper-cream);
+  box-shadow: 0 2px 6px rgba(14, 26, 46, 0.1);
+}
+
+.mode-circle-btn.is-on {
+  border-color: var(--cobalt);
+  background: var(--cobalt);
+  color: var(--accent-contrast);
+  box-shadow:
+    0 2px 8px rgba(31, 63, 199, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.mode-circle-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  transform: none;
+  padding-bottom: 14px;
+}
+
+.mode-circle-hint {
+  position: absolute;
+  top: auto;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--f-body);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease);
+  padding: 0 2px;
+  line-height: 1.1;
+}
+
+.mode-circle-wrap:hover .mode-circle-hint,
+.mode-circle-wrap:focus-within .mode-circle-hint {
+  opacity: 1;
+}
+
+/* 45° angle dial — circular button with partial arc indicator */
+.angle-dial-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.angle-dial-btn {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50% !important;
+  border: 1px solid var(--ink-faint);
+  background: var(--paper-bright);
+  color: var(--ink);
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow:
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  transition:
+    background var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.angle-dial-btn:hover:not(.is-on) {
+  border-color: rgba(31, 63, 199, 0.35);
+  background: var(--paper-cream);
+  box-shadow: 0 2px 6px rgba(14, 26, 46, 0.1);
+}
+
+.angle-dial-btn.is-on {
+  border-color: var(--cobalt);
+  background: var(--cobalt);
+  color: var(--accent-contrast);
+  box-shadow:
+    0 2px 8px rgba(31, 63, 199, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.angle-dial-btn.is-snap.is-on {
+  border-color: var(--c-positive);
+  background: var(--c-positive);
+  color: var(--accent-contrast);
+  box-shadow:
+    0 2px 8px rgba(30, 107, 74, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.angle-dial-arc {
+  position: absolute;
+  right: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+.angle-dial-btn.is-on ~ .angle-dial-arc {
+  opacity: 0.85;
 }

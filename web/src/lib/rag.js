@@ -48,6 +48,15 @@ function sheetFileName(sheetId) {
   return String(sheetId || "").replace(/^.*[/\\]/, "") || String(sheetId || "");
 }
 
+/** CW / SD / GD mark families from the tag prefix (plan hover marks). */
+function tagPrefixFamily(tag) {
+  const t = String(tag || "").replace(/[\s_]+/g, "").toUpperCase();
+  if (/^CW-?\d/i.test(t) || /^CW\d/i.test(t)) return "cw";
+  if (/^SD-?\d/i.test(t) || /^SD\d/i.test(t)) return "sd";
+  if (/^GD-?\d/i.test(t) || /^GD\d/i.test(t)) return "gd";
+  return null;
+}
+
 /** Per-sheet door/window/finish totals — put first so count questions always have data. */
 function buildSheetSymbolTotals(planSymbols = []) {
   /** @type {Record<string, any>} */
@@ -67,6 +76,12 @@ function buildSheetSymbolTotals(planSymbols = []) {
         door_tags: {},
         window_tags: {},
         finish_tags: {},
+        cw: 0,
+        sd: 0,
+        gd: 0,
+        cw_tags: {},
+        sd_tags: {},
+        gd_tags: {},
       };
     }
     const row = bySheet[sheet];
@@ -86,6 +101,17 @@ function buildSheetSymbolTotals(planSymbols = []) {
     } else {
       row.detail += 1;
     }
+    const fam = tagPrefixFamily(sym.tag);
+    if (fam === "cw") {
+      row.cw += 1;
+      row.cw_tags[sym.tag] = (row.cw_tags[sym.tag] || 0) + 1;
+    } else if (fam === "sd") {
+      row.sd += 1;
+      row.sd_tags[sym.tag] = (row.sd_tags[sym.tag] || 0) + 1;
+    } else if (fam === "gd") {
+      row.gd += 1;
+      row.gd_tags[sym.tag] = (row.gd_tags[sym.tag] || 0) + 1;
+    }
   }
   return Object.values(bySheet).map((r) => compact({
     sheet: r.sheet,
@@ -95,25 +121,133 @@ function buildSheetSymbolTotals(planSymbols = []) {
     finish_marks: r.finish || undefined,
     type_marks: r.type || undefined,
     detail_marks: r.detail || undefined,
+    curtain_cw: r.cw || undefined,
+    steel_sliding_sd: r.sd || undefined,
+    glass_door_gd: r.gd || undefined,
     total_symbols: r.total_symbols,
     door_tags: Object.keys(r.door_tags).length ? r.door_tags : undefined,
     window_tags: Object.keys(r.window_tags).length ? r.window_tags : undefined,
     finish_tags: Object.keys(r.finish_tags).length ? r.finish_tags : undefined,
+    cw_tags: Object.keys(r.cw_tags).length ? r.cw_tags : undefined,
+    sd_tags: Object.keys(r.sd_tags).length ? r.sd_tags : undefined,
+    gd_tags: Object.keys(r.gd_tags).length ? r.gd_tags : undefined,
   }));
 }
 
+/** Net floor / wall SF + mask counts per sheet from live shapes. */
+function buildSheetAreaTotals(shapes = [], conditions = []) {
+  const condById = Object.fromEntries((conditions || []).map((c) => [c.id, c]));
+  /** @type {Record<string, any>} */
+  const byFile = {};
+  for (const s of shapes || []) {
+    const file = sheetFileName(s.sheet_id);
+    if (!byFile[file]) {
+      byFile[file] = {
+        file,
+        sheet: s.sheet_id,
+        masks: 0,
+        cutouts: 0,
+        floor_sf: 0,
+        wall_sf: 0,
+        finishes: {},
+      };
+    }
+    const row = byFile[file];
+    if (s.measure_role === "deduct") row.cutouts += 1;
+    else row.masks += 1;
+    try {
+      const q = shapeQuantities(s);
+      row.floor_sf += Number(q.floor_sf) || 0;
+      row.wall_sf += Number(q.wall_sf) || 0;
+    } catch { /* ignore */ }
+    const ft = (condById[s.condition_id]?.finish_tag || "").trim();
+    if (ft) row.finishes[ft] = (row.finishes[ft] || 0) + 1;
+  }
+  return Object.values(byFile).map((r) => compact({
+    file: r.file,
+    sheet: r.sheet,
+    masks: r.masks || undefined,
+    cutouts: r.cutouts || undefined,
+    floor_sf: Math.abs(r.floor_sf) > 0.005 ? Math.round(r.floor_sf * 100) / 100 : undefined,
+    wall_sf: Math.abs(r.wall_sf) > 0.005 ? Math.round(r.wall_sf * 100) / 100 : undefined,
+    finishes: Object.keys(r.finishes).length ? r.finishes : undefined,
+  }));
+}
+
+/** Hover-card fields for a plan symbol (schedule-backed; same rows as the canvas card). */
+function symbolHoverDetail(sym) {
+  const fields = resolveSymbolFields(sym?.schedule || {}, null, sym?.room_name);
+  return compact({
+    tag: sym.tag,
+    kind: sym.kind,
+    sheet: sheetFileName(sym.sheet_id),
+    room_name: fields.room_name || undefined,
+    type: fields.type || undefined,
+    description: fields.description || undefined,
+    size: fields.size || undefined,
+    fire_rating: fields.fire_rating || undefined,
+    floors: fields.floors || undefined,
+    manufacturer: fields.manufacturer || undefined,
+    style: fields.style || undefined,
+    color: fields.color || undefined,
+    remarks: fields.remarks || undefined,
+    finish_tag: fields.finish_tag || undefined,
+  });
+}
+
+function formatHoverDetailLines(detail) {
+  if (!detail) return [];
+  const labels = [
+    ["tag", "Tag"],
+    ["kind", "Kind"],
+    ["sheet", "Sheet"],
+    ["room_name", "Room name"],
+    ["type", "Type"],
+    ["description", "Description"],
+    ["size", "Size / opening"],
+    ["fire_rating", "Fire rating"],
+    ["floors", "Floors"],
+    ["manufacturer", "Manufacturer"],
+    ["style", "Style"],
+    ["color", "Color"],
+    ["finish_tag", "Finish"],
+    ["remarks", "Remarks"],
+  ];
+  return labels
+    .filter(([k]) => detail[k])
+    .map(([k, label]) => `${label}: ${detail[k]}`);
+}
+
+/** Pick sheets mentioned in the question, else all. */
+function matchSheetsFromQuestion(question, sheetTotals) {
+  const q = String(question || "").toLowerCase();
+  const sheetHint = (q.match(/\ba1\d{3}\b/i) || q.match(/\b[a-z]\d{3,5}\b/i) || [])[0] || "";
+  const matched = (sheetTotals || []).filter((r) => {
+    const file = String(r.file || "").toLowerCase();
+    const sheet = String(r.sheet || "").toLowerCase();
+    if (q.includes(file) || q.includes(sheet)) return true;
+    if (sheetHint && (file.includes(sheetHint.toLowerCase()) || sheet.includes(sheetHint.toLowerCase()))) return true;
+    if (/\b1st\b/.test(q) && /1st/.test(file)) return true;
+    if (/\b2nd\b/.test(q) && /2nd/.test(file)) return true;
+    return false;
+  });
+  return { matched, sheetHint, rows: matched.length ? matched : (sheetHint ? [] : (sheetTotals || [])) };
+}
+
 /**
- * Short plain-text counts for embedding in the question (survives backends that ignore project_context).
+ * Short plain-text counts + door hover fields + floor areas for embedding in the question
+ * (survives backends that ignore project_context).
  * @param {any[]} planSymbols
  * @param {any[]} shapes
  * @param {any[]} conditions
  */
 export function buildLiveCountsSummary(planSymbols = [], shapes = [], conditions = []) {
   const sheetTotals = buildSheetSymbolTotals(planSymbols);
-  if (!sheetTotals.length && !(shapes || []).length) return "";
+  const areaTotals = buildSheetAreaTotals(shapes, conditions);
+  if (!sheetTotals.length && !areaTotals.length) return "";
   const lines = [
     "AUTHORITATIVE LIVE DETECTIONS from the open takeoff canvas.",
-    "For door, window, curtain/finish mark, and mask quantity questions, use these numbers. Do not say the total is unknown when a sheet is listed below.",
+    "For door count, CW curtain / SD steel-sliding / GD glass-door counts, door schedule/hover details, window/finish marks, floor area, and mask quantity questions, use these numbers. Do not say unknown when a sheet is listed below.",
   ];
   for (const r of sheetTotals) {
     const parts = [];
@@ -122,6 +256,24 @@ export function buildLiveCountsSummary(planSymbols = [], shapes = [], conditions
         ? Object.entries(r.door_tags).map(([t, n]) => `${t}=${n}`).join(", ")
         : "";
       parts.push(`${r.doors} doors${tags ? ` (${tags})` : ""}`);
+    }
+    if (r.curtain_cw) {
+      const tags = r.cw_tags
+        ? Object.entries(r.cw_tags).map(([t, n]) => `${t}=${n}`).join(", ")
+        : "";
+      parts.push(`${r.curtain_cw} curtain/CW marks${tags ? ` (${tags})` : ""}`);
+    }
+    if (r.steel_sliding_sd) {
+      const tags = r.sd_tags
+        ? Object.entries(r.sd_tags).map(([t, n]) => `${t}=${n}`).join(", ")
+        : "";
+      parts.push(`${r.steel_sliding_sd} steel/sliding SD doors${tags ? ` (${tags})` : ""}`);
+    }
+    if (r.glass_door_gd) {
+      const tags = r.gd_tags
+        ? Object.entries(r.gd_tags).map(([t, n]) => `${t}=${n}`).join(", ")
+        : "";
+      parts.push(`${r.glass_door_gd} glass GD doors${tags ? ` (${tags})` : ""}`);
     }
     if (r.windows) {
       const tags = r.window_tags
@@ -139,19 +291,29 @@ export function buildLiveCountsSummary(planSymbols = [], shapes = [], conditions
     if (!parts.length) parts.push(`${r.total_symbols} symbols`);
     lines.push(`- ${r.file}: ${parts.join("; ")}`);
   }
-  const condById = Object.fromEntries((conditions || []).map((c) => [c.id, c]));
-  const maskBySheet = {};
-  for (const s of shapes || []) {
-    const file = sheetFileName(s.sheet_id);
-    if (!maskBySheet[file]) maskBySheet[file] = { masks: 0, cutouts: 0, finishes: {} };
-    if (s.measure_role === "deduct") maskBySheet[file].cutouts += 1;
-    else maskBySheet[file].masks += 1;
-    const ft = (condById[s.condition_id]?.finish_tag || "").trim();
-    if (ft) maskBySheet[file].finishes[ft] = (maskBySheet[file].finishes[ft] || 0) + 1;
+  // Compact door hover fields (same as canvas card) so detail questions have data.
+  const doorDetails = (planSymbols || [])
+    .filter((s) => s.kind === "door")
+    .slice(0, 80)
+    .map((s) => symbolHoverDetail(s))
+    .filter(Boolean);
+  if (doorDetails.length) {
+    lines.push("Door details (hover-card fields from live detections / schedules):");
+    for (const d of doorDetails) {
+      const bits = formatHoverDetailLines(d);
+      if (bits.length) lines.push(`- ${bits.join("; ")}`);
+    }
   }
-  for (const [file, m] of Object.entries(maskBySheet)) {
-    const fin = Object.entries(m.finishes).map(([t, n]) => `${t}=${n}`).join(", ");
-    lines.push(`- ${file} takeoff: ${m.masks} masks, ${m.cutouts} cutouts${fin ? `; finishes ${fin}` : ""}`);
+  for (const m of areaTotals) {
+    const fin = m.finishes
+      ? Object.entries(m.finishes).map(([t, n]) => `${t}=${n}`).join(", ")
+      : "";
+    const areaBits = [];
+    if (m.floor_sf != null) areaBits.push(`floor area ${m.floor_sf} SF (net of cutouts)`);
+    if (m.wall_sf != null) areaBits.push(`wall area ${m.wall_sf} SF`);
+    areaBits.push(`${m.masks || 0} masks, ${m.cutouts || 0} cutouts`);
+    if (fin) areaBits.push(`finishes ${fin}`);
+    lines.push(`- ${m.file} takeoff: ${areaBits.join("; ")}`);
   }
   return lines.join("\n");
 }
@@ -231,7 +393,7 @@ export function buildProjectChatContext(input = {}) {
   const payload = compact({
     project: projectName || undefined,
     units,
-    note: "AUTHORITATIVE live detections. For door/window/finish/mask counts, use sheet_symbol_totals. Do not say unknown if a sheet is listed.",
+    note: "AUTHORITATIVE live detections. For door counts, CW curtain / SD steel-sliding / GD glass-door counts (sheet_symbol_totals), door hover/schedule details (detected_symbols), floor area (masks_and_takeoffs qty), and window/finish/mask counts, use this payload. Do not say unknown if a sheet or symbol is listed.",
     sheet_symbol_totals,
     symbol_counts_by_kind: kindCounts,
     symbol_tag_counts: Object.entries(tagCounts)
@@ -267,10 +429,10 @@ export function ragAnswerIsAccurate(answer, abstained = false, question = "") {
     return false;
   }
   const q = String(question || "");
-  if (/\b(total|how many|count|number of|qty|quantity)\b/i.test(q)) {
-    // Count questions need a concrete number in the answer body.
+  if (/\b(total|how many|count|number of|qty|quantity|floor area|wall area|door details?|doors? on)\b/i.test(q)) {
+    // Count / area / door-detail questions need concrete facts in the answer body.
     if (!/\b\d+\b/.test(text)) return false;
-    if (/does not (include|contain|provide|list|state).{0,60}(total|count|number|quantity)/i.test(text)) return false;
+    if (/does not (include|contain|provide|list|state).{0,60}(total|count|number|quantity|area|door)/i.test(text)) return false;
   }
   return true;
 }
@@ -298,8 +460,8 @@ export function resolveChatAnswer(question, result, liveAnswer = null) {
 }
 
 /**
- * Deterministic answer for door/window/symbol total questions from live detections.
- * Returns null when the question is not a count query or no matching sheet data exists.
+ * Deterministic answer for door/window totals, door hover-card details, and floor-area
+ * questions from live detections. Returns null when the question does not match or no data.
  * @param {string} question
  * @param {any[]} planSymbols
  * @param {any[]} [shapes]
@@ -311,31 +473,190 @@ export function answerFromLiveDetections(question, planSymbols = [], shapes = []
   const wantsDoors = /\bdoors?\b/.test(q);
   const wantsWindows = /\bwindows?\b/.test(q);
   const wantsFinish = /\b(finish|curtain)\b/.test(q);
-  const wantsMasks = /\b(mask|takeoff|cutout)\b/.test(q);
-  // Only for clear quantity questions — leave spec/detail Qs to RAG + API.
-  const wantsCount = /\b(total|how many|count|number of|qty|quantity)\b/.test(q);
-  if (!wantsCount || !(wantsDoors || wantsWindows || wantsFinish || wantsMasks)) return null;
+  const wantsCW = /\b(cw|curtain\s*walls?|curtains?)\b/.test(q);
+  const wantsSD = /\b(sd|steel\s*doors?|sliding\s*doors?|steal\s*doors?)\b/.test(q);
+  const wantsGD = /\b(gd|glass\s*doors?)\b/.test(q);
+  const wantsMarkFamily = wantsCW || wantsSD || wantsGD;
+  const wantsMasks = /\b(masks?|takeoffs?|cutouts?)\b/.test(q);
+  const explicitFloorArea = /\bfloor\s*(area|sf|takeoff|mask)\b|\bfloor\b.{0,24}\b(area|sf|square\s*feet)\b|\b(area|sf)\b.{0,24}\bfloor\b|\bsquare\s*feet\b|\bsq\.?\s*fts?\b/.test(q);
+  const wantsWallArea = /\bwall\s*(area|sf|takeoff)\b|\b(how much|total)\b.{0,40}\bwalls?\b/.test(q);
+  const wantsCount = /\b(total|how many|count|number of|qty|quantity|are there)\b/.test(q)
+    || (wantsDoors && /\b(on the (floor )?plan|floor plan|detected|live)\b/.test(q))
+    || (wantsWindows && /\b(on the (floor )?plan|floor plan)\b/.test(q))
+    || (wantsMarkFamily && /\b(on the (floor )?plan|floor plan|detected|live|marks?)\b/.test(q));
+  // Don't treat "doors on the 1st floor" as a floor-area question.
+  const wantsFloorArea = explicitFloorArea && !(wantsCount && (wantsDoors || wantsWindows || wantsFinish || wantsMarkFamily) && !/\bfloor\s*(area|sf)\b/.test(q));
+  const wantsDoorDetails = (wantsDoors || wantsMarkFamily) && (
+    /\b(detail|details|spec|specs|schedule|size|opening|fire|rating|manufacturer|style|color|hover|describe|description|fields?)\b/.test(q)
+    || (!wantsCount && /\b(about|tell me|what is|what's|info|room|type|width|height)\b/.test(q))
+  );
+  const tagFromQ = (String(question || "").match(/\b((?:CW|GD|SD|D|W|F)[-\s]?\d{1,4}[A-Za-z]?)\b/i) || [])[0] || "";
+  const wantsTagDetail = !!tagFromQ && !wantsCount;
 
   const sheetTotals = buildSheetSymbolTotals(planSymbols);
-  if (!sheetTotals.length && !(shapes || []).length) return null;
+  const areaTotals = buildSheetAreaTotals(shapes, conditions);
+  if (!sheetTotals.length && !areaTotals.length && !(planSymbols || []).length) return null;
 
-  const sheetHint = (q.match(/\ba1\d{3}\b/i) || q.match(/\b[a-z]\d{3,5}\b/i) || [])[0] || "";
-  const matched = sheetTotals.filter((r) => {
-    const file = String(r.file || "").toLowerCase();
-    const sheet = String(r.sheet || "").toLowerCase();
-    if (q.includes(file) || q.includes(sheet)) return true;
-    if (sheetHint && (file.includes(sheetHint) || sheet.includes(sheetHint))) return true;
-    if (/\b1st\b/.test(q) && /1st/.test(file)) return true;
-    if (/\b2nd\b/.test(q) && /2nd/.test(file)) return true;
+  const { matched, sheetHint, rows } = matchSheetsFromQuestion(question, sheetTotals.length ? sheetTotals : areaTotals);
+  const focusSheets = rows.length ? rows : (sheetTotals.length ? sheetTotals : areaTotals);
+  const fileSet = new Set(focusSheets.map((r) => String(r.file || "").toLowerCase()));
+  const sheetMatchesSym = (sym) => {
+    if (!matched.length && !sheetHint) return true;
+    const file = sheetFileName(sym.sheet_id).toLowerCase();
+    const sheet = String(sym.sheet_id || "").toLowerCase();
+    if (fileSet.has(file)) return true;
+    if (sheetHint && (file.includes(String(sheetHint).toLowerCase()) || sheet.includes(String(sheetHint).toLowerCase()))) return true;
     return false;
-  });
-  const rows = matched.length ? matched : (sheetHint ? [] : sheetTotals);
-  if (!rows.length && (wantsDoors || wantsWindows || wantsFinish)) return null;
+  };
+  const matchesFamilyAsk = (sym) => {
+    const fam = tagPrefixFamily(sym.tag);
+    if (wantsCW && fam === "cw") return true;
+    if (wantsSD && fam === "sd") return true;
+    if (wantsGD && fam === "gd") return true;
+    return false;
+  };
 
-  const focus = rows.length ? rows : sheetTotals;
+  // —— Door / CW / SD / GD hover-card details ——
+  if (wantsDoorDetails || wantsTagDetail) {
+    let symbols = (planSymbols || []).filter((s) => wantsTagDetail || s.kind === "door" || s.kind === "window" || s.kind === "finish");
+    if (tagFromQ) {
+      const norm = tagFromQ.replace(/\s+/g, "").toUpperCase();
+      symbols = (planSymbols || []).filter((s) => String(s.tag || "").replace(/\s+/g, "").toUpperCase() === norm
+        || String(s.tag || "").replace(/\s+/g, "").toUpperCase().includes(norm));
+    } else if (wantsMarkFamily) {
+      symbols = (planSymbols || []).filter(matchesFamilyAsk);
+    } else if (wantsDoors) {
+      symbols = symbols.filter((s) => s.kind === "door");
+    }
+    symbols = symbols.filter(sheetMatchesSym);
+    if (!symbols.length && (wantsDoorDetails || wantsTagDetail)) {
+      // Fall through to counts if we only wanted tags that aren't present.
+      if (!wantsCount && !wantsFloorArea) return null;
+    } else if (symbols.length) {
+      const familyTitle = wantsCW ? "Curtain/CW" : wantsSD ? "Steel/sliding SD" : wantsGD ? "Glass GD" : "Door";
+      const titleSheet = matched.length === 1 ? matched[0].file : (tagFromQ ? tagFromQ.toUpperCase() : `detected ${familyTitle.toLowerCase()} marks`);
+      const lines = [
+        `TITLE: ${familyTitle} details for ${titleSheet}`,
+        "",
+        "SECTION: Summary",
+        "These fields match the plan-symbol hover card on the takeoff canvas (schedule-backed where available).",
+        "",
+        "SECTION: Details",
+      ];
+      const cap = tagFromQ ? 12 : 40;
+      for (const sym of symbols.slice(0, cap)) {
+        const detail = symbolHoverDetail(sym);
+        const bits = formatHoverDetailLines(detail);
+        lines.push(bits.length ? bits.join(" · ") : `${sym.tag} (${sym.kind}) on ${sheetFileName(sym.sheet_id)}`);
+      }
+      if (symbols.length > cap) lines.push(`…and ${symbols.length - cap} more.`);
+      if (wantsCount && (wantsDoors || wantsMarkFamily)) {
+        lines.push("", "SECTION: Count");
+        if (wantsMarkFamily) {
+          lines.push(`Total matching CW/SD/GD marks in scope: ${symbols.length}.`);
+        } else {
+          const doorSyms = (planSymbols || []).filter((s) => s.kind === "door" && sheetMatchesSym(s));
+          lines.push(`Total doors in scope: ${doorSyms.length}.`);
+        }
+      }
+      lines.push("", "SECTION: Confidence");
+      lines.push("High for live detections. Schedule fields appear when the door/window/finish schedule PDF matched this mark.");
+      return lines.join("\n");
+    }
+  }
+
+  // —— Floor / wall area ——
+  if (wantsFloorArea || wantsWallArea) {
+    let areas = areaTotals.slice();
+    if (matched.length || sheetHint) {
+      areas = areaTotals.filter((r) => {
+        const file = String(r.file || "").toLowerCase();
+        if (fileSet.has(file)) return true;
+        if (sheetHint && file.includes(String(sheetHint).toLowerCase())) return true;
+        return false;
+      });
+    }
+    if (!areas.length && (shapes || []).length) areas = areaTotals;
+    if (!areas.length) return null;
+    const titleSheet = matched.length === 1 ? matched[0].file : (matched.length ? "matching sheets" : "open project sheets");
+    const lines = [
+      `TITLE: ${wantsFloorArea ? "Floor" : "Wall"} area for ${titleSheet}`,
+      "",
+      "SECTION: Summary",
+      "Areas below come from live takeoff masks on the open canvas (floor masks net of cutouts).",
+      "",
+      "SECTION: Areas",
+    ];
+    let sumFloor = 0;
+    let sumWall = 0;
+    for (const r of areas) {
+      const bits = [];
+      if (wantsFloorArea && r.floor_sf != null) {
+        bits.push(`floor area ${r.floor_sf} SF`);
+        sumFloor += Number(r.floor_sf) || 0;
+      }
+      if (wantsWallArea && r.wall_sf != null) {
+        bits.push(`wall area ${r.wall_sf} SF`);
+        sumWall += Number(r.wall_sf) || 0;
+      }
+      if (!bits.length && wantsFloorArea) bits.push(`floor area ${r.floor_sf ?? 0} SF`);
+      bits.push(`${r.masks || 0} masks, ${r.cutouts || 0} cutouts`);
+      lines.push(`${r.file}: ${bits.join("; ")}.`);
+    }
+    if (areas.length > 1) {
+      lines.push("", "SECTION: Totals");
+      if (wantsFloorArea) lines.push(`Combined net floor area: ${Math.round(sumFloor * 100) / 100} SF.`);
+      if (wantsWallArea) lines.push(`Combined wall area: ${Math.round(sumWall * 100) / 100} SF.`);
+    }
+    // Per-mask breakdown (room / finish / qty) when available
+    const condById = Object.fromEntries((conditions || []).map((c) => [c.id, c]));
+    const maskLines = [];
+    for (const s of (shapes || []).slice(0, 80)) {
+      const file = sheetFileName(s.sheet_id);
+      if ((matched.length || sheetHint) && !fileSet.has(file.toLowerCase())
+        && !(sheetHint && file.toLowerCase().includes(String(sheetHint).toLowerCase()))) continue;
+      if (wantsFloorArea && s.measure_role !== "floor_area" && s.measure_role !== "deduct") continue;
+      if (wantsWallArea && !wantsFloorArea && s.measure_role !== "wall_area" && s.measure_role !== "surface_area") continue;
+      let room = "";
+      try { room = detectRoomName(s, { planSymbols, shapes }, shapes) || ""; } catch { /* ignore */ }
+      let qtyText = "";
+      try {
+        const pq = primaryQty(shapeQuantities(s), "imperial");
+        if (pq) qtyText = `${pq.qty} ${pq.unit}`;
+      } catch { /* ignore */ }
+      const fin = (condById[s.condition_id]?.finish_tag || "").trim();
+      maskLines.push(
+        `${file}: ${s.measure_role}${room ? ` · ${room}` : ""}${fin ? ` · ${fin}` : ""}${qtyText ? ` · ${qtyText}` : ""}`,
+      );
+    }
+    if (maskLines.length) {
+      lines.push("", "SECTION: Masks");
+      lines.push(...maskLines);
+    }
+    lines.push("", "SECTION: Confidence");
+    lines.push("High for live takeoff quantities on the open canvas.");
+    return lines.join("\n");
+  }
+
+  // —— Quantity / count questions ——
+  // Prefer CW / SD / GD family asks over generic door/finish totals.
+  const specificDoorFamily = wantsSD || wantsGD;
+  const genericDoors = wantsDoors && !specificDoorFamily;
+  const genericFinish = wantsFinish && !wantsCW;
+  if (!wantsCount || !(genericDoors || wantsWindows || genericFinish || wantsMasks || wantsMarkFamily)) return null;
+  if (!rows.length && (genericDoors || wantsWindows || genericFinish || wantsMarkFamily)) return null;
+
+  const focus = focusSheets;
   const titleSheet = matched.length === 1 ? matched[0].file : (matched.length ? "matching sheets" : "open project sheets");
+  const titleKind = wantsCW ? "Curtain/CW"
+    : wantsSD ? "Steel/sliding SD door"
+    : wantsGD ? "Glass GD door"
+    : genericDoors ? "Door"
+    : wantsWindows ? "Window"
+    : genericFinish ? "Finish mark"
+    : "Takeoff";
   const lines = [
-    `TITLE: ${wantsDoors ? "Door" : wantsWindows ? "Window" : wantsFinish ? "Finish mark" : "Takeoff"} totals for ${titleSheet}`,
+    `TITLE: ${titleKind} totals for ${titleSheet}`,
     "",
     "SECTION: Summary",
     "The drawings corpus did not provide a reliable quantity for this question. Totals below are taken from live plan symbol detection on the open takeoff.",
@@ -344,7 +665,34 @@ export function answerFromLiveDetections(question, planSymbols = [], shapes = []
   ];
 
   for (const r of focus) {
-    if (wantsDoors) {
+    if (wantsCW) {
+      const tagList = r.cw_tags
+        ? Object.entries(r.cw_tags).sort((a, b) => a[0].localeCompare(b[0])).map(([t, n]) => `${t}: ${n}`).join(", ")
+        : "";
+      lines.push(
+        `${r.file}: ${r.curtain_cw || 0} curtain/CW marks total`
+        + (tagList ? `. Breakdown by tag: ${tagList}.` : "."),
+      );
+    }
+    if (wantsSD) {
+      const tagList = r.sd_tags
+        ? Object.entries(r.sd_tags).sort((a, b) => a[0].localeCompare(b[0])).map(([t, n]) => `${t}: ${n}`).join(", ")
+        : "";
+      lines.push(
+        `${r.file}: ${r.steel_sliding_sd || 0} steel/sliding SD doors total`
+        + (tagList ? `. Breakdown by tag: ${tagList}.` : "."),
+      );
+    }
+    if (wantsGD) {
+      const tagList = r.gd_tags
+        ? Object.entries(r.gd_tags).sort((a, b) => a[0].localeCompare(b[0])).map(([t, n]) => `${t}: ${n}`).join(", ")
+        : "";
+      lines.push(
+        `${r.file}: ${r.glass_door_gd || 0} glass GD doors total`
+        + (tagList ? `. Breakdown by tag: ${tagList}.` : "."),
+      );
+    }
+    if (genericDoors) {
       const tagList = r.door_tags
         ? Object.entries(r.door_tags).sort((a, b) => a[0].localeCompare(b[0])).map(([t, n]) => `${t}: ${n}`).join(", ")
         : "";
@@ -362,7 +710,7 @@ export function answerFromLiveDetections(question, planSymbols = [], shapes = []
         + (tagList ? `. Breakdown by tag: ${tagList}.` : "."),
       );
     }
-    if (wantsFinish) {
+    if (genericFinish) {
       const tagList = r.finish_tags
         ? Object.entries(r.finish_tags).sort((a, b) => a[0].localeCompare(b[0])).map(([t, n]) => `${t}: ${n}`).join(", ")
         : "";
@@ -373,20 +721,32 @@ export function answerFromLiveDetections(question, planSymbols = [], shapes = []
     }
   }
 
+  if (wantsCW && focus.length > 1) {
+    lines.push(`Combined curtain/CW total across listed sheets: ${focus.reduce((n, r) => n + (Number(r.curtain_cw) || 0), 0)}.`);
+  }
+  if (wantsSD && focus.length > 1) {
+    lines.push(`Combined steel/sliding SD total across listed sheets: ${focus.reduce((n, r) => n + (Number(r.steel_sliding_sd) || 0), 0)}.`);
+  }
+  if (wantsGD && focus.length > 1) {
+    lines.push(`Combined glass GD total across listed sheets: ${focus.reduce((n, r) => n + (Number(r.glass_door_gd) || 0), 0)}.`);
+  }
+  if (genericDoors && focus.length > 1) {
+    const doorTotal = focus.reduce((n, r) => n + (Number(r.doors) || 0), 0);
+    lines.push(`Combined door total across listed sheets: ${doorTotal}.`);
+  }
+  if (wantsWindows && focus.length > 1) {
+    const windowTotal = focus.reduce((n, r) => n + (Number(r.windows) || 0), 0);
+    lines.push(`Combined window total across listed sheets: ${windowTotal}.`);
+  }
+
   if (wantsMasks && (shapes || []).length) {
     lines.push("", "SECTION: Takeoff masks");
-    const byFile = {};
-    for (const s of shapes) {
-      const file = sheetFileName(s.sheet_id);
-      if (matched.length && !matched.some((m) => sheetFileName(m.sheet).toLowerCase() === file.toLowerCase())) {
-        if (sheetHint && !file.toLowerCase().includes(String(sheetHint).toLowerCase())) continue;
-      }
-      if (!byFile[file]) byFile[file] = { masks: 0, cutouts: 0 };
-      if (s.measure_role === "deduct") byFile[file].cutouts += 1;
-      else byFile[file].masks += 1;
-    }
-    for (const [file, m] of Object.entries(byFile)) {
-      lines.push(`${file}: ${m.masks} masks and ${m.cutouts} cutouts.`);
+    for (const r of buildSheetAreaTotals(shapes, conditions)) {
+      if ((matched.length || sheetHint) && !fileSet.has(String(r.file || "").toLowerCase())
+        && !(sheetHint && String(r.file || "").toLowerCase().includes(String(sheetHint).toLowerCase()))) continue;
+      lines.push(`${r.file}: ${r.masks || 0} masks and ${r.cutouts || 0} cutouts`
+        + (r.floor_sf != null ? `; net floor area ${r.floor_sf} SF` : "")
+        + ".");
     }
   }
 

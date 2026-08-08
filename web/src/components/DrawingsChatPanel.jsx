@@ -70,28 +70,28 @@ function FormattedAnswer({ content }) {
   }, [content]);
 
   if (!blocks.length) {
-    return <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>{cleanDisplayText(content)}</div>;
+    return <div style={{ fontSize: 12.5, lineHeight: 1.4 }}>{cleanDisplayText(content)}</div>;
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {blocks.map((b, i) => {
         if (b.type === "title") {
           return (
-            <div key={i} style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", lineHeight: 1.3 }}>
+            <div key={i} style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", lineHeight: 1.25 }}>
               {b.text}
             </div>
           );
         }
         if (b.type === "section") {
           return (
-            <div key={i} style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)", marginTop: i ? 4 : 0, letterSpacing: "0.02em" }}>
+            <div key={i} style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)", marginTop: i ? 2 : 0, letterSpacing: "0.02em", lineHeight: 1.3 }}>
               {b.text}
             </div>
           );
         }
         return (
-          <div key={i} style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--ink)" }}>
+          <div key={i} style={{ fontSize: 12.5, lineHeight: 1.4, color: "var(--ink)" }}>
             {b.text}
           </div>
         );
@@ -104,22 +104,27 @@ function GeneratingIndicator() {
   return (
     <div
       style={{
-        padding: 10,
-        borderRadius: 6,
+        padding: "4px 8px",
+        borderRadius: 999,
         background: "var(--paper-cream)",
+        border: "1px solid var(--ink-faint)",
         marginRight: 8,
-        display: "flex",
+        display: "inline-flex",
         alignItems: "center",
-        gap: 10,
+        gap: 6,
+        alignSelf: "flex-start",
+        width: "max-content",
+        maxWidth: "100%",
+        boxSizing: "border-box",
       }}
     >
-      <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
         {[0, 1, 2].map((i) => (
           <span
             key={i}
             style={{
-              width: 7,
-              height: 7,
+              width: 5,
+              height: 5,
               borderRadius: 999,
               background: "var(--cobalt)",
               animation: "adiccChatDot 1s ease-in-out infinite",
@@ -128,7 +133,7 @@ function GeneratingIndicator() {
           />
         ))}
       </div>
-      <div style={{ fontSize: 12, color: "var(--ink-muted)" }}>Generating answer</div>
+      <div style={{ fontSize: 11, color: "light-dark(var(--ink-muted), var(--ink))", lineHeight: 1.2, whiteSpace: "nowrap" }}>Generating answer</div>
     </div>
   );
 }
@@ -629,10 +634,10 @@ export default function DrawingsChatPanel({
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Drawings Q&A</div>
               <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>Tap a citation to open the floating reference</div>
             </div>
-            <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "var(--ink-muted)" }}>×</button>
+            <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "light-dark(var(--ink-muted), var(--ink))", lineHeight: 1 }}>×</button>
           </header>
 
-          <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
             {messages.length === 0 && !loading && (
               <div>
                 <p style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 8 }}>Ask about drawings, specs, schedules, or reports.</p>
@@ -655,14 +660,16 @@ export default function DrawingsChatPanel({
               <div
                 key={index}
                 style={{
-                  padding: 10,
-                  borderRadius: 6,
+                  padding: message.role === "user" ? "3px 8px 4px" : "5px 9px",
+                  borderRadius: message.role === "user" ? 12 : 8,
                   background: message.role === "user" ? "rgba(31,63,199,0.08)" : "var(--paper-cream)",
-                  marginLeft: message.role === "user" ? 20 : 0,
-                  marginRight: message.role === "assistant" ? 8 : 0,
+                  alignSelf: message.role === "user" ? "flex-end" : "flex-start",
+                  width: "fit-content",
+                  maxWidth: message.role === "user" ? "min(72%, 240px)" : "min(94%, 100%)",
+                  boxSizing: "border-box",
                 }}
               >
-                <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-muted)", marginBottom: 6 }}>
+                <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-muted)", marginBottom: message.role === "user" ? 1 : 3, lineHeight: 1 }}>
                   {message.role === "user" ? "You" : "Assistant"}
                   {message.abstained ? "  abstained" : ""}
                 </div>
@@ -678,12 +685,12 @@ export default function DrawingsChatPanel({
                     <FormattedAnswer content={message.content} />
                   )
                 ) : (
-                  <div style={{ fontSize: 12.5, whiteSpace: "pre-wrap", lineHeight: 1.45 }}>{message.content}</div>
+                  <div style={{ fontSize: 12.5, whiteSpace: "pre-wrap", lineHeight: 1.25, margin: 0 }}>{message.content.trim()}</div>
                 )}
 
                 {message.citations?.length > 0 && !message.animate && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 6 }}>
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 4, lineHeight: 1 }}>
                       References
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -716,10 +723,30 @@ export default function DrawingsChatPanel({
             />
             <button
               type="submit"
+              className="canvas-circle-btn"
               disabled={loading}
-              style={{ padding: "8px 14px", background: "var(--cobalt)", color: "var(--paper-bright)", border: "none", borderRadius: 4, fontWeight: 600, fontSize: 11, cursor: loading ? "default" : "pointer", opacity: loading ? 0.6 : 1 }}
+              title={loading ? "Thinking…" : "Send"}
+              style={{
+                width: 40,
+                height: 40,
+                padding: 0,
+                background: "var(--cobalt)",
+                color: "var(--accent-contrast)",
+                border: "none",
+                borderRadius: "50%",
+                fontWeight: 600,
+                fontSize: 11,
+                cursor: loading ? "default" : "pointer",
+                opacity: loading ? 0.6 : 1,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}
             >
-              {loading ? "..." : "Ask"}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4.5 11.2 19.2 4.4c.7-.3 1.4.4 1.1 1.1L13.5 20.2c-.3.7-1.3.6-1.5-.2l-1.6-6.1-6.1-1.6c-.8-.2-.9-1.2-.2-1.5Z" fill="currentColor"/>
+              </svg>
             </button>
           </form>
         </aside>

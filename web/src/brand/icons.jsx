@@ -18,8 +18,14 @@ export const icons = {
   search: (s) => <I size={s}><circle cx="11" cy="11" r="6.5" /><line x1="16" y1="16" x2="20.5" y2="20.5" /></I>,
 
   // ── takeoff canvas set — drafting monoline, vertex-dot motif on measure tools ──
-  pan: (s) => <I size={s}><path d="M12 2 V 22 M2 12 H 22" /><path d="M12 2 L 9.6 4.4 M12 2 L 14.4 4.4 M12 22 L 9.6 19.6 M12 22 L 14.4 19.6 M2 12 L 4.4 9.6 M2 12 L 4.4 14.4 M22 12 L 19.6 9.6 M22 12 L 19.6 14.4" /></I>,
-  select: (s) => <I size={s}><path d="M7 3 L 7 17 L 11 13.5 L 13.5 19.2 L 16 18 L 13.5 12.5 L 18.5 12 Z" /></I>,
+  pan: (s) => (
+    <i className="fa-solid fa-hand-wave" aria-hidden="true" style={{ fontSize: s, lineHeight: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", width: s, height: s }}>
+      <svg width={s} height={s} viewBox="0 0 512 512" fill="currentColor" aria-hidden="true">
+        <path d="M288 32c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 208c0 8.8-7.2 16-16 16s-16-7.2-16-16l0-176c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 272c0 1.5 0 3.1 .1 4.6L67.6 283c-16-15.2-41.3-14.6-56.6 1.4S-3.6 325.7 12.4 341L124.8 448c43.1 41.1 100.4 64 160 64l19.2 0c97.2 0 176-78.8 176-176l0-208c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 112c0 8.8-7.2 16-16 16s-16-7.2-16-16l0-176c0-17.7-14.3-32-32-32s-32 14.3-32 32l0 176c0 8.8-7.2 16-16 16s-16-7.2-16-16l0-208z" />
+      </svg>
+    </i>
+  ),
+  select: (s) => <I size={s}><path d="M5 3 V 19 L 9.5 14.5 L 12.5 20 L 14.5 18 L 11.5 12.5 L 19.5 12.5 L 5 3 Z" fill="currentColor" stroke="none" /></I>,
   calibrate: (s) => <I size={s}><circle cx="12" cy="4.6" r="1.4" /><path d="M11.2 5.9 L 7 19 M12.8 5.9 L 17 19" /><path d="M5.8 17.4 L 8.2 18.4 M18.2 17.4 L 15.8 18.4" /></I>,
   area: (s) => <I size={s}><path d="M12 4 L 20 10 L 17 19 L 7 19 L 4 10 Z" /><circle cx="12" cy="4" r="1.1" fill="currentColor" /><circle cx="20" cy="10" r="1.1" fill="currentColor" /><circle cx="17" cy="19" r="1.1" fill="currentColor" /><circle cx="7" cy="19" r="1.1" fill="currentColor" /><circle cx="4" cy="10" r="1.1" fill="currentColor" /></I>,
   rectTool: (s) => <I size={s}><rect x="4" y="6" width="16" height="12" /><circle cx="4" cy="6" r="1.1" fill="currentColor" /><circle cx="20" cy="6" r="1.1" fill="currentColor" /><circle cx="20" cy="18" r="1.1" fill="currentColor" /><circle cx="4" cy="18" r="1.1" fill="currentColor" /></I>,
@@ -28,8 +34,18 @@ export const icons = {
   surface: (s) => <I size={s}><line x1="3" y1="20" x2="21" y2="20" /><path d="M8 20 V 7 H 16 V 20" /><path d="M12 16.5 V 10 M12 10 L 10.2 11.8 M12 10 L 13.8 11.8" /></I>,
   count: (s) => <I size={s}><rect x="4" y="4" width="4.5" height="4.5" fill="currentColor" stroke="none" /><rect x="15" y="5.5" width="4.5" height="4.5" fill="currentColor" stroke="none" /><rect x="6.5" y="13.5" width="4.5" height="4.5" fill="currentColor" stroke="none" /><rect x="15" y="15" width="4.5" height="4.5" /></I>,
   deduct: (s) => <I size={s}><path d="M12 4 L 20 10 L 17 19 L 7 19 L 4 10 Z" /><line x1="9" y1="13" x2="15" y2="13" /></I>,
+  measure: (s) => <I size={s}><path d="M4 8 H 20" /><path d="M4 8 V 16 H 20 V 8" /><line x1="7" y1="8" x2="7" y2="11.5" /><line x1="10" y1="8" x2="10" y2="10.5" /><line x1="13" y1="8" x2="13" y2="11.5" /><line x1="16" y1="8" x2="16" y2="10.5" /><circle cx="20" cy="12" r="1.1" fill="currentColor" /></I>,
+  cutOut: (s) => <I size={s}><path d="M12 4 L 20 10 L 17 19 L 7 19 L 4 10 Z" /><circle cx="12" cy="4" r="1" fill="currentColor" /><circle cx="20" cy="10" r="1" fill="currentColor" /><circle cx="17" cy="19" r="1" fill="currentColor" /><circle cx="7" cy="19" r="1" fill="currentColor" /><circle cx="4" cy="10" r="1" fill="currentColor" /><line x1="9" y1="13" x2="15" y2="13" strokeWidth="2" /></I>,
+  edit: (s) => <I size={s}><rect x="9" y="7" width="11" height="13" /><path d="M15 7 V 4 H 4 V 15 H 7" /></I>,
   deductRect: (s) => <I size={s}><rect x="4" y="6" width="16" height="12" /><line x1="9" y1="12" x2="15" y2="12" /></I>,
-  snap: (s) => <I size={s}><path d="M7 4 V 12 a 5 5 0 0 0 10 0 V 4" /><path d="M7 4 H 10.5 M13.5 4 H 17" /><path d="M7 7.5 H 10.5 M13.5 7.5 H 17" /><circle cx="12" cy="20.6" r="0.9" fill="currentColor" /></I>,
+  snap: (s) => (
+    <svg width={s} height={s} viewBox="0 0 512 512" fill="currentColor" aria-hidden="true">
+      <g transform="translate(256 268) rotate(-42) scale(0.84) translate(-224 -268)">
+        <path d="M0 176L0 288C0 411.7 100.3 512 224 512S448 411.7 448 288l0-112-128 0 0 112c0 53-43 96-96 96s-96-43-96-96l0-112-128 0zm0-48l128 0 0-64c0-17.7-14.3-32-32-32L32 32C14.3 32 0 46.3 0 64l0 64zm320 0l128 0 0-64c0-17.7-14.3-32-32-32l-64 0c-17.7 0-32 14.3-32 32l0 64z" />
+        <path d="M206 4 L230 48 L214 48 L232 96 L190 40 L208 40 Z" />
+      </g>
+    </svg>
+  ),
   angle: (s) => <I size={s}><path d="M4 19 H 20" /><path d="M4 19 L 17 6" /><path d="M12 19 a 8 8 0 0 0 -2.3 -5.7" /></I>,
   cloud: (s) => <I size={s}><path d="M6 9 a2.3 2.3 0 0 1 4 -1.4 a2.3 2.3 0 0 1 4 0 a2.3 2.3 0 0 1 4 1.4 a2.3 2.3 0 0 1 0.4 3 a2.3 2.3 0 0 1 -0.4 3 a2.3 2.3 0 0 1 -4 1.4 a2.3 2.3 0 0 1 -4 0 a2.3 2.3 0 0 1 -4 -1.4 a2.3 2.3 0 0 1 -0.4 -3 a2.3 2.3 0 0 1 0.4 -3 Z" /></I>,
   callout: (s) => <I size={s}><circle cx="6" cy="17" r="1.1" fill="currentColor" /><line x1="6.8" y1="16.2" x2="13" y2="10" /><rect x="13" y="5.5" width="8" height="6" /></I>,
@@ -47,7 +63,7 @@ export const icons = {
   chevronDown: (s) => <I size={s}><path d="M6 9 L 12 15 L 18 9" /></I>,
   chevronLeft: (s) => <I size={s}><path d="M15 6 L 9 12 L 15 18" /></I>,
   chevronRight: (s) => <I size={s}><path d="M9 6 L 15 12 L 9 18" /></I>,
-  markup: (s) => <I size={s}><path d="M12 3 L 17 10 L 12 21 L 7 10 Z" /><line x1="12" y1="3" x2="12" y2="12.5" /><circle cx="12" cy="13" r="1" fill="currentColor" /></I>,
+  markup: (s) => <I size={s}><path d="M5 21 L8.5 17.5 M8.5 17.5 L6.8 14 L14 6.8 L17.2 10 L10 17.2 Z M14 6.8 L15.8 5 L19 8.2 L17.2 10" /></I>,
   // stamp — a press-down rubber stamp over its impression line (the tool-chest motif)
   stamp: (s) => <I size={s}><rect x="8" y="3" width="8" height="6" rx="1" /><path d="M6 15 L 9 9 H 15 L 18 15 Z" /><line x1="4" y1="19" x2="20" y2="19" /></I>,
   // RFI — a hexagon echoing the on-canvas ⬢ RFI marker, with a question motif

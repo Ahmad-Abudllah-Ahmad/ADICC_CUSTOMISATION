@@ -31,7 +31,7 @@ import { SPEC_FIELDS } from "../lib/reportColumns.js";
 import { num } from "../lib/num.js";
 import { areaVal, areaUnit, lenVal, lenUnit } from "../lib/units";
 import { HATCHES, PALETTE, NO_FILL, HatchSwatch } from "./hatches.jsx";
-import { LINE_STYLES, LINE_STYLE_IDS } from "../lib/lineStyles.js";
+import { LINE_STYLES, LINE_STYLE_IDS, WEIGHT_STEPS, snapWeight } from "../lib/lineStyles.js";
 import { materialKind, MATERIAL_PRESETS, GROUT_DEFAULTS, groutDerivedFields, showsGroutCalc, showsGroutDeriveAffordance } from "../lib/coverage.js";
 import { draftCommitValue, blurCommitValue, blurCommitNonNegative } from "../lib/draftInput.js";
 
@@ -346,6 +346,13 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
           <select name="condition-line-style" value={c.line_style || "solid"} onChange={(e) => onUpdateCond({ line_style: e.target.value })}
             style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
             {LINE_STYLE_IDS.map((id) => <option key={id} value={id}>{LINE_STYLES[id].label}</option>)}
+          </select>
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Line thickness — stroke weight multiplier for this condition's takeoffs on the canvas (× base). Applies live to the selection and new draws.">
+          <span style={{ color: "var(--ink-muted)" }}>Weight</span>
+          <select name="condition-line-weight" value={String(snapWeight(c.weight))} onChange={(e) => onUpdateCond({ weight: Number(e.target.value) })}
+            style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
+            {WEIGHT_STEPS.map((wv) => <option key={wv} value={wv}>{wv}×</option>)}
           </select>
         </span>
         <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Height (ft) — the default for NEW wall traces (SF = LF × H) and the vertical-SF display on floor areas. Walls keep the height they were drawn at — select a wall to change just that one.">
@@ -709,8 +716,8 @@ function TakeoffsPanel({
               {g.name != null && (
                 <div onClick={() => setClosedGroups((s) => { const n = new Set(s); if (n.has(g.name)) n.delete(g.name); else n.add(g.name); return n; })}
                   title="Collapse / expand this tag family"
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--ink-faint)", background: "var(--paper-cream)", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--ink-muted)", userSelect: "none" }}>
-                  <span style={{ width: 10 }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--ink-faint)", background: "var(--paper-cream)", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "light-dark(var(--ink-muted), var(--ink))", userSelect: "none" }}>
+                  <span style={{ width: 10, color: "light-dark(var(--ink-muted), var(--ink))" }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
                   <span style={{ fontWeight: 700, color: "var(--ink)" }}>{g.name}</span>
                   <span>· {g.items.length}</span>
                 </div>

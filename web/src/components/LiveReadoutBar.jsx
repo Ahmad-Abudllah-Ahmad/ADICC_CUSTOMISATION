@@ -1,0 +1,281 @@
+// Live readout — condition totals, in-progress measure, wall openings (top toolbar).
+import React from "react";
+import { Icon } from "../brand/icons.jsx";
+import { M_PER_FT, areaVal, areaUnit, lenVal, lenUnit, calInputToFeet } from "../lib/units";
+import { openLen } from "../lib/geometry.js";
+
+export default function LiveReadoutBar({
+  tool,
+  aCond,
+  activeCond,
+  units,
+  unitsPerPx,
+  poly,
+  liveUpp,
+  liveArea,
+  livePerim,
+  zoneTraceCross,
+  condH,
+  proposal,
+  wallProposal,
+  ocSel,
+  selShape,
+  doorScheduleOptions,
+  condRow,
+  condMult,
+  condTotal,
+  wallTotal,
+  borderTotal,
+  lfTotal,
+  countTotal,
+  vertTotal,
+  sheetFloorSf,
+  sheetWallSf,
+  visibleShapeCount,
+  groupKeyCount,
+  zoomScale,
+  onSetShapeHeight,
+  onClearShapeHeight,
+  onAddWallOpening,
+  onStartWallCutout,
+  onUpdateWallOpening,
+  onRemoveWallOpening,
+  onFlyToWallOpening,
+}) {
+  const num = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d });
+  const fa = (sf, d = 1) => `${num(areaVal(sf, units), d)} ${areaUnit(units)}`;
+  const fl = (lf, d = 1) => `${num(lenVal(lf, units), d)} ${lenUnit(units)}`;
+
+  return (
+    <div className="live-readout-bar" style={{ display: "flex", flexDirection: "column", minWidth: 220, maxWidth: 280, width: 268, height: 72, maxHeight: 72, overflow: "hidden", fontVariantNumeric: "tabular-nums" }}>
+      <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", minHeight: 0, overscrollBehavior: "contain" }}>
+          {tool === "oneclick" && proposal?.regions.length ? (() => {
+            const pos = proposal.regions.filter((r) => r.kind === "pos");
+            const neg = proposal.regions.filter((r) => r.kind === "neg");
+            const sf = pos.reduce((n, r) => n + r.area_sf, 0) - neg.reduce((n, r) => n + r.area_sf, 0);
+            return (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(sf, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} selected</span></div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{pos.length} space{pos.length === 1 ? "" : "s"}{neg.length ? ` − ${neg.length} cutout${neg.length === 1 ? "" : "s"}` : ""}{units === "metric" ? "" : ` · ${num(sf / 9)} SY`}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>{ocSel ? "drag to move · Delete drops this point · Esc deselects" : "hover a fill to edit: drag a corner or edge · shift-click an edge adds a point"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>click adds a space · ⌥-click carves a cutout · ⏎ Create · ⌫ undo · Esc cancel</div>
+                {proposal.regions.some((r) => r.rt) && (
+                  <div style={{ fontSize: 11.5, color: "var(--c-warning)", marginTop: 4 }}>Traced from scan pixels — verify edges before Create.</div>
+                )}
+              </>
+            );
+          })() : tool === "walltrace" && wallProposal?.regions.length ? (() => {
+            const face = wallProposal.regions.reduce((n, r) => n + r.wall_face_sf, 0);
+            const fp = wallProposal.regions.reduce((n, r) => n + r.footprint_sf, 0);
+            const vol = wallProposal.regions.reduce((n, r) => n + r.volume_cf, 0);
+            return (
+              <>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(face, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} face</span></div>
+                <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{num(areaVal(fp, units))} {areaUnit(units)} footprint · {num(vol, 1)} CF · {wallProposal.regions.length} network{wallProposal.regions.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>click adds a wall island · ⏎ Create · Esc cancel</div>
+                {wallProposal.regions.some((r) => r.hf) && (
+                  <div style={{ fontSize: 11.5, color: "var(--c-warning)", marginTop: 4 }}>Hatch-filled walls included — verify edges before Create.</div>
+                )}
+              </>
+            );
+          })() : (tool === "surface" || tool === "wallarea") && poly.length >= 2 && liveUpp ? (
+            (() => {
+              const liveLF = openLen(poly) * liveUpp;
+              return condH > 0 ? (
+                <>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: "var(--ink)" }}>{num(areaVal(liveLF * condH, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} wall</span></div>
+                  <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{fl(liveLF)} × {num(condH, 2)} ft</div>
+                </>
+              ) : <div style={{ fontSize: 12.5, color: "var(--c-danger)" }}>Set a height for {aCond?.finish_tag || "this condition"} — H in the condition editor</div>;
+            })()
+          ) : tool === "zone" && poly.length >= 1 ? (
+            zoneTraceCross ? (
+              <span style={{ color: "var(--c-danger)", fontSize: 12.5 }}>Zone on one sheet — that point landed on a different sheet. Finish is disabled; Esc or Undo last point to fix it.</span>
+            ) : (
+              <>
+                {liveArea != null && poly.length >= 3 && <div style={{ fontSize: 22, fontWeight: 700, color: "var(--cobalt)" }}>{num(areaVal(liveArea, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)} in zone</span></div>}
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 4 }}>⏎, double-click, or the Finish button closes the zone and lists everything inside · Esc cancels</div>
+              </>
+            )
+          ) : liveArea != null && poly.length >= 3 ? (
+            <>
+              <div style={{ fontSize: 22, fontWeight: 700, color: tool === "deduct" ? "var(--c-danger)" : "var(--ink)" }}>{tool === "deduct" ? "−" : ""}{num(areaVal(liveArea, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)}</span></div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{units === "metric" ? `${fl(livePerim)} perim` : `${num(liveArea / 9)} SY  ·  ${num(livePerim)} LF perim`}</div>
+              {condH > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>@H {num(condH, 2)}′: {fa(livePerim * condH)} vert{units === "metric" ? "" : ` · ${num((liveArea * condH) / 27)} CY`}</div>}
+            </>
+          ) : null}
+          {tool !== "oneclick" && proposal?.regions.length > 0 && (() => {
+            const pos = proposal.regions.filter((r) => r.kind === "pos");
+            const neg = proposal.regions.filter((r) => r.kind === "neg");
+            const sf = pos.reduce((n, r) => n + r.area_sf, 0) - neg.reduce((n, r) => n + r.area_sf, 0);
+            return (
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Pending rooms</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cobalt)", marginTop: 2 }}>{num(areaVal(sf, units))} {areaUnit(units)} · {pos.length} space{pos.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>Switch to One-Click (O) or press Create rooms</div>
+              </div>
+            );
+          })()}
+          {tool !== "walltrace" && wallProposal?.regions.length > 0 && (() => {
+            const face = wallProposal.regions.reduce((n, r) => n + r.wall_face_sf, 0);
+            return (
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Pending walls</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--cobalt)", marginTop: 2 }}>{num(areaVal(face, units))} {areaUnit(units)} face · {wallProposal.regions.length} network{wallProposal.regions.length === 1 ? "" : "s"}</div>
+                <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>Switch to Wall Trace (W) or press Create walls</div>
+              </div>
+            );
+          })()}
+          {(selShape?.measure_role === "surface_area" || selShape?.measure_role === "wall_area") && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }} title="Height for THIS wall only. ↺ returns to the condition height.">
+                  <Icon name="height" size={12} />
+                  <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>wall H</span>
+                  <input name="shape-height-ft" type="number" min="0" step="0.25" value={selShape.height_ft ?? ""}
+                    onChange={(e) => onSetShapeHeight(e.target.value)}
+                    style={{ width: 48, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 12 }} />
+                  {condH > 0 && Number(selShape.height_ft) !== condH && (
+                    <button type="button" onClick={onClearShapeHeight} title="Set this wall to the condition height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
+                  )}
+                </div>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+                  <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Door openings</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selShape?.measure_role === "wall_area" && onStartWallCutout) onStartWallCutout();
+                      else onAddWallOpening({ source: "cutout" });
+                    }}
+                    title={selShape?.measure_role === "wall_area"
+                      ? "Add a custom cutout — click two points on the wall area line (snaps to that line)"
+                      : "Add a custom wall cutout (W × H) subtracted from wall face"}
+                    style={{ border: "1px solid var(--ink-faint)", background: "var(--paper)", fontSize: 11, padding: "1px 7px", cursor: "pointer" }}
+                  >
+                    + Add
+                  </button>
+                </div>
+              </div>
+              <div style={{ paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
+                {doorScheduleOptions.length > 0 && (
+                  <select
+                    aria-label="Prefill opening from door schedule"
+                    defaultValue=""
+                    onChange={(e) => {
+                      const tag = e.target.value;
+                      e.target.value = "";
+                      if (!tag) return;
+                      const opt = doorScheduleOptions.find((o) => o.tag === tag);
+                      onAddWallOpening({ tag, kind: opt?.kind || "door", size: opt?.size || "", symbol_id: opt?.symbol_id || "", source: "schedule" });
+                    }}
+                    style={{ width: "100%", marginBottom: 6, fontSize: 11, padding: "3px 4px", border: "1px solid var(--ink-faint)", background: "var(--paper)" }}
+                  >
+                    <option value="">Add from door schedule…</option>
+                    {doorScheduleOptions.map((o) => (
+                      <option key={o.tag} value={o.tag}>{o.tag}{o.size ? ` · ${o.size}` : ""}</option>
+                    ))}
+                  </select>
+                )}
+                {(selShape.openings || []).length === 0 && (
+                  <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>No openings — wall face is full height × length.</div>
+                )}
+                {(selShape.openings || []).length > 0 && (
+                <div style={{ maxHeight: 88, overflowY: "auto", overscrollBehavior: "contain", paddingRight: 2 }}>
+                {(selShape.openings || []).map((opn, opnIdx) => {
+                  const wDisp = units === "metric" ? (Number(opn.width_ft) || 0) * M_PER_FT : (Number(opn.width_ft) || 0);
+                  const hDisp = units === "metric" ? (Number(opn.height_ft) || 0) * M_PER_FT : (Number(opn.height_ft) || 0);
+                  const dimUnit = units === "metric" ? "m" : "ft";
+                  const cutN = (selShape.openings || []).filter((o) => o.source === "cutout").length;
+                  const cutIdx = opn.source === "cutout"
+                    ? (selShape.openings || []).slice(0, opnIdx + 1).filter((o) => o.source === "cutout").length
+                    : 0;
+                  const openingLabel = opn.source === "cutout"
+                    ? (cutN > 1 ? `custom cut ${cutIdx}` : "custom cut")
+                    : (opn.tag || "Door");
+                  return (
+                    <div key={opn.id} style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        title={opn.source === "cutout" ? "Go to this cutout on the plan" : "Go to this door on the plan"}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onFlyToWallOpening(opn, selShape); }}
+                        style={{
+                          border: "none", background: "none", padding: 0, cursor: "pointer",
+                          fontSize: 11, fontWeight: 700, minWidth: 28, color: "var(--cobalt)",
+                          textDecoration: "underline", textUnderlineOffset: 2, fontFamily: "inherit",
+                        }}
+                      >
+                        {openingLabel}
+                      </button>
+                      <input
+                        name={`opening-w-${opn.id}`}
+                        type="number"
+                        min="0"
+                        step={units === "metric" ? 0.01 : 0.05}
+                        value={Number.isFinite(wDisp) ? +wDisp.toFixed(units === "metric" ? 3 : 2) : ""}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          const ft = units === "metric" ? calInputToFeet(parseFloat(raw) || 0, units) : Math.max(0, parseFloat(raw) || 0);
+                          onUpdateWallOpening(opn.id, {
+                            width_ft: ft,
+                            ...(opn.source === "cutout" ? {} : { source: "manual" }),
+                          });
+                        }}
+                        title={`Opening width (${dimUnit})`}
+                        style={{ width: 52, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 11 }}
+                      />
+                      <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>×</span>
+                      <input
+                        name={`opening-h-${opn.id}`}
+                        type="number"
+                        min="0"
+                        step={units === "metric" ? 0.01 : 0.05}
+                        value={Number.isFinite(hDisp) ? +hDisp.toFixed(units === "metric" ? 3 : 2) : ""}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          const ft = units === "metric" ? calInputToFeet(parseFloat(raw) || 0, units) : Math.max(0, parseFloat(raw) || 0);
+                          onUpdateWallOpening(opn.id, {
+                            height_ft: ft,
+                            ...(opn.source === "cutout" ? {} : { source: "manual" }),
+                          });
+                        }}
+                        title={`Opening height (${dimUnit})`}
+                        style={{ width: 52, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 11 }}
+                      />
+                      <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>{dimUnit}</span>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveWallOpening(opn.id)}
+                        title="Remove opening"
+                        style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: "0 2px", fontSize: 14, lineHeight: 1 }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+                </div>
+                )}
+              </div>
+            </div>
+          )}
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: "light-dark(var(--ink-soft), var(--ink))" }}>{aCond?.finish_tag || "—"} total ({condRow?.shape_count || 0}{condMult > 1 ? ` ×${condMult}` : ""})</div>
+          {(condTotal !== 0 || wallTotal > 0) && (
+            <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "0 6px" }}>
+              {condTotal !== 0 && <span>{num(areaVal(condTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)}</span>{units === "imperial" && <span style={{ fontSize: 12, fontWeight: 500, color: "var(--ink-secondary)" }}> · {num(condTotal / 9)} SY</span>}</span>}
+              {condTotal !== 0 && wallTotal > 0 && <span style={{ fontWeight: 500, color: "var(--ink-muted)" }}>|</span>}
+              {wallTotal > 0 && <span>{num(areaVal(wallTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} wall</span></span>}
+            </div>
+          )}
+          {borderTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(borderTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} border</span></div>}
+          {lfTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(lenVal(lfTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{lenUnit(units)}</span></div>}
+          {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
+          {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
+          {(sheetFloorSf > 0 || sheetWallSf > 0) && (sheetFloorSf !== condTotal || sheetWallSf !== wallTotal) && (
+            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 6 }} title="All conditions on this sheet — estimate keeps every committed mask">
+              Sheet: {sheetFloorSf > 0 ? `${fa(sheetFloorSf)} floor` : ""}{sheetFloorSf > 0 && sheetWallSf > 0 ? " · " : ""}{sheetWallSf > 0 ? `${fa(sheetWallSf)} wall` : ""}
+            </div>
+          )}
+      </div>
+    </div>
+  );
+}

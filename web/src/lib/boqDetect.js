@@ -5,6 +5,7 @@ import { distToSeg, pointInPoly } from "./geometry.js";
 import { shapeLabelValue } from "./shapeLabels.js";
 import { resolveSymbolFields, symbolNoteKey } from "./planSymbols";
 import { lookupScheduleKb } from "./symbolScheduleKb";
+import { parseOpeningSize, openingsDeductSfLinear, openingsDeductSfFloorPerim } from "./wallOpenings.js";
 
 export function rowKey(shapeId) {
   return `shape::${shapeId}`;
@@ -57,9 +58,18 @@ function distToPolyEdgePx(x, y, poly) {
 
 /** Inside the mask, or within a small pad of its border (door/window marks sit on walls). */
 function maskHitKind(x, y, shape, dims, borderPadPx = 32) {
-  if (pointInShapePx(x, y, shape, dims)) return "inside";
   const poly = shapePolyPx(shape, dims);
   if (poly.length < 2) return null;
+  // Open wall runs — door must sit on/near the traced line.
+  if (shape.measure_role === "surface_area" || shape.measure_role === "linear") {
+    let best = Infinity;
+    for (let i = 1; i < poly.length; i++) {
+      best = Math.min(best, distToSeg(x, y, poly[i - 1][0], poly[i - 1][1], poly[i][0], poly[i][1]));
+    }
+    return best <= borderPadPx ? "border" : null;
+  }
+  if (pointInShapePx(x, y, shape, dims)) return "inside";
+  if (poly.length < 3) return null;
   return distToPolyEdgePx(x, y, poly) <= borderPadPx ? "border" : null;
 }
 
@@ -388,9 +398,136 @@ export function shapeQuantities(shape) {
   return { floor_sf: round2(floor_sf), wall_sf: round2(wall_sf), lf: round2(lf), ea, role };
 }
 
+/** Wall traces on the same condition — floor masks inherit their drawn height when condition H is unset. */
+function inferWallHeightFromTraces(shape, condition, detectCtx) {
+  const condH = Number(condition?.height_ft) || 0;
+  let best = 0;
+  for (const s of detectCtx?.shapes || []) {
+    if (s.id === shape.id || s.sheet_id !== shape.sheet_id || s.condition_id !== shape.condition_id) continue;
+    if (s.measure_role !== "surface_area" && s.measure_role !== "wall_area") continue;
+    const h = s.height_override === true
+      ? Number(s.height_ft) || 0
+      : Number(s.height_ft) || condH || 0;
+    if (h > best) best = h;
+  }
+  return best;
+}
+
+function wallHeightFt(shape, condition, detectCtx) {
+  if (shape.height_override === true) return Number(shape.height_ft) || 0;
+  const condH = Number(condition?.height_ft) || 0;
+  // Floor masks: perim × condition H (live); never a stale shape.height_ft fallback.
+  if (shape.measure_role === "floor_area") {
+    return condH > 0 ? condH : inferWallHeightFromTraces(shape, condition, detectCtx);
+  }
+  return Number(shape.height_ft) || condH || 0;
+}
+
+/** Door/window marks inside or on the trace border → opening deduct rows. */
+function openingsFromNearbyDoors(shape, detectCtx, borderPadPx = 32) {
+  const { planSymbols, symbolNotes, panelImgs } = detectCtx;
+  const dims = panelImgs?.[shape.sheet_id];
+  if (!dims?.w) return [];
+  const out = [];
+  const seen = new Set();
+  for (const sym of (planSymbols || []).filter((s) => s.sheet_id === shape.sheet_id)) {
+    if (sym.kind !== "door" && sym.kind !== "window") continue;
+    if (!maskHitKind(sym.x, sym.y, shape, dims, borderPadPx)) continue;
+    const tagU = String(sym.tag || "").toUpperCase();
+    if (tagU && seen.has(tagU)) continue;
+    if (tagU) seen.add(tagU);
+    const nk = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+    const fields = resolveSymbolFields(sym.schedule, symbolNotes?.[nk], sym.room_name);
+    const parsed = parseOpeningSize(fields.size || sym.schedule?.size || "");
+    out.push({
+      tag: sym.tag || "",
+      kind: sym.kind,
+      symbol_id: sym.id || "",
+      width_ft: parsed?.width_ft || 3,
+      height_ft: parsed?.height_ft || 7,
+      source: "plan_mark",
+    });
+  }
+  return out;
+}
+
+function mergeOpeningsForBoq(stored = [], nearby = []) {
+  const seen = new Set(stored.map((o) => String(o.tag || "").toUpperCase()).filter(Boolean));
+  const out = [...stored];
+  for (const o of nearby) {
+    const tagU = String(o.tag || "").toUpperCase();
+    if (tagU && seen.has(tagU)) continue;
+    if (tagU) seen.add(tagU);
+    out.push(o);
+  }
+  return out;
+}
+
+/** Floor + wall face for BOQ hover — wall deducts doors inside/on the trace. */
+export function boqWallFaceMetrics(shape, condition, detectCtx) {
+  const cp = shape.computed || {};
+  const role = shape.measure_role;
+  const h = wallHeightFt(shape, condition, detectCtx);
+  const nearby = openingsFromNearbyDoors(shape, detectCtx);
+  const stored = shape.openings || [];
+
+  if (role === "surface_area") {
+    const lf = cp.perimeter_lf || 0;
+    const gross = cp.gross_face_sf || +(lf * h).toFixed(2);
+    const openings = mergeOpeningsForBoq(stored, nearby);
+    const opening_sf = openingsDeductSfLinear(openings, lf, h);
+    const wall_sf = +Math.max(0, gross - opening_sf).toFixed(2);
+    return { floor_sf: 0, wall_sf, gross_wall_sf: gross, opening_sf, lf };
+  }
+
+  if (role === "wall_area") {
+    const openings = mergeOpeningsForBoq(stored, nearby);
+    const gross = cp.gross_face_sf || cp.wall_face_sf || 0;
+    const lf = cp.perimeter_lf || 0;
+    const opening_sf = openings.length
+      ? openingsDeductSfLinear(openings, lf || 1, h)
+      : (cp.opening_sf || 0);
+    const wall_sf = cp.wall_face_sf != null && !stored.length && !nearby.length
+      ? (cp.wall_face_sf || cp.area_sf || 0)
+      : +Math.max(0, gross - opening_sf).toFixed(2);
+    return {
+      floor_sf: 0,
+      wall_sf,
+      gross_wall_sf: gross,
+      opening_sf: stored.length || nearby.length ? opening_sf : (cp.opening_sf || 0),
+      lf,
+    };
+  }
+
+  if (role === "floor_area") {
+    const lf = cp.perimeter_lf || 0;
+    const gross = +(lf * h).toFixed(2);
+    const openings = mergeOpeningsForBoq(stored, nearby);
+    const opening_sf = openingsDeductSfFloorPerim(openings, lf, h);
+    const wall_sf = +Math.max(0, gross - opening_sf).toFixed(2);
+    return {
+      floor_sf: cp.area_sf || 0,
+      wall_sf,
+      gross_wall_sf: gross,
+      opening_sf,
+      lf,
+    };
+  }
+
+  return {
+    floor_sf: cp.area_sf || 0,
+    wall_sf: cp.wall_face_sf || cp.area_sf || 0,
+    gross_wall_sf: cp.gross_face_sf || 0,
+    opening_sf: cp.opening_sf || 0,
+    lf: cp.perimeter_lf || 0,
+  };
+}
+
 export function primaryQty(row, units) {
   if (row.floor_sf) return { qty: row.floor_sf, unit: areaUnit(units), kind: "floor" };
-  if (row.wall_sf) return { qty: row.wall_sf, unit: areaUnit(units), kind: "wall" };
+  if (row.wall_sf || row.role === "surface_area" || row.role === "wall_area") {
+    return { qty: row.wall_sf || 0, unit: areaUnit(units), kind: "wall" };
+  }
   if (row.lf) return { qty: row.lf, unit: lenUnit(units), kind: "lf" };
   if (row.ea) return { qty: row.ea, unit: "EA", kind: "ea" };
   return { qty: 0, unit: areaUnit(units), kind: "floor" };
@@ -398,8 +535,13 @@ export function primaryQty(row, units) {
 
 export function buildShapeRows(shapes, conditions, detectCtx) {
   const byId = new Map(conditions.map((c) => [c.id, c]));
+  const minVerts = (s) => {
+    if (s.measure_role === "count") return 1;
+    if (s.measure_role === "surface_area" || s.measure_role === "linear") return 2;
+    return 3;
+  };
   return shapes
-    .filter((s) => Array.isArray(s.verts_norm) && s.verts_norm.length >= (s.measure_role === "count" ? 1 : 3))
+    .filter((s) => Array.isArray(s.verts_norm) && s.verts_norm.length >= minVerts(s))
     .map((s) => {
       const cond = byId.get(s.condition_id);
       const qty = shapeQuantities(s);
@@ -422,8 +564,16 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
   const rows = buildShapeRows([shape], conditions, detectCtx);
   if (!rows.length) return null;
   const r = rows[0];
+  const cond = conditions.find((c) => c.id === shape.condition_id);
+  const face = boqWallFaceMetrics(shape, cond, detectCtx);
   const meta = boqLines.find((l) => l.id === rowKey(shape.id)) || {};
-  const pq = primaryQty(r, units);
+  const displayRow = {
+    ...r,
+    floor_sf: face.floor_sf || r.floor_sf,
+    wall_sf: face.wall_sf,
+    lf: face.lf || r.lf,
+  };
+  const pq = primaryQty(displayRow, units);
   const qty = meta.qty_override !== "" && meta.qty_override != null ? Number(meta.qty_override) : pq.qty;
   const primaryRef = r.schedule_refs?.find((x) => x.tag === r.finish_tag) || r.schedule_refs?.[0];
   const autoDesc = primaryRef?.description || "";
@@ -441,6 +591,10 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
 
   return {
     ...r,
+    ...displayRow,
+    role: r.role || shape.measure_role,
+    gross_wall_sf: face.gross_wall_sf || 0,
+    opening_sf: face.opening_sf || 0,
     room: meta.room || r.room_detected || "",
     qty,
     unit: meta.unit || pq.unit,

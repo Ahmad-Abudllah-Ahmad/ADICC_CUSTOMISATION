@@ -1,27 +1,11 @@
 // Supabase home — landing screen with recent projects. Opening a project
 // navigates to /?db=<uuid> where the takeoff canvas loads (main page).
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Icon } from "../brand/icons.jsx";
 import PastProjectsPanel from "./PastProjectsPanel.jsx";
 import { createSupabaseRecents, browserStorage } from "../lib/supabaseRecents.js";
 import { stashPendingIngest } from "../lib/pendingIngest.js";
 import { projectNameFromFiles } from "../lib/projectNaming.js";
-
-const uploadBtn = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 7,
-  padding: "10px 16px",
-  border: "1px solid var(--ink-faint)",
-  background: "var(--paper-bright)",
-  color: "var(--ink)",
-  cursor: "pointer",
-  fontWeight: 700,
-  fontSize: 13,
-  fontFamily: "var(--f-body)",
-  borderRadius: 10,
-};
 
 export default function SupabaseHome() {
   const navigate = useNavigate();
@@ -30,6 +14,12 @@ export default function SupabaseHome() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [creating, setCreating] = useState(false);
   const [err, setErr] = useState("");
+
+  useEffect(() => {
+    try {
+      window.parent?.postMessage({ source: "opentakeoff", type: "adicc:sheets-view", active: false }, "*");
+    } catch { /* cross-origin embed */ }
+  }, []);
 
   const startNewProjectWithFiles = async (fileList) => {
     const incoming = Array.from(fileList || []);
@@ -60,40 +50,15 @@ export default function SupabaseHome() {
 
   return (
     <div style={{
-      minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--paper-cream)", color: "var(--ink)",
+      height: "100%", minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--paper-bright)", color: "var(--ink)",
       fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       "--f-display": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       "--f-body": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       "--f-mono": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+      boxSizing: "border-box",
     }}>
-      <div style={{ flex: 1, overflow: "auto", padding: "28px 20px 48px" }}>
-        <div style={{ maxWidth: 1120, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
-          {showNewProject && (
-            <div style={{ padding: "24px 20px", border: "1px solid var(--cobalt)", background: "var(--paper-bright)", borderRadius: 12, boxShadow: "inset 0 0 0 1px rgba(31,63,199,0.08)" }}>
-              <div style={{ fontFamily: "var(--f-display)", fontSize: 18, color: "var(--ink)", marginBottom: 6 }}>New project</div>
-              <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.55, marginBottom: 18 }}>
-                Upload your plans to get started — PDFs, images, .zip plan sets, or an entire folder including subfolders.
-              </div>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button type="button" disabled={creating} onClick={() => fileRef.current?.click()} style={{ ...uploadBtn, border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", opacity: creating ? 0.6 : 1 }}>
-                  <Icon name="document" size={14} />Upload files
-                </button>
-                <button type="button" disabled={creating} onClick={() => folderRef.current?.click()} style={{ ...uploadBtn, opacity: creating ? 0.6 : 1 }}>
-                  <Icon name="sheets" size={14} />Upload folder
-                </button>
-                <button type="button" disabled={creating} onClick={() => { setShowNewProject(false); setErr(""); }} style={{ ...uploadBtn, color: "var(--ink-muted)", opacity: creating ? 0.6 : 1 }}>
-                  Cancel
-                </button>
-              </div>
-              {creating && (
-                <div style={{ marginTop: 14, fontSize: 12.5, color: "var(--cobalt)" }}>Creating project and opening your plans…</div>
-              )}
-              {err && (
-                <div style={{ marginTop: 14, fontSize: 12.5, color: "var(--c-danger)" }}>{err}</div>
-              )}
-            </div>
-          )}
-
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 16px 24px", display: "flex", flexDirection: "column" }}>
+        <div style={{ width: "100%", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 14, boxSizing: "border-box" }}>
           <input name="home-sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }}
             onChange={onFilePicked} />
           <input name="home-sheet-folder" ref={folderRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }}
@@ -102,8 +67,13 @@ export default function SupabaseHome() {
           <PastProjectsPanel
             home
             currentProjectId={null}
-            onNewProject={() => { setShowNewProject(true); setErr(""); }}
+            onNewProject={() => { setShowNewProject((v) => !v); setErr(""); }}
             creating={creating && showNewProject}
+            newProjectOpen={showNewProject}
+            onCloseNewProject={() => { setShowNewProject(false); setErr(""); }}
+            onPickFiles={() => fileRef.current?.click()}
+            onPickFolder={() => folderRef.current?.click()}
+            newProjectError={err}
           />
         </div>
       </div>

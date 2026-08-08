@@ -7,8 +7,8 @@ import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 const MAX_SHEETS = 12;
-const THUMB_WIDTH = 168;
-const THUMB_HEIGHT = 118;
+const THUMB_WIDTH = 200;
+const THUMB_HEIGHT = 170;
 const SCROLL_PX_PER_SEC = 36;
 
 function isImageName(name, contentType) {
@@ -153,12 +153,12 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
       <div
         style={{
           height: THUMB_HEIGHT,
-          border: "1px solid var(--cobalt)",
-          background: "var(--cobalt)",
+          borderBottom: "1px solid var(--divider-soft)",
+          background: "#dbe3e6",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          color: "var(--accent-contrast)",
+          color: "var(--ink-muted)",
           fontSize: 12,
         }}
       >
@@ -172,12 +172,12 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
       <div
         style={{
           height: THUMB_HEIGHT,
-          border: "1px solid var(--cobalt)",
-          background: "var(--cobalt)",
+          borderBottom: "1px solid var(--divider-soft)",
+          background: "#dbe3e6",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          color: "var(--accent-contrast)",
+          color: "var(--ink-muted)",
           fontSize: 12,
         }}
       >
@@ -193,8 +193,8 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
         position: "relative",
         height: THUMB_HEIGHT,
         overflow: "hidden",
-        border: "1px solid var(--cobalt)",
-        background: "var(--cobalt)",
+        borderBottom: "1px solid var(--divider-soft)",
+        background: "#dbe3e6",
       }}
       aria-label="Auto-scrolling plan sheet previews"
     >
@@ -218,7 +218,8 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
               flex: "0 0 auto",
               width: THUMB_WIDTH,
               height: THUMB_HEIGHT - 12,
-              border: "1px solid rgba(255,255,255,0.22)",
+              border: "1px solid var(--ink-faint)",
+              borderRadius: 6,
               background: "var(--paper-bright)",
               overflow: "hidden",
               display: "flex",
@@ -241,7 +242,7 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
           position: "absolute",
           inset: 0,
           background:
-            "linear-gradient(90deg, var(--cobalt) 0%, transparent 10%, transparent 90%, var(--cobalt) 100%)",
+            "linear-gradient(90deg, #dbe3e6 0%, transparent 12%, transparent 88%, #dbe3e6 100%)",
         }}
       />
     </div>
