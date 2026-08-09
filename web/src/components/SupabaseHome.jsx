@@ -57,7 +57,7 @@ export default function SupabaseHome() {
       "--f-mono": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       boxSizing: "border-box",
     }}>
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 16px 24px", display: "flex", flexDirection: "column" }}>
+      <div className="home-projects-scroll" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 16px 24px", display: "flex", flexDirection: "column", background: "#dbe3e6" }}>
         <div style={{ width: "100%", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 14, boxSizing: "border-box" }}>
           <input name="home-sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }}
             onChange={onFilePicked} />

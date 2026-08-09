@@ -38,6 +38,7 @@ export default function FloatingWindow({
   defaultRect,
   minW = 320,
   minH = 240,
+  shellClassName = "",
 }) {
   const [rect, setRect] = useState(() => clampRect(defaultRect, minW, minH));
   const [z, setZ] = useState(() => { floatZ += 1; return floatZ; });
@@ -126,6 +127,7 @@ export default function FloatingWindow({
   return (
     <div
       role="dialog"
+      className={shellClassName || undefined}
       onPointerDown={onShellDown}
       style={{
         position: "fixed",

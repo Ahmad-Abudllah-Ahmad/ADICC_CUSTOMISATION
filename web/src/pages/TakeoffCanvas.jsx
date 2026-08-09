@@ -70,6 +70,7 @@ import StampPanel from "../components/StampPanel.jsx";
 import ImportSchedulePanel from "../components/ImportSchedulePanel.jsx";
 import BoqPanel from "../components/BoqPanel.jsx";
 import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
+import OpenSheetsPill from "../components/OpenSheetsPill.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
 import EstimatePanel from "../components/EstimatePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
@@ -905,7 +906,13 @@ export default function TakeoffCanvas() {
     const placePanel = () => {
       if (paletteRef.current) {
         const r = paletteRef.current.getBoundingClientRect();
-        paletteRef.current.style.setProperty("--palette-panel-top", `${r.bottom + 70}px`);
+        paletteRef.current.style.setProperty("--palette-panel-top", `${r.bottom + 38}px`);
+        const shell = paletteRef.current.querySelector(".takeoff-sticky-panel-shell");
+        const pill = paletteRef.current.closest(".toolbar-glass-pill");
+        if (shell && pill) {
+          const pr = pill.getBoundingClientRect();
+          shell.style.left = `${window.innerWidth / 2 - pr.left}px`;
+        }
       }
     };
     placePanel();
@@ -7657,7 +7664,7 @@ export default function TakeoffCanvas() {
   // panel-toggle for the right-edge rail — circular like the zoom cluster, count as a
   // tiny mono line under the icon. Lives on the canvas, costs the toolbar zero rows.
   const panelBtn = (onClick, iconName, label, isOn, count) => (
-    <button className="canvas-circle-btn" onClick={onClick} title={label}
+    <button className={`canvas-circle-btn${isOn ? " is-on" : ""}`} onClick={onClick} title={label}
       style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, width: 40, height: 40, padding: 0, borderRadius: 999, border: `1px solid ${isOn ? "var(--ink)" : "var(--ink-faint)"}`, background: isOn ? "var(--ink)" : "var(--paper-bright)", color: isOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, lineHeight: 1, flexShrink: 0, boxShadow: isOn ? "none" : "0 1px 3px rgba(14, 26, 46, 0.12)" }}>
       <Icon name={iconName} size={15} />{count ? <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5 }}>{count}</span> : null}
     </button>
@@ -8044,7 +8051,7 @@ export default function TakeoffCanvas() {
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
       {/* Unified Floating Toolbar */}
-      <div style={{ position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "transparent", userSelect: "none" }}>
+      <div className="toolbar-glass-bar" style={{ position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "#dbe3e6", userSelect: "none" }}>
         <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
@@ -8052,7 +8059,7 @@ export default function TakeoffCanvas() {
         <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
           
           {/* Pill 1 */}
-          <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, background: "light-dark(#dbe3e6, var(--paper-shadow))", borderRadius: 14, border: "1px solid var(--ink-faint)", padding: "3px 12px", boxShadow: "var(--shadow-1)", whiteSpace: "nowrap" }}>
+          <div className="toolbar-glass-pill" style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, borderRadius: 14, padding: "3px 12px", whiteSpace: "nowrap" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
                 <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>ESTIMATION & TAKEOFF</div>
@@ -8071,8 +8078,9 @@ export default function TakeoffCanvas() {
             {/* Auto-Takeoff + Takeoff Tool Palette — side by side on the bottom */}
             <div className="takeoff-sticky-stack">
               <button type="button" onClick={runAiDetection}
+                className="toolbar-glass-btn-ghost-positive"
                 title="Auto-Takeoff"
-                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "4px 10px", border: "1px solid var(--c-positive)", borderRadius: 999, background: "transparent", color: "var(--c-positive)", cursor: "pointer", fontWeight: 600, fontSize: 11, lineHeight: 1, whiteSpace: "nowrap" }}>
+                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "4px 10px", border: "1px solid var(--c-positive)", borderRadius: 999, color: "var(--c-positive)", cursor: "pointer", fontWeight: 600, fontSize: 11, lineHeight: 1, whiteSpace: "nowrap" }}>
                 <Icon name="sparkle" size={11} />
                 Auto-Takeoff
               </button>
@@ -8142,7 +8150,7 @@ export default function TakeoffCanvas() {
           </div>
 
           {/* Pill 2 */}
-          <div style={{ display: "flex", alignItems: "stretch", background: "light-dark(#dbe3e6, var(--paper-shadow))", borderRadius: 14, border: "1px solid var(--ink-faint)", padding: "3px 12px", gap: 10, boxShadow: "var(--shadow-1)", whiteSpace: "nowrap" }}>
+          <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "stretch", borderRadius: 14, padding: "3px 12px", gap: 10, whiteSpace: "nowrap" }}>
             
             {/* Mode */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
@@ -8165,7 +8173,7 @@ export default function TakeoffCanvas() {
               </div>
             </div>
 
-            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
 
             {/* Draw */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
@@ -8176,7 +8184,7 @@ export default function TakeoffCanvas() {
                 <span style={{ position: "relative" }}>
                   <ToolMenu variant="palette" compactFace title="Markup — annotations, not measurements" active={MARKUP_IDS.includes(tool)} onOpenChange={onMenuDepth} face={<><Icon name="markup" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Markup</span></>} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
                   {tool === "highlighter" && (
-                    <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, boxShadow: "0 6px 22px rgba(0,0,0,.16)", padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+                    <div className="toolbar-glass-popover" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, borderRadius: 0, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                       <div style={{ display: "flex", gap: 6 }} title="Ink">
                         {HL_INKS.map((c) => (
                           <button key={c} onClick={() => setHlStyle((st) => ({ ...st, color: c }))} style={{ width: 16, height: 16, padding: 0, background: c, border: hlStyle.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />
@@ -8200,7 +8208,7 @@ export default function TakeoffCanvas() {
               </div>
             </div>
 
-            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
 
             {/* Aids */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
@@ -8236,22 +8244,22 @@ export default function TakeoffCanvas() {
               </div>
             </div>
 
-            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
 
             {/* Condition & Label */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
               <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>CONDITION / LABEL</div>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 {aCond ? (
-                  <button type="button" onClick={() => setShowCondEdit(true)} title={`Edit appearance for ${aCond.finish_tag}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", border: "1px solid var(--ink-faint)", borderRadius: 16, background: showCondEdit ? "var(--cobalt)" : "var(--paper-bright)", color: showCondEdit ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "var(--f-mono)", lineHeight: 1 }}>
+                  <button type="button" onClick={() => setShowCondEdit(true)} title={`Edit appearance for ${aCond.finish_tag}`} className={`toolbar-glass-btn-cond${showCondEdit ? " is-on" : ""}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", border: "1px solid var(--ink-faint)", borderRadius: 16, color: "var(--ink)", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "var(--f-mono)", lineHeight: 1 }}>
                     <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, marginTop: 1 }}><HatchSwatch type={aCond.hatch || "solid"} line={aCond.color} fill={aCond.fill} /></span>
                     Edit {aCond.finish_tag}
                   </button>
                 ) : (
-                  <div style={{ padding: "5px 12px", borderRadius: 16, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", fontSize: 11, fontWeight: 600 }}>No condition</div>
+                  <div className="toolbar-glass-btn-empty" style={{ padding: "5px 12px", borderRadius: 16, border: "1px dashed var(--ink-faint)", color: "var(--ink-muted)", fontSize: 11, fontWeight: 600 }}>No condition</div>
                 )}
                 {shapeLabels.length > 0 && (
-                  <select value={tool === "select" && selectedId ? shapeLabelValue(shapes.find((s) => s.id === selectedId)) : (activeLabel || "")} onChange={(e) => activateLabel(e.target.value || null)} title="Phase/area label" style={{ fontFamily: "var(--f-mono)", fontSize: 11, padding: "4px 6px", borderRadius: 16, border: `1px solid ${activeLabel ? "var(--cobalt)" : "var(--ink-faint)"}`, background: activeLabel ? "var(--cobalt)" : "transparent", color: activeLabel ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", maxWidth: 100 }}>
+                  <select value={tool === "select" && selectedId ? shapeLabelValue(shapes.find((s) => s.id === selectedId)) : (activeLabel || "")} onChange={(e) => activateLabel(e.target.value || null)} title="Phase/area label" className={`toolbar-glass-select${activeLabel ? " is-active" : ""}`} style={{ fontFamily: "var(--f-mono)", fontSize: 11, padding: "4px 6px", borderRadius: 16, border: `1px solid ${activeLabel ? "var(--cobalt)" : "var(--ink-faint)"}`, color: activeLabel ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", maxWidth: 100 }}>
                     <option value="">No label</option>
                     {shapeLabels.map((v) => <option key={v} value={v}>{v}</option>)}
                   </select>
@@ -8259,7 +8267,7 @@ export default function TakeoffCanvas() {
               </div>
             </div>
 
-            <div style={{ width: 1, background: "var(--ink-faint)", margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
 
             {/* Scale */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
@@ -8277,7 +8285,7 @@ export default function TakeoffCanvas() {
           </div>
 
           {/* Live readout — condition totals + in-progress measure */}
-          <div style={{ display: "flex", alignItems: "stretch", background: "light-dark(#dbe3e6, var(--paper-shadow))", borderRadius: 14, border: "1px solid var(--ink-faint)", padding: "3px 10px", boxShadow: "var(--shadow-1)" }}>
+          <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "stretch", borderRadius: 14, padding: "3px 10px" }}>
             <LiveReadoutBar
               tool={tool}
               aCond={aCond}
@@ -8353,33 +8361,6 @@ export default function TakeoffCanvas() {
         </FloatingWindow>
       )}
 
-      {/* open-sheet tabs — what you opened from the gallery; click to view,
-          ⊞ to side-by-side, ✕ to close; the dropdown lists every open sheet */}
-      {openTabs.length > 0 && (
-        <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "5px 14px", flexWrap: "wrap", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)" }}>
-          <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ink-muted)" }}>Sheets</span>
-          {openTabs.slice(0, 8).map((k) => {
-            const inGroup = sheetGroup.includes(k);
-            const on = sheetGroup.length ? inGroup : k === sheetKey;
-            const lbl = tabLabel(k);
-            return (
-              <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 5, border: "1px solid var(--ink-faint)", borderBottom: on ? "2px solid var(--cobalt)" : "1px solid var(--ink-faint)", background: on ? "var(--paper-cream)" : "transparent", padding: "3px 6px 2px 9px", maxWidth: 190 }}>
-                <button onClick={() => goToSheet(k)} title={k} style={{ border: "none", background: "none", cursor: "pointer", fontWeight: on ? 700 : 500, fontSize: 11.5, color: "var(--ink)", fontFamily: "var(--f-mono)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 140, padding: 0 }}>{lbl}</button>
-                <button onClick={() => toggleInGroup(k)} title={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"} style={{ border: "none", background: "none", cursor: "pointer", color: inGroup ? "var(--cobalt)" : "var(--ink-faint)", padding: 0, display: "inline-flex" }}><Icon name="sideBySide" size={11} /></button>
-                <button onClick={() => closeTab(k)} title="Close tab" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0, display: "inline-flex" }}><Icon name="close" size={10} /></button>
-              </span>
-            );
-          })}
-          {openTabs.length > 1 && (
-            <ToolMenu
-              title="Jump to an open sheet"
-              onOpenChange={onMenuDepth}
-              face={<span style={{ fontFamily: "var(--f-mono)", fontSize: 11 }}>{openTabs.length} open</span>}
-              items={openTabs.map((k) => ({ id: k, icon: "document", label: tabLabel(k), active: sheetGroup.length ? sheetGroup.includes(k) : k === sheetKey, onSelect: () => goToSheet(k) }))}
-            />
-          )}
-        </div>
-      )}
 
       {/* compact conditions strip — OPTIONAL small-project mode. The docked
           Takeoffs panel is the primary conditions surface; the strip renders
@@ -8482,12 +8463,15 @@ export default function TakeoffCanvas() {
        >
          {/* slim vertical icon rail — always visible */}
          <div
+           className="canvas-glass-cluster"
+           onPointerDown={(e) => { e.stopPropagation(); if (e.button === 0 && !spaceRef.current) e.stopPropagation(); }}
+           onDoubleClick={(e) => e.stopPropagation()}
            style={{
              pointerEvents: "auto",
              alignSelf: "center",
              display: "flex",
              flexDirection: "column",
-             gap: 6,
+             gap: 3,
              padding: "6px 4px",
              background: "transparent",
              border: "none",
@@ -8499,10 +8483,19 @@ export default function TakeoffCanvas() {
            {panelBtn(() => openLeftHover("markup"), "markup", "Markups on these sheets (clouds, callouts, notes)", leftTab === "markup", markupCount)}
            {panelBtn(() => openLeftHover("stamp"), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
            {panelBtn(() => openLeftHover("rfi"), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
+           {[["+", 1.25], ["−", 0.8]].map(([lbl, f]) => (
+             <button key={lbl} className="canvas-circle-btn" onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, f); }}
+               style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 18, fontWeight: 700 }}>{lbl}</button>
+           ))}
+           <button className="canvas-circle-btn" onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 12 }}>fit</button>
+           <button className={`canvas-circle-btn${darkMode ? " is-sheet-dark" : ""}`} onClick={() => setDarkMode((d) => !d)} title={darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)"}
+             style={{ width: 34, height: 34, borderRadius: 999, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, cursor: "pointer", fontSize: 13 }}>
+             {darkMode ? "☀" : "☾"}</button>
          </div>
          {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
          {leftTab && (
          <div
+           className="left-panel-glass"
            role="dialog"
            aria-label="Files panel"
            onMouseEnter={cancelLeftHoverClose}
@@ -8512,16 +8505,13 @@ export default function TakeoffCanvas() {
              alignSelf: "stretch",
              display: "flex",
              flexDirection: "column",
-             background: "var(--paper-bright)",
-             border: "1px solid var(--ink-faint)",
              borderRadius: 10,
-             boxShadow: "0 14px 40px rgba(14, 26, 46, 0.22)",
              overflow: "hidden",
              minHeight: 0,
            }}
          >
            {/* tab strip */}
-           <div style={{ display: "flex", alignItems: "stretch", background: "var(--cobalt)", color: "var(--accent-contrast)", flexShrink: 0 }}>
+           <div className="left-panel-glass-tabs" style={{ display: "flex", alignItems: "stretch", color: "var(--accent-contrast)", flexShrink: 0 }}>
              {[{ id: "files", label: "Files", n: sheets.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
                <button key={t.id} onClick={() => { lastLeftTabRef.current = t.id; setLeftTab(t.id); }} title={t.label}
                  style={{ flex: 1, padding: "9px 4px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5 }}>
@@ -8534,7 +8524,7 @@ export default function TakeoffCanvas() {
            <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
              {leftTab === "files" && (
                <div>
-                 <div style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
+                 <div className="left-panel-glass-actions" style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
                    <button type="button" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set"
                      style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
                      <Icon name="plus" size={13} />Add files
@@ -8561,8 +8551,7 @@ export default function TakeoffCanvas() {
                       aria-label="Search files by name"
                       style={{
                         width: "100%", boxSizing: "border-box", padding: "9px 12px 9px 36px",
-                        border: "1px solid var(--divider-soft)", background: "var(--paper-bright)",
-                        fontSize: 13, color: "var(--ink)", borderRadius: 10,
+                        border: "1px solid var(--divider-soft)", fontSize: 13, color: "var(--ink)", borderRadius: 10,
                       }}
                     />
                   </div>
@@ -8618,7 +8607,7 @@ export default function TakeoffCanvas() {
                      const open = openTabs.some((k) => parseSheetKey(k).file === s.name);
                      const match = q && fileMatches(s);
                      return (
-                       <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: `7px 10px 7px ${12 + depth * 14}px`, borderBottom: "1px solid var(--ink-faint)", background: on ? "var(--paper-cream)" : match ? "rgba(31, 63, 199, 0.12)" : "transparent", boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : "none" }}>
+                       <div key={s.name} className={`left-panel-glass-file-row${on ? " is-active" : ""}${match ? " is-match" : ""}`} style={{ display: "flex", alignItems: "center", gap: 6, padding: `7px 10px 7px ${12 + depth * 14}px`, borderBottom: "1px solid var(--ink-faint)", boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : "none" }}>
                          <button type="button" onClick={() => { openSheets([s.name]); setLeftTab("files"); }}
                            title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}
                            style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
@@ -8648,9 +8637,9 @@ export default function TakeoffCanvas() {
                            })();
                            return (
                              <div key={childPath}>
-                               <button type="button" onClick={() => toggle(childPath)}
+                               <button type="button" className="left-panel-glass-folder-btn" onClick={() => toggle(childPath)}
                                  title={open ? `Collapse ${name}` : `Expand ${name}`}
-                                 style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: `8px 10px 8px ${12 + depth * 14}px`, border: "none", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-shadow)", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 12.5 }}>
+                                 style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: `8px 10px 8px ${12 + depth * 14}px`, border: "none", borderBottom: "1px solid var(--ink-faint)", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 12.5 }}>
                                  <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, width: 12, color: "light-dark(var(--cobalt), var(--ink))" }}>{open ? "▾" : "▸"}</span>
                                  <Icon name="sheets" size={13} />
                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
@@ -8892,7 +8881,7 @@ export default function TakeoffCanvas() {
             else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
             else if (tool === "select") editMarkupAt(e);
           }}
-          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--paper-cream)", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
+          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "#dbe3e6", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
               EFFECTIVE point (angle-locked / endpoint-snapped), the SPLINE STAR at
@@ -9738,22 +9727,6 @@ export default function TakeoffCanvas() {
             </div>
           )}
 
-          {/* zoom buttons — stop left presses here: the container's onPointerDown
-              setPointerCapture()s every left press, which retargets the pointerup
-              and the composed click never reaches these buttons. Right/middle/
-              Space presses still bubble so a pan can start on top of the stack,
-              and dblclick is stopped so rapid zoom clicks can't finishShape() */}
-          <div onPointerDown={(e) => { if (e.button === 0 && !spaceRef.current) e.stopPropagation(); }} onDoubleClick={(e) => e.stopPropagation()}
-            style={{ position: "absolute", left: 14, bottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
-            {[["+", 1.25], ["−", 0.8]].map(([lbl, f]) => (
-              <button key={lbl} className="canvas-circle-btn" onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, f); }}
-                style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 18, fontWeight: 700 }}>{lbl}</button>
-            ))}
-            <button className="canvas-circle-btn" onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12 }}>fit</button>
-            <button className="canvas-circle-btn" onClick={() => setDarkMode((d) => !d)} title={darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)"}
-              style={{ width: 34, height: 34, borderRadius: 999, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, background: darkMode ? "var(--cobalt)" : "var(--paper-bright)", color: darkMode ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontSize: 13 }}>
-              {darkMode ? "☀" : "☾"}</button>
-          </div>
         </div>
 
         {/* Cutout checklist — per open PDF/sheet; click flies to that cutout. */}
@@ -10110,21 +10083,17 @@ export default function TakeoffCanvas() {
             {!drawingsChatPill ? (
               <button
                 type="button"
-                className="canvas-circle-btn"
+                className="drawings-chat-glass-trigger canvas-circle-btn"
                 title="Ask the Volume 4 drawings corpus"
                 onClick={() => setDrawingsChatPill(true)}
                 style={{
                   width: 48,
                   height: 48,
                   borderRadius: "50%",
-                  border: "1px solid var(--ink-faint)",
-                  background: "var(--cobalt)",
-                  color: "var(--accent-contrast)",
                   cursor: "pointer",
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  boxShadow: "var(--shadow-2, 0 6px 18px rgba(0,0,0,.18))",
                   padding: 0,
                 }}
               >
@@ -10137,6 +10106,7 @@ export default function TakeoffCanvas() {
               </button>
             ) : (
               <form
+                className="drawings-chat-glass-pill"
                 onSubmit={(e) => {
                   e.preventDefault();
                   const q = drawingsChatDraft.trim();
@@ -10153,12 +10123,10 @@ export default function TakeoffCanvas() {
                   width: "min(440px, calc(100vw - 80px))",
                   padding: "6px 6px 6px 14px",
                   borderRadius: 999,
-                  border: "1px solid var(--ink-faint)",
-                  background: "var(--paper-bright)",
-                  boxShadow: "var(--shadow-2, 0 8px 24px rgba(0,0,0,.16))",
                 }}
               >
                 <input
+                  className="drawings-chat-glass-pill-input"
                   autoFocus
                   value={drawingsChatDraft}
                   onChange={(e) => setDrawingsChatDraft(e.target.value)}
@@ -10183,16 +10151,13 @@ export default function TakeoffCanvas() {
                 />
                 <button
                   type="submit"
-                  className="canvas-circle-btn"
+                  className="drawings-chat-glass-pill-send canvas-circle-btn"
                   title="Send"
                   disabled={!drawingsChatDraft.trim()}
                   style={{
                     width: 36,
                     height: 36,
                     borderRadius: "50%",
-                    border: "none",
-                    background: drawingsChatDraft.trim() ? "var(--cobalt)" : "var(--ink-faint)",
-                    color: "var(--accent-contrast)",
                     cursor: drawingsChatDraft.trim() ? "pointer" : "default",
                     display: "inline-flex",
                     alignItems: "center",
@@ -10497,6 +10462,16 @@ export default function TakeoffCanvas() {
           (the Agent panel links here; closing re-renders, so `configured`
           re-reads immediately). */}
       {showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
+
+      <OpenSheetsPill
+        openTabs={openTabs}
+        sheetGroup={sheetGroup}
+        sheetKey={sheetKey}
+        tabLabel={tabLabel}
+        onGoToSheet={goToSheet}
+        onToggleInGroup={toggleInGroup}
+        onCloseTab={closeTab}
+      />
     </div>
   );
 }

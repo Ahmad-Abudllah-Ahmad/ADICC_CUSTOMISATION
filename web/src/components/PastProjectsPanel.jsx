@@ -300,7 +300,7 @@ export default function PastProjectsPanel({
     >
       <button
         type="button"
-        className="canvas-circle-btn"
+        className="canvas-circle-btn home-glass-circle-btn is-primary"
         onClick={onNewProject}
         disabled={creating}
         title={creating ? "Creating…" : "New project"}
@@ -388,7 +388,7 @@ export default function PastProjectsPanel({
               <button
                 type="button"
                 role="menuitem"
-                className="canvas-circle-btn"
+                className={`canvas-circle-btn home-glass-circle-btn${item.solid ? " is-solid" : ""}`}
                 disabled={creating}
                 title={item.label}
                 aria-label={item.label}
@@ -573,8 +573,10 @@ export default function PastProjectsPanel({
                       {!active && !renaming ? (
                         <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
                           <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} title="Rename"
+                            className="home-glass-btn"
                             style={{ ...openBtn, padding: "5px 8px", borderRadius: 8 }}>Rename</button>
                           <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} title="Delete"
+                            className="home-glass-btn"
                             style={{ ...openBtn, color: "var(--ink-muted)", padding: "5px 8px", borderRadius: 8 }}>Delete</button>
                         </div>
                       ) : (

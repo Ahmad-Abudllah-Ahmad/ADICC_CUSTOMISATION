@@ -105,7 +105,7 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
 
   useEffect(() => {
     if (!open || !usePalettePosition) return undefined;
-    const PALETTE_PANEL_GAP = 70;
+    const PALETTE_PANEL_GAP = 38;
     const place = () => {
       if (!panelRef.current) return;
       const stack = document.querySelector(".takeoff-sticky-menu--stack");
@@ -148,10 +148,19 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
     </div>
   );
 
+  const triggerClass = circleTrigger
+    ? `angle-dial-btn${open ? " is-on" : ""}`
+    : [
+        "tool-menu-trigger",
+        active ? "is-active" : "",
+        open && !active ? "is-open" : "",
+        accent === "danger" && active ? "is-accent-danger" : "",
+      ].filter(Boolean).join(" ");
+
   return (
     <span ref={rootRef} style={{ position: "relative", display: "inline-flex" }}>
       <button type="button" onClick={toggle} title={title} disabled={disabled}
-        className={circleTrigger ? `angle-dial-btn${open ? " is-on" : ""}` : undefined}
+        className={triggerClass}
         style={circleTrigger ? { opacity: disabled ? 0.38 : 1, cursor: disabled ? "default" : "pointer", ...faceStyle } : {
           display: "inline-flex", alignItems: "center", gap: compactFace ? 3 : 7, padding: compactFace ? "4px 7px" : "6px 10px", cursor: disabled ? "default" : "pointer",
           border: `1px solid ${active ? accentColor : "var(--ink-faint)"}`,
@@ -184,10 +193,9 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
         ? createPortal(anchoredPanel, document.body)
         : anchoredPanel)}
       {open && !isPalette && !paletteAnchor && (
-        <div style={{
+        <div className="tool-menu-drop-panel" style={{
           position: "absolute", top: "calc(100% + 4px)", [flip ? "right" : "left"]: 0, zIndex: 60,
-          minWidth: MENU_W, background: "var(--paper-bright)", border: "1px solid var(--ink)",
-          boxShadow: "var(--shadow-2)", padding: "4px 0",
+          minWidth: MENU_W, padding: "4px 0",
           ...menuStyle,
           maxHeight: "min(60vh, 420px)",
           overflowY: "auto",

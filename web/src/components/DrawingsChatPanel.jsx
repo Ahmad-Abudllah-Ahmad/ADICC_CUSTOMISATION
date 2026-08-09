@@ -103,11 +103,10 @@ function FormattedAnswer({ content }) {
 function GeneratingIndicator() {
   return (
     <div
+      className="drawings-chat-glass-generating"
       style={{
         padding: "4px 8px",
         borderRadius: 999,
-        background: "var(--paper-cream)",
-        border: "1px solid var(--ink-faint)",
         marginRight: 8,
         display: "inline-flex",
         alignItems: "center",
@@ -197,6 +196,7 @@ function CitationChip({ citation, index, active, onSelect }) {
   return (
     <button
       type="button"
+      className={`drawings-chat-glass-citation${active ? " is-active" : ""}`}
       onClick={() => onSelect(citation)}
       title={citation.quote || label}
       style={{
@@ -204,9 +204,6 @@ function CitationChip({ citation, index, active, onSelect }) {
         alignItems: "center",
         gap: 5,
         padding: "4px 9px",
-        border: active ? "1px solid var(--cobalt)" : "1px solid var(--ink-faint)",
-        background: active ? "rgba(31,63,199,0.1)" : "var(--paper-bright)",
-        color: active ? "var(--cobalt)" : "var(--ink)",
         cursor: "pointer",
         borderRadius: 999,
         fontSize: 11,
@@ -601,6 +598,7 @@ export default function DrawingsChatPanel({
         }
       `}</style>
       <FloatingWindow
+        shellClassName="drawings-chat-glass-shell"
         defaultRect={(() => {
           const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
           const vh = typeof window !== "undefined" ? window.innerHeight : 800;
@@ -617,19 +615,20 @@ export default function DrawingsChatPanel({
         minH={280}
       >
         <aside
+          className="drawings-chat-glass"
           style={{
             width: "100%",
             height: "100%",
             display: "flex",
             flexDirection: "column",
-            background: "var(--paper-bright)",
+            background: "transparent",
             fontFamily: "var(--f-body)",
             color: "var(--ink)",
             overflow: "hidden",
             minHeight: 0,
           }}
         >
-          <header data-float-drag style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8, cursor: "grab", userSelect: "none", flexShrink: 0 }}>
+          <header data-float-drag className="drawings-chat-glass-header" style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8, cursor: "grab", userSelect: "none", flexShrink: 0 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Drawings Q&A</div>
               <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>Tap a citation to open the floating reference</div>
@@ -646,8 +645,9 @@ export default function DrawingsChatPanel({
                     <button
                       key={item}
                       type="button"
+                      className="drawings-chat-glass-suggestion"
                       onClick={() => sendMessage(item)}
-                      style={{ fontSize: 11, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "var(--paper-cream)", cursor: "pointer", borderRadius: 4, textAlign: "left" }}
+                      style={{ fontSize: 11, padding: "6px 10px", cursor: "pointer", borderRadius: 999, textAlign: "left" }}
                     >
                       {item}
                     </button>
@@ -659,10 +659,10 @@ export default function DrawingsChatPanel({
             {messages.map((message, index) => (
               <div
                 key={index}
+                className={message.role === "user" ? "drawings-chat-glass-msg drawings-chat-glass-msg--user" : "drawings-chat-glass-msg drawings-chat-glass-msg--assistant"}
                 style={{
                   padding: message.role === "user" ? "3px 8px 4px" : "5px 9px",
                   borderRadius: message.role === "user" ? 12 : 8,
-                  background: message.role === "user" ? "rgba(31,63,199,0.08)" : "var(--paper-cream)",
                   alignSelf: message.role === "user" ? "flex-end" : "flex-start",
                   width: "fit-content",
                   maxWidth: message.role === "user" ? "min(72%, 240px)" : "min(94%, 100%)",
@@ -712,27 +712,26 @@ export default function DrawingsChatPanel({
           </div>
 
           <form
+            className="drawings-chat-glass-form"
             onSubmit={(e) => { e.preventDefault(); sendMessage(input); }}
             style={{ padding: 10, borderTop: "1px solid var(--ink-faint)", display: "flex", gap: 6, flexShrink: 0 }}
           >
             <input
+              className="drawings-chat-glass-input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask about Volume 4 drawings..."
-              style={{ flex: 1, padding: "8px 10px", border: "1px solid var(--ink-faint)", borderRadius: 4, fontSize: 12, fontFamily: "inherit" }}
+              style={{ flex: 1, padding: "8px 10px", borderRadius: 999, fontSize: 12, fontFamily: "inherit" }}
             />
             <button
               type="submit"
-              className="canvas-circle-btn"
+              className="drawings-chat-glass-send canvas-circle-btn"
               disabled={loading}
               title={loading ? "Thinking…" : "Send"}
               style={{
                 width: 40,
                 height: 40,
                 padding: 0,
-                background: "var(--cobalt)",
-                color: "var(--accent-contrast)",
-                border: "none",
                 borderRadius: "50%",
                 fontWeight: 600,
                 fontSize: 11,

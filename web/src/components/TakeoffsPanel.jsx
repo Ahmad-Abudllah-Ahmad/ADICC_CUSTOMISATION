@@ -295,7 +295,8 @@ export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondPara
   return (
     <div style={isRow
       ? { padding: "6px 2px 2px", display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10, rowGap: 8, fontSize: 11 }
-      : { padding: "4px 12px 10px", display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}>
+      : { padding: "4px 12px 10px", display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}
+      className="condition-appearance-editor">
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <input name="condition-finish-tag" value={c.finish_tag} onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
           title="Rename this condition / finish tag"
@@ -574,7 +575,7 @@ function TakeoffsPanel({
     const hIdx = palette.length ? pinIdx : conditions.findIndex((x) => x.id === c.id);
     const hot = hIdx >= 0 && hIdx < 9;
     return (
-      <div key={c.id} data-cond-id={c.id} style={{ borderTop: "1px solid var(--ink-faint)", background: checked ? "var(--tint-select)" : on ? "var(--tint-active)" : "transparent", borderLeft: on ? `3px solid ${c.color}` : checked ? "3px solid var(--cobalt)" : "3px solid transparent" }}>
+      <div key={c.id} data-cond-id={c.id} className={`takeoffs-panel-glass-row${on ? " is-active" : ""}${checked ? " is-checked" : ""}`} style={{ borderTop: "1px solid var(--ink-faint)", borderLeft: on ? `3px solid ${c.color}` : checked ? "3px solid var(--cobalt)" : "3px solid transparent" }}>
         <div draggable
           onDragStart={(e) => { e.dataTransfer.setData(CONDITION_DND_MIME, c.id); e.dataTransfer.effectAllowed = "copy"; }}
           onClick={(e) => {
@@ -594,20 +595,20 @@ function TakeoffsPanel({
             </div>
           </div>
           <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-muted)", flexShrink: 0 }}>{shapeCount}▦</span>
-          <button onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Zoom the canvas to this condition's takeoffs"
-            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⌖</button>
-          <button onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
+          <button type="button" className="takeoffs-panel-glass-icon-btn" onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Zoom the canvas to this condition's takeoffs"
+            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 999, cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⌖</button>
+          <button type="button" className={`takeoffs-panel-glass-icon-btn${matOn ? " is-on" : ""}`} onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
             title="Supporting Materials — labor, subfloor & materials for this condition"
-            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: matOn ? "var(--ink)" : "transparent", color: matOn ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>
+            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 999, cursor: "pointer", fontSize: 11 }}>
             <Icon name="product" size={11} />{c.materials?.length ? c.materials.length : ""}
           </button>
-          <button onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }}
+          <button type="button" className={`takeoffs-panel-glass-icon-btn${pinned ? " is-pinned" : ""}`} onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }}
             title={pinned ? "Unpin from the top-bar palette" : (palette.length >= 9 ? "Palette is full (9)" : "Pin to the top-bar palette for one-click access")}
-            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", padding: "2px 5px", borderRadius: 0, border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, background: "transparent", color: pinned ? "var(--cobalt)" : (!pinned && palette.length >= 9 ? "var(--ink-faint)" : "var(--ink-muted)"), cursor: "pointer", lineHeight: 0 }}>
+            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", padding: "2px 5px", borderRadius: 999, cursor: "pointer", lineHeight: 0 }}>
             <Icon name="pin" size={12} />
           </button>
-          <button onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Delete this condition (and its takeoffs)"
-            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 12 }}>✕</button>
+          <button type="button" className="takeoffs-panel-glass-icon-btn is-danger" onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Delete this condition (and its takeoffs)"
+            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 999, cursor: "pointer", fontSize: 12 }}>✕</button>
         </div>
         {/* properties for the ACTIVE condition — the appearance editing that
             used to live in its own toolbar row above the canvas. Extracted to
@@ -615,7 +616,7 @@ function TakeoffsPanel({
             render the same editor from one source of truth. */}
         {on && <ConditionAppearanceEditor cond={c} onUpdateCond={onUpdateCond} onSetCondParam={onSetCondParam} onAssignAttr={onAssignAttr} conditionColumns={conditionColumns} />}
         {matOn && (
-          <div style={{ padding: "8px 12px 10px", background: "var(--paper-cream)", borderTop: "1px solid var(--ink-faint)", fontSize: 11.5 }}>
+          <div className="takeoffs-panel-glass-materials" style={{ padding: "8px 12px 10px", borderTop: "1px solid var(--ink-faint)", fontSize: 11.5 }}>
             <div style={{ marginBottom: 6, color: "var(--ink-muted)" }}>Supporting Materials — order qty = measured ÷ coverage, rounded up.</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -649,44 +650,43 @@ function TakeoffsPanel({
   ];
   const activeTabLabel = panelTabs.find(([id]) => id === panelTab)?.[1] || "Takeoffs";
   return (
-    <div ref={rootRef} style={{ width, flexShrink: 0, display: "flex", background: "var(--paper-bright)", borderLeft: "1px solid var(--ink-faint)", fontSize: 12.5 }}>
+    <div ref={rootRef} className="takeoffs-panel-glass" style={{ width, flexShrink: 0, display: "flex", fontSize: 12.5 }}>
       <div onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeEnd}
         onPointerCancel={onResizeEnd} onLostPointerCapture={onResizeEnd}
         title="Drag to resize"
-        style={{ width: 5, flexShrink: 0, cursor: "col-resize", touchAction: "none", background: "transparent", borderRight: "1px solid var(--ink-faint)" }} />
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "row" }}>
-        <nav aria-label="Takeoffs panel sections" style={{ width: 76, flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--ink)", borderRight: "1px solid var(--ink-faint)" }}>
+        className="takeoffs-panel-glass-resize"
+        style={{ width: 5, flexShrink: 0, cursor: "col-resize", touchAction: "none" }} />
+      <div className="takeoffs-panel-glass-inner" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "row" }}>
+        <nav aria-label="Takeoffs panel sections" className="takeoffs-panel-glass-tabs" style={{ width: 76, flexShrink: 0, display: "flex", flexDirection: "column" }}>
           {panelTabs.map(([id, label]) => (
-            <button key={id} type="button" onClick={() => setPanelTab(id)} title={label}
-              style={{ display: "block", width: "100%", padding: "10px 8px", border: "none", borderLeft: panelTab === id ? "3px solid var(--paper-cream)" : "3px solid transparent", background: panelTab === id ? "rgba(255,255,255,0.08)" : "transparent", color: "var(--paper-cream)", opacity: panelTab === id ? 1 : 0.65, cursor: "pointer", fontWeight: panelTab === id ? 700 : 500, fontSize: 10.5, fontFamily: "var(--f-mono)", letterSpacing: "0.05em", textAlign: "left", lineHeight: 1.35 }}>
+            <button key={id} type="button" className={`takeoffs-panel-glass-tab${panelTab === id ? " is-active" : ""}`} onClick={() => setPanelTab(id)} title={label}
+              style={{ display: "block", width: "100%", padding: "10px 8px", border: "none", cursor: "pointer", fontWeight: panelTab === id ? 700 : 500, fontSize: 10.5, fontFamily: "var(--f-mono)", letterSpacing: "0.05em", textAlign: "left", lineHeight: 1.35 }}>
               {label}
             </button>
           ))}
         </nav>
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", background: "var(--ink)", color: "var(--paper-cream)", flexShrink: 0 }}>
+        <div className="takeoffs-panel-glass-body" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <div className="takeoffs-panel-glass-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", flexShrink: 0 }}>
           <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.06em", fontWeight: 700, lineHeight: 1.35 }}>{activeTabLabel}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <button onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
+            <button type="button" className={`takeoffs-panel-glass-strip${panelPrefs.strip ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
               title="Compact strip — also show the conditions as a horizontal strip above the canvas (handy on small projects with the panel collapsed)"
-              style={{ background: panelPrefs.strip ? "var(--paper-cream)" : "none", border: "1px solid var(--paper-cream)", color: panelPrefs.strip ? "var(--ink)" : "var(--paper-cream)", fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 6px", lineHeight: 1.4 }}>strip</button>
-            <button type="button" onClick={onToggleCollapse} title="Close panel"
-              style={{ background: "none", border: "none", color: "var(--paper-cream)", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>×</button>
+              style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 8px", lineHeight: 1.4, borderRadius: 999 }}>strip</button>
+            <button type="button" className="takeoffs-panel-glass-close" onClick={onToggleCollapse} title="Close panel"
+              style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
         </div>
         {panelTab === "takeoffs" && <>
-        {/* view controls — search / natural sort / tag-family grouping.
-            All VIEW-ONLY: the array order (hotkeys, payload) never changes. */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)", flexShrink: 0 }}>
-          <input name="condition-filter" value={condQuery} onChange={(e) => setCondQuery(e.target.value)} placeholder="filter conditions…"
-            style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-          {condQuery && <button onClick={() => setCondQuery("")} title="Clear the filter" style={btnClearX}>×</button>}
-          <button onClick={() => onPanelPrefs((p) => ({ ...p, az: !p.az }))}
+        <div className="takeoffs-panel-glass-actions" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)", flexShrink: 0 }}>
+          <input name="condition-filter" className="takeoffs-panel-glass-filter" value={condQuery} onChange={(e) => setCondQuery(e.target.value)} placeholder="filter conditions…"
+            style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 999, fontSize: 12 }} />
+          {condQuery && <button type="button" className="takeoffs-panel-glass-clear" onClick={() => setCondQuery("")} title="Clear the filter" style={btnClearX}>×</button>}
+          <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.az ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, az: !p.az }))}
             title="Natural sort by tag (CT-2 before CT-10) — a view; hotkeys 1–9 keep their original numbering"
-            style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.az ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.az ? "var(--cobalt)" : "transparent", color: panelPrefs.az ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
-          <button onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
+            style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
+          <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.group ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
             title="Group by tag family (the text before the dash: CPT, LVT, CT…)"
-            style={{ padding: "3px 7px", borderRadius: 0, border: `1px solid ${panelPrefs.group ? "var(--cobalt)" : "var(--ink-faint)"}`, background: panelPrefs.group ? "var(--cobalt)" : "transparent", color: panelPrefs.group ? "var(--paper-bright)" : "var(--ink-muted)", cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
+            style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
         </div>
         {/* bulk actions — appear while a ⌘/⇧ multi-selection is live
             (liveChecked: the count never claims ids the list lost) */}
@@ -709,14 +709,14 @@ function TakeoffsPanel({
               style={{ marginLeft: "auto", padding: "2px 6px", border: "none", background: "none", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 }}>✕</button>
           </div>
         )}
-        <div style={{ flex: 1, overflow: "auto" }}>
+        <div className="takeoffs-panel-glass-scroll" style={{ flex: 1, overflow: "auto" }}>
           {conditions.length === 0 && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>No conditions yet — add one and start tracing.</div>}
           {condGroups.map((g) => (
             <React.Fragment key={g.name ?? "_all"}>
               {g.name != null && (
-                <div onClick={() => setClosedGroups((s) => { const n = new Set(s); if (n.has(g.name)) n.delete(g.name); else n.add(g.name); return n; })}
+                <div className="takeoffs-panel-glass-group" onClick={() => setClosedGroups((s) => { const n = new Set(s); if (n.has(g.name)) n.delete(g.name); else n.add(g.name); return n; })}
                   title="Collapse / expand this tag family"
-                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--ink-faint)", background: "var(--paper-cream)", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "light-dark(var(--ink-muted), var(--ink))", userSelect: "none" }}>
+                  style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--ink-faint)", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", userSelect: "none" }}>
                   <span style={{ width: 10, color: "light-dark(var(--ink-muted), var(--ink))" }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
                   <span style={{ fontWeight: 700, color: "var(--ink)" }}>{g.name}</span>
                   <span>· {g.items.length}</span>

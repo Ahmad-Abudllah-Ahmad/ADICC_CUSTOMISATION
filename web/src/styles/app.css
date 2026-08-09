@@ -375,6 +375,182 @@ textarea {
   .report-flow > tbody > tr { break-inside: auto; }
 }
 
+/* ── Apple liquid glass — unified takeoff toolbar ─────────────────────────── */
+
+.toolbar-glass-bar {
+  isolation: isolate;
+}
+
+.toolbar-glass-pill {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  box-shadow:
+    0 4px 24px rgba(14, 26, 46, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+:root[data-theme="dark"] .toolbar-glass-pill {
+  background: rgba(36, 42, 50, 0.72);
+  border-color: rgba(255, 255, 255, 0.38);
+  box-shadow:
+    0 4px 24px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.toolbar-glass-divider {
+  background: rgba(255, 255, 255, 0.55) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-divider {
+  background: rgba(255, 255, 255, 0.42) !important;
+}
+
+.toolbar-glass-btn-ghost-positive {
+  background: rgba(255, 255, 255, 0.58) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.toolbar-glass-btn-cond {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.toolbar-glass-btn-cond.is-on {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent) !important;
+  box-shadow:
+    0 2px 10px color-mix(in srgb, var(--cobalt) 18%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.toolbar-glass-btn-empty {
+  background: rgba(255, 255, 255, 0.58) !important;
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.toolbar-glass-select {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.toolbar-glass-select.is-active {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  color: var(--accent-contrast) !important;
+}
+
+.toolbar-glass-popover {
+  background: rgba(255, 255, 255, 0.82) !important;
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 12px 40px rgba(14, 26, 46, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+.toolbar-glass-bar .mode-circle-btn:not(.is-on),
+.toolbar-glass-bar .angle-dial-btn:not(.is-on) {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border-color: rgba(255, 255, 255, 0.58);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.toolbar-glass-bar .mode-circle-btn:hover:not(.is-on),
+.toolbar-glass-bar .angle-dial-btn:hover:not(.is-on) {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: color-mix(in srgb, var(--cobalt) 35%, rgba(255, 255, 255, 0.58));
+}
+
+.toolbar-glass-bar .mode-circle-btn.is-on,
+.toolbar-glass-bar .angle-dial-btn.is-on:not(.is-snap) {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent);
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent);
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--cobalt) 18%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.toolbar-glass-bar .angle-dial-btn.is-snap.is-on {
+  background: color-mix(in srgb, var(--c-positive) 90%, transparent);
+  border-color: color-mix(in srgb, var(--c-positive) 68%, transparent);
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--c-positive) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.toolbar-glass-bar .tool-menu-trigger:not(.is-active) {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.toolbar-glass-bar .tool-menu-trigger.is-open:not(.is-active) {
+  background: rgba(255, 255, 255, 0.72) !important;
+}
+
+.toolbar-glass-bar .tool-menu-trigger.is-active:not(.is-accent-danger) {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    0 2px 10px color-mix(in srgb, var(--cobalt) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.toolbar-glass-bar .tool-menu-trigger.is-active.is-accent-danger {
+  background: color-mix(in srgb, var(--c-danger) 88%, transparent) !important;
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    0 3px 10px color-mix(in srgb, var(--c-danger) 18%, transparent),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.toolbar-glass-bar .takeoff-sticky-trigger {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent);
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  border-color: color-mix(in srgb, var(--cobalt) 70%, transparent);
+  box-shadow:
+    0 2px 12px color-mix(in srgb, var(--cobalt) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
 /* ── sticky glass estimation dropdown (Takeoff Tool Palette) ─────────────── */
 
 .takeoff-sticky-menu {
@@ -562,9 +738,13 @@ textarea {
   pointer-events: auto;
   padding: 8px 10px;
   border-radius: 18px !important;
-  border: 1px solid var(--ink-faint);
-  background: var(--paper-bright);
-  box-shadow: var(--shadow-2);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  box-shadow:
+    0 12px 40px rgba(14, 26, 46, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
 .takeoff-sticky-panel-inner {
@@ -580,14 +760,20 @@ textarea {
   gap: 7px;
   padding: 8px 14px;
   border-radius: 999px !important;
-  border: 1px solid var(--ink-faint);
-  background: var(--paper-shadow);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
   color: var(--ink);
   font-family: var(--f-body);
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
   transition:
     background var(--t-fast) var(--ease),
     border-color var(--t-fast) var(--ease),
@@ -596,25 +782,33 @@ textarea {
 }
 
 .takeoff-sticky-opt:hover:not(:disabled) {
-  background: var(--paper-cream);
-  border-color: rgba(26, 82, 118, 0.35);
+  background: rgba(255, 255, 255, 0.72);
+  border-color: color-mix(in srgb, var(--cobalt) 28%, rgba(255, 255, 255, 0.52));
 }
 
 .takeoff-sticky-opt.is-active {
-  background: var(--cobalt);
-  border-color: var(--cobalt);
-  box-shadow: 0 4px 16px rgba(26, 82, 118, 0.28);
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent);
+  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent);
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    0 4px 16px color-mix(in srgb, var(--cobalt) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
   color: var(--accent-contrast);
 }
 
 .takeoff-sticky-opt.is-report {
-  background: var(--paper-bright);
-  border-color: var(--ink-faint);
+  background: rgba(255, 255, 255, 0.62);
+  border-color: rgba(255, 255, 255, 0.62);
   color: var(--ink);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .takeoff-sticky-opt.is-report:hover:not(:disabled) {
-  background: var(--paper-cream);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .takeoff-sticky-opt:disabled {
@@ -646,14 +840,15 @@ textarea {
 }
 
 .tool-menu-palette-panel {
-  max-width: min(92vw, 760px);
+  max-width: min(96vw, 1200px);
+  width: max-content;
 }
 
 .tool-menu-palette-inner {
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   white-space: nowrap;
 }
@@ -662,12 +857,40 @@ textarea {
   position: relative;
   z-index: 1;
   pointer-events: auto;
-  background: var(--paper-bright);
-  border: 1px solid var(--ink);
-  box-shadow: var(--shadow-2);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 12px 40px rgba(14, 26, 46, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
   padding: 4px 0;
   border-radius: 18px;
   overflow: hidden;
+}
+
+.tool-menu-drop-panel {
+  background: rgba(255, 255, 255, 0.82) !important;
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  box-shadow:
+    0 12px 40px rgba(14, 26, 46, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+.tool-menu-anchored-panel button,
+.tool-menu-drop-panel button {
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  box-shadow:
+    0 2px 8px rgba(14, 26, 46, 0.08),
+    0 1px 2px rgba(14, 26, 46, 0.05);
+}
+
+.tool-menu-anchored-panel button:hover:not(:disabled),
+.tool-menu-drop-panel button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.62) !important;
 }
 
 .tool-menu-palette-divider {
@@ -681,6 +904,524 @@ textarea {
 /* MODE — circular select / pan toggles */
 .canvas-circle-btn {
   border-radius: 50% !important;
+}
+
+.canvas-glass-cluster .canvas-circle-btn {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border-color: rgba(255, 255, 255, 0.68) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32) !important;
+}
+
+.canvas-glass-cluster .canvas-circle-btn.is-on {
+  background: color-mix(in srgb, var(--ink) 92%, transparent) !important;
+  border-color: color-mix(in srgb, var(--ink) 75%, transparent) !important;
+  color: var(--paper-bright) !important;
+  box-shadow:
+    0 2px 10px color-mix(in srgb, var(--ink) 14%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+.canvas-glass-cluster .canvas-circle-btn.is-sheet-dark {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 75%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  box-shadow:
+    0 2px 10px color-mix(in srgb, var(--cobalt) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+:root[data-theme="dark"] .canvas-glass-cluster .canvas-circle-btn:not(.is-on):not(.is-sheet-dark) {
+  background: rgba(255, 255, 255, 0.42) !important;
+  border-color: rgba(255, 255, 255, 0.38) !important;
+  color: #000 !important;
+}
+
+/* ── Apple liquid glass — left Files/Markups/Stamps/RFIs panel ───────────── */
+
+.left-panel-glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 14px 40px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.left-panel-glass-tabs {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.42);
+}
+
+.left-panel-glass-actions button:first-child {
+  background: color-mix(in srgb, var(--ink) 92%, transparent) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.12),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.left-panel-glass-actions button:not(:first-child) {
+  background: rgba(255, 255, 255, 0.58) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border-color: rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.left-panel-glass input[name="files-search"],
+.left-panel-glass input,
+.left-panel-glass select {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border-color: rgba(255, 255, 255, 0.62) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.left-panel-glass-folder-btn {
+  background: rgba(255, 255, 255, 0.58) !important;
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  box-shadow:
+    0 2px 8px rgba(14, 26, 46, 0.08),
+    0 1px 2px rgba(14, 26, 46, 0.05);
+}
+
+.left-panel-glass-folder-btn:hover {
+  background: rgba(255, 255, 255, 0.72) !important;
+}
+
+.left-panel-glass-file-row {
+  background: transparent;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.left-panel-glass-file-row.is-active {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+}
+
+.left-panel-glass-file-row.is-match {
+  background: color-mix(in srgb, var(--cobalt) 18%, rgba(255, 255, 255, 0.62)) !important;
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+}
+
+.left-panel-glass > div:last-child button {
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  box-shadow:
+    0 2px 8px rgba(14, 26, 46, 0.08),
+    0 1px 2px rgba(14, 26, 46, 0.05);
+}
+
+.left-panel-glass > div:last-child > div > div[style*="borderTop"] {
+  backdrop-filter: blur(24px) saturate(190%);
+}
+
+:root[data-theme="dark"] .left-panel-glass {
+  background: rgba(26, 35, 50, 0.78);
+  border-color: rgba(255, 255, 255, 0.38);
+  box-shadow:
+    0 14px 40px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .left-panel-glass-folder-btn {
+  background: rgba(255, 255, 255, 0.38) !important;
+}
+
+:root[data-theme="dark"] .left-panel-glass-file-row.is-active {
+  background: rgba(255, 255, 255, 0.48) !important;
+}
+
+/* ── Apple liquid glass — Takeoffs panel (right dock) ───────────────────── */
+
+.takeoffs-panel-glass {
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border-left: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    -6px 0 20px rgba(14, 26, 46, 0.12),
+    -16px 0 48px rgba(14, 26, 46, 0.1),
+    inset 1px 0 0 rgba(255, 255, 255, 0.35);
+}
+
+.takeoffs-panel-glass-resize {
+  border-right: 1px solid rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.takeoffs-panel-glass-inner {
+  min-width: 0;
+}
+
+.takeoffs-panel-glass-tabs {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  border-right: 1px solid rgba(255, 255, 255, 0.32);
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.12),
+    4px 0 16px rgba(14, 26, 46, 0.08);
+}
+
+.takeoffs-panel-glass-tab {
+  color: var(--accent-contrast);
+  background: transparent;
+  border-left: 3px solid transparent;
+  opacity: 0.72;
+  transition:
+    background var(--t-fast) var(--ease),
+    opacity var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+}
+
+.takeoffs-panel-glass-tab.is-active {
+  background: rgba(255, 255, 255, 0.18);
+  border-left-color: rgba(255, 255, 255, 0.88);
+  opacity: 1;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    2px 0 10px rgba(14, 26, 46, 0.1);
+}
+
+.takeoffs-panel-glass-tab:hover:not(.is-active) {
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0.92;
+}
+
+.takeoffs-panel-glass-body {
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  min-width: 0;
+}
+
+.takeoffs-panel-glass-header {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  color: var(--accent-contrast);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.32);
+  box-shadow:
+    0 4px 16px rgba(14, 26, 46, 0.12),
+    0 2px 6px rgba(14, 26, 46, 0.08);
+}
+
+.takeoffs-panel-glass-strip {
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  color: var(--accent-contrast);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.14),
+    0 1px 3px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.takeoffs-panel-glass-strip.is-on {
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 4px 14px rgba(14, 26, 46, 0.16),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.takeoffs-panel-glass-close {
+  color: var(--accent-contrast);
+  opacity: 0.88;
+}
+
+.takeoffs-panel-glass-close:hover {
+  opacity: 1;
+}
+
+.takeoffs-panel-glass-actions {
+  background: rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border-bottom-color: rgba(255, 255, 255, 0.42) !important;
+}
+
+.takeoffs-panel-glass-filter,
+.takeoffs-panel-glass-body input:not([type="checkbox"]):not([type="radio"]),
+.takeoffs-panel-glass-body select,
+.takeoffs-panel-glass .condition-appearance-editor input,
+.takeoffs-panel-glass .condition-appearance-editor select {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(32px) saturate(195%);
+  -webkit-backdrop-filter: blur(32px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.12),
+    0 1px 3px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.takeoffs-panel-glass-toggle {
+  background: rgba(255, 255, 255, 0.68) !important;
+  backdrop-filter: blur(32px) saturate(195%);
+  -webkit-backdrop-filter: blur(32px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  color: var(--ink-muted);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.12),
+    0 1px 3px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.takeoffs-panel-glass-toggle.is-on {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--cobalt) 22%, transparent),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.takeoffs-panel-glass-row {
+  background: transparent;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.takeoffs-panel-glass-row.is-checked {
+  background: color-mix(in srgb, var(--cobalt) 10%, rgba(255, 255, 255, 0.52)) !important;
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+}
+
+.takeoffs-panel-glass-row.is-active {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  box-shadow:
+    0 3px 12px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.takeoffs-panel-glass-icon-btn {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  color: var(--ink-muted);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.14),
+    0 1px 3px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.takeoffs-panel-glass-icon-btn.is-on {
+  background: color-mix(in srgb, var(--ink) 92%, transparent) !important;
+  border-color: color-mix(in srgb, var(--ink) 68%, transparent) !important;
+  color: var(--paper-bright) !important;
+  box-shadow:
+    0 4px 14px rgba(14, 26, 46, 0.16),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.takeoffs-panel-glass-icon-btn.is-pinned {
+  background: color-mix(in srgb, var(--cobalt) 14%, rgba(255, 255, 255, 0.72)) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 52%, transparent) !important;
+  color: var(--cobalt) !important;
+  box-shadow:
+    0 3px 10px color-mix(in srgb, var(--cobalt) 18%, transparent),
+    0 1px 3px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.takeoffs-panel-glass-icon-btn.is-danger {
+  color: var(--c-danger) !important;
+}
+
+.takeoffs-panel-glass-materials {
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  box-shadow:
+    inset 0 2px 8px rgba(14, 26, 46, 0.06),
+    0 2px 10px rgba(14, 26, 46, 0.06);
+}
+
+.takeoffs-panel-glass-group {
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  color: var(--ink-muted);
+  box-shadow:
+    0 2px 8px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.takeoffs-panel-glass-scroll > div:last-of-type button,
+.takeoffs-panel-glass-scroll button[style*="dashed"],
+.takeoffs-panel-glass-body > div > div button {
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+}
+
+.takeoffs-panel-glass-body button:not(.takeoffs-panel-glass-tab):not(.takeoffs-panel-glass-close):not(.takeoffs-panel-glass-clear) {
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.12),
+    0 1px 3px rgba(14, 26, 46, 0.08);
+}
+
+.takeoffs-panel-glass-body button[style*="var(--ink)"]:not(.takeoffs-panel-glass-icon-btn),
+.takeoffs-panel-glass-scroll button[style*="var(--ink)"] {
+  background: color-mix(in srgb, var(--ink) 92%, transparent) !important;
+  color: var(--paper-bright) !important;
+  border-color: color-mix(in srgb, var(--ink) 68%, transparent) !important;
+  box-shadow:
+    0 4px 14px rgba(14, 26, 46, 0.16),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.takeoffs-panel-glass .condition-appearance-editor button {
+  box-shadow:
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    0 1px 2px rgba(14, 26, 46, 0.06);
+}
+
+.takeoffs-panel-glass .condition-appearance-editor button:not([style*="width: 16"]) {
+  background: rgba(255, 255, 255, 0.72) !important;
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  border-radius: 999px !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.12),
+    0 1px 3px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.takeoffs-panel-glass .condition-appearance-editor button[style*="width: 16"] {
+  box-shadow:
+    0 2px 6px rgba(14, 26, 46, 0.12),
+    0 1px 2px rgba(14, 26, 46, 0.08);
+}
+
+.takeoffs-panel-glass .condition-appearance-editor > div > span > div[style*="position: absolute"] {
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  border-radius: 12px !important;
+  box-shadow:
+    0 8px 28px rgba(14, 26, 46, 0.14),
+    0 2px 8px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+:root[data-theme="dark"] .takeoffs-panel-glass {
+  background: rgba(26, 35, 50, 0.78);
+  border-left-color: rgba(255, 255, 255, 0.38);
+  box-shadow:
+    -6px 0 20px rgba(0, 0, 0, 0.32),
+    -16px 0 48px rgba(0, 0, 0, 0.24),
+    inset 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .takeoffs-panel-glass-body {
+  background: rgba(26, 35, 50, 0.62);
+}
+
+:root[data-theme="dark"] .takeoffs-panel-glass-filter,
+:root[data-theme="dark"] .takeoffs-panel-glass-body input:not([type="checkbox"]):not([type="radio"]),
+:root[data-theme="dark"] .takeoffs-panel-glass-body select,
+:root[data-theme="dark"] .takeoffs-panel-glass-icon-btn:not(.is-on) {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .takeoffs-panel-glass-toggle:not(.is-on) {
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .takeoffs-panel-glass-row.is-active {
+  background: rgba(255, 255, 255, 0.22) !important;
+  box-shadow:
+    0 3px 12px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .takeoffs-panel-glass-group,
+:root[data-theme="dark"] .takeoffs-panel-glass-materials,
+:root[data-theme="dark"] .takeoffs-panel-glass-actions {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Apple liquid glass — bottom open-sheets pill ────────────────────────── */
+
+.sheets-pill-glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 4px 20px rgba(14, 26, 46, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.sheets-pill-glass-trigger {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent);
+  color: var(--accent-contrast);
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    0 3px 10px color-mix(in srgb, var(--cobalt) 16%, transparent),
+    0 1px 3px rgba(14, 26, 46, 0.06);
+}
+
+.sheets-pill-glass-trigger.is-open {
+  background: rgba(255, 255, 255, 0.72) !important;
+  color: var(--ink);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06);
+}
+
+.sheets-pill-glass-tab {
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(32px) saturate(195%);
+  -webkit-backdrop-filter: blur(32px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 2px 8px rgba(14, 26, 46, 0.08),
+    0 1px 2px rgba(14, 26, 46, 0.05);
+}
+
+.sheets-pill-glass-tab.is-on {
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06);
 }
 
 .mode-circle-btn {
@@ -824,4 +1565,428 @@ textarea {
 
 .angle-dial-btn.is-on ~ .angle-dial-arc {
   opacity: 0.85;
+}
+
+/* Liquid glass — dark theme refinements */
+:root[data-theme="dark"] .takeoff-sticky-panel,
+:root[data-theme="dark"] .tool-menu-anchored-panel,
+:root[data-theme="dark"] .tool-menu-drop-panel {
+  background: rgba(26, 35, 50, 0.88);
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  border-color: rgba(255, 255, 255, 0.38);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .takeoff-sticky-opt:not(.is-active) {
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(255, 255, 255, 0.38);
+  color: var(--glass-fg, #1c2833) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-bar .mode-circle-btn:not(.is-on),
+:root[data-theme="dark"] .toolbar-glass-bar .angle-dial-btn:not(.is-on),
+:root[data-theme="dark"] .toolbar-glass-bar .tool-menu-trigger:not(.is-active) {
+  background: rgba(255, 255, 255, 0.48) !important;
+  border-color: rgba(255, 255, 255, 0.38);
+  color: var(--glass-fg, #1c2833) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-popover {
+  background: rgba(26, 35, 50, 0.88) !important;
+  backdrop-filter: blur(80px) saturate(220%) !important;
+  -webkit-backdrop-filter: blur(80px) saturate(220%) !important;
+  border-color: rgba(255, 255, 255, 0.38) !important;
+}
+
+/* ── Apple liquid glass — Drawings Q&A chatbot ───────────────────────────── */
+
+.drawings-chat-glass-shell {
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.82) !important;
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  border-radius: 18px !important;
+  box-shadow:
+    0 8px 24px rgba(14, 26, 46, 0.14),
+    0 20px 56px rgba(14, 26, 46, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+.drawings-chat-glass {
+  isolation: isolate;
+}
+
+.drawings-chat-glass-header {
+  background: rgba(255, 255, 255, 0.52);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.42) !important;
+  box-shadow: 0 2px 12px rgba(14, 26, 46, 0.06);
+}
+
+.drawings-chat-glass-form {
+  background: rgba(255, 255, 255, 0.52);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border-top: 1px solid rgba(255, 255, 255, 0.42) !important;
+  box-shadow: 0 -2px 12px rgba(14, 26, 46, 0.06);
+}
+
+.drawings-chat-glass-input {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.62) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.drawings-chat-glass-send {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  border: 1px solid color-mix(in srgb, var(--cobalt) 70%, transparent) !important;
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--cobalt) 22%, transparent),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.drawings-chat-glass-send:disabled {
+  background: rgba(255, 255, 255, 0.52) !important;
+  color: var(--ink-muted) !important;
+  border-color: rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.drawings-chat-glass-suggestion {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(32px) saturate(195%);
+  -webkit-backdrop-filter: blur(32px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.drawings-chat-glass-suggestion:hover {
+  background: rgba(255, 255, 255, 0.78) !important;
+  box-shadow:
+    0 4px 14px rgba(14, 26, 46, 0.12),
+    0 2px 6px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.drawings-chat-glass-msg--user {
+  background: color-mix(in srgb, var(--cobalt) 14%, rgba(255, 255, 255, 0.72)) !important;
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.drawings-chat-glass-msg--assistant {
+  background: rgba(255, 255, 255, 0.68) !important;
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.drawings-chat-glass-generating {
+  background: rgba(255, 255, 255, 0.68) !important;
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.drawings-chat-glass-citation {
+  background: rgba(255, 255, 255, 0.62) !important;
+  backdrop-filter: blur(32px) saturate(190%);
+  -webkit-backdrop-filter: blur(32px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.58) !important;
+  color: var(--ink);
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 1px 3px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.drawings-chat-glass-citation.is-active {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--cobalt) 22%, transparent),
+    0 2px 6px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.drawings-chat-glass-citation.is-active span:first-child {
+  background: rgba(255, 255, 255, 0.22) !important;
+  color: var(--accent-contrast) !important;
+}
+
+.drawings-chat-glass-trigger.canvas-circle-btn {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  border: 1px solid color-mix(in srgb, var(--cobalt) 70%, transparent) !important;
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  box-shadow:
+    0 6px 20px color-mix(in srgb, var(--cobalt) 28%, transparent),
+    0 3px 10px rgba(14, 26, 46, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+}
+
+.drawings-chat-glass-trigger.canvas-circle-btn:hover {
+  box-shadow:
+    0 8px 28px color-mix(in srgb, var(--cobalt) 32%, transparent),
+    0 4px 14px rgba(14, 26, 46, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
+}
+
+.drawings-chat-glass-pill {
+  isolation: isolate;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(80px) saturate(220%);
+  -webkit-backdrop-filter: blur(80px) saturate(220%);
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow:
+    0 6px 24px rgba(14, 26, 46, 0.14),
+    0 16px 48px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+}
+
+.drawings-chat-glass-pill-input {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.drawings-chat-glass-pill-send {
+  background: color-mix(in srgb, var(--cobalt) 92%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  border: none !important;
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--cobalt) 22%, transparent),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+.drawings-chat-glass-pill-send:disabled {
+  background: rgba(255, 255, 255, 0.52) !important;
+  color: var(--ink-muted) !important;
+  box-shadow:
+    0 3px 10px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-shell {
+  background: rgba(26, 35, 50, 0.88) !important;
+  border-color: rgba(255, 255, 255, 0.38) !important;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.32),
+    0 20px 56px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-header,
+:root[data-theme="dark"] .drawings-chat-glass-form {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-input,
+:root[data-theme="dark"] .drawings-chat-glass-suggestion,
+:root[data-theme="dark"] .drawings-chat-glass-msg--assistant,
+:root[data-theme="dark"] .drawings-chat-glass-generating,
+:root[data-theme="dark"] .drawings-chat-glass-citation:not(.is-active) {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.32) !important;
+  box-shadow:
+    0 3px 10px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-pill {
+  background: rgba(26, 35, 50, 0.88);
+  border-color: rgba(255, 255, 255, 0.38);
+  box-shadow:
+    0 6px 24px rgba(0, 0, 0, 0.32),
+    0 16px 48px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-trigger.canvas-circle-btn {
+  box-shadow:
+    0 6px 20px color-mix(in srgb, var(--cobalt) 32%, transparent),
+    0 3px 10px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
+}
+
+/* ── Apple liquid glass — home projects buttons ─────────────────────────── */
+
+.home-glass-btn {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 4px 14px rgba(14, 26, 46, 0.12),
+    0 2px 4px rgba(14, 26, 46, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+.home-glass-circle-btn {
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: blur(36px) saturate(195%);
+  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  border: 1px solid rgba(255, 255, 255, 0.58) !important;
+  box-shadow:
+    0 4px 16px rgba(14, 26, 46, 0.14),
+    0 2px 4px rgba(14, 26, 46, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35) !important;
+}
+
+.home-glass-circle-btn.is-primary {
+  background: color-mix(in srgb, var(--cobalt) 88%, transparent) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 65%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  box-shadow:
+    0 4px 18px color-mix(in srgb, var(--cobalt) 28%, transparent),
+    0 2px 6px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+}
+
+.home-glass-circle-btn.is-solid {
+  background: color-mix(in srgb, var(--ink) 88%, transparent) !important;
+  border-color: color-mix(in srgb, var(--ink) 65%, transparent) !important;
+  color: var(--accent-contrast) !important;
+  box-shadow:
+    0 4px 16px rgba(14, 26, 46, 0.18),
+    0 2px 4px rgba(14, 26, 46, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Dark mode — readable fonts/icons on home + toolbar */
+:root[data-theme="dark"] .home-projects-scroll {
+  background: var(--paper-bright) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-bar {
+  background: var(--paper-bright) !important;
+}
+
+:root[data-theme="dark"] .home-glass-btn {
+  color: #000 !important;
+}
+
+:root[data-theme="dark"] .home-glass-circle-btn:not(.is-primary):not(.is-solid) {
+  color: #000 !important;
+}
+
+:root[data-theme="dark"] .home-glass-circle-btn.is-primary,
+:root[data-theme="dark"] .home-glass-circle-btn.is-solid {
+  color: var(--accent-contrast) !important;
+}
+
+:root[data-theme="dark"] .home-glass-circle-btn.is-solid {
+  background: color-mix(in srgb, #1c2833 88%, transparent) !important;
+  border-color: color-mix(in srgb, #1c2833 65%, transparent) !important;
+}
+
+/* ── Dark mode — readable type & icons (toolbar, sheets, dropdowns) ─────── */
+
+:root[data-theme="dark"] {
+  --glass-fg: #1c2833;
+  --glass-fg-soft: #34495e;
+  --glass-fg-muted: #5d6d7e;
+}
+
+/* Bottom open-sheets pill */
+:root[data-theme="dark"] .sheets-pill-glass-trigger.is-open,
+:root[data-theme="dark"] .sheets-pill-glass-tab,
+:root[data-theme="dark"] .sheets-pill-glass-tab button {
+  color: var(--glass-fg) !important;
+}
+
+:root[data-theme="dark"] .sheets-pill-glass-tab button[title="Close tab"] {
+  color: var(--glass-fg-muted) !important;
+}
+
+:root[data-theme="dark"] .sheets-pill-glass-tab button[title*="by-side" i] {
+  color: var(--c-positive) !important;
+}
+
+/* Toolbar — frosted light-glass controls */
+:root[data-theme="dark"] .toolbar-glass-bar .mode-circle-btn:not(.is-on),
+:root[data-theme="dark"] .toolbar-glass-bar .angle-dial-btn:not(.is-on),
+:root[data-theme="dark"] .toolbar-glass-bar .tool-menu-trigger:not(.is-active),
+:root[data-theme="dark"] .toolbar-glass-btn-cond:not(.is-on),
+:root[data-theme="dark"] .toolbar-glass-btn-empty,
+:root[data-theme="dark"] .toolbar-glass-select:not(.is-active) {
+  color: var(--glass-fg) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-bar .mode-circle-btn.is-on,
+:root[data-theme="dark"] .toolbar-glass-bar .angle-dial-btn.is-on,
+:root[data-theme="dark"] .toolbar-glass-bar .tool-menu-trigger.is-active,
+:root[data-theme="dark"] .toolbar-glass-select.is-active,
+:root[data-theme="dark"] .toolbar-glass-btn-cond.is-on {
+  color: var(--accent-contrast) !important;
+}
+
+/* Dropdown / palette options on light glass */
+:root[data-theme="dark"] .takeoff-sticky-opt:not(.is-active):not(.is-danger),
+:root[data-theme="dark"] .takeoff-sticky-opt.is-report:not(.is-active) {
+  color: var(--glass-fg) !important;
+}
+
+:root[data-theme="dark"] .takeoff-sticky-opt.is-active {
+  color: var(--accent-contrast) !important;
+}
+
+/* Anchored & drop menus — dark glass panels keep theme foreground */
+:root[data-theme="dark"] .tool-menu-anchored-panel,
+:root[data-theme="dark"] .tool-menu-drop-panel,
+:root[data-theme="dark"] .toolbar-glass-popover {
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .tool-menu-anchored-panel button,
+:root[data-theme="dark"] .tool-menu-drop-panel button {
+  color: var(--ink) !important;
+}
+
+:root[data-theme="dark"] .tool-menu-anchored-panel button span,
+:root[data-theme="dark"] .tool-menu-drop-panel button span {
+  color: inherit;
+}
+
+:root[data-theme="dark"] .tool-menu-anchored-panel [style*="ink-muted"],
+:root[data-theme="dark"] .tool-menu-drop-panel [style*="ink-muted"] {
+  color: var(--ink-muted) !important;
 }
