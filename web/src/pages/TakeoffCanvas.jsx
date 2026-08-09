@@ -7665,7 +7665,7 @@ export default function TakeoffCanvas() {
   // tiny mono line under the icon. Lives on the canvas, costs the toolbar zero rows.
   const panelBtn = (onClick, iconName, label, isOn, count) => (
     <button className={`canvas-circle-btn${isOn ? " is-on" : ""}`} onClick={onClick} title={label}
-      style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, width: 40, height: 40, padding: 0, borderRadius: 999, border: `1px solid ${isOn ? "var(--ink)" : "var(--ink-faint)"}`, background: isOn ? "var(--ink)" : "var(--paper-bright)", color: isOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, lineHeight: 1, flexShrink: 0, boxShadow: isOn ? "none" : "0 1px 3px rgba(14, 26, 46, 0.12)" }}>
+      style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: `1px solid ${isOn ? "var(--ink)" : "var(--ink-faint)"}`, background: isOn ? "var(--ink)" : "var(--paper-bright)", color: isOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, lineHeight: 1, flexShrink: 0, boxShadow: isOn ? "none" : "0 1px 3px rgba(14, 26, 46, 0.12)" }}>
       <Icon name={iconName} size={15} />{count ? <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5 }}>{count}</span> : null}
     </button>
   );
@@ -8471,6 +8471,7 @@ export default function TakeoffCanvas() {
              alignSelf: "center",
              display: "flex",
              flexDirection: "column",
+             alignItems: "center",
              gap: 3,
              padding: "6px 4px",
              background: "transparent",
@@ -8485,11 +8486,11 @@ export default function TakeoffCanvas() {
            {panelBtn(() => openLeftHover("rfi"), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
            {[["+", 1.25], ["−", 0.8]].map(([lbl, f]) => (
              <button key={lbl} className="canvas-circle-btn" onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, f); }}
-               style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 18, fontWeight: 700 }}>{lbl}</button>
+               style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 18, fontWeight: 700, flexShrink: 0 }}>{lbl}</button>
            ))}
-           <button className="canvas-circle-btn" onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ width: 34, height: 34, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 12 }}>fit</button>
+           <button className="canvas-circle-btn" onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 12, flexShrink: 0 }}>fit</button>
            <button className={`canvas-circle-btn${darkMode ? " is-sheet-dark" : ""}`} onClick={() => setDarkMode((d) => !d)} title={darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)"}
-             style={{ width: 34, height: 34, borderRadius: 999, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, cursor: "pointer", fontSize: 13 }}>
+             style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>
              {darkMode ? "☀" : "☾"}</button>
          </div>
          {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
