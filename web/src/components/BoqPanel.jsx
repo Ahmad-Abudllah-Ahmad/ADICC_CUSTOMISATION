@@ -28,6 +28,48 @@ function sheetFloorTotal(shapeRows) {
   return round2(shapeRows.reduce((n, r) => n + (r.floor_sf || 0), 0));
 }
 
+/** sheetLevels key may be a folder path while shape rows use bare filenames. */
+function resolveFloorLevel(sheetId, sheetLevels, sheetLabel) {
+  if (sheetLevels?.[sheetId]) return sheetLevels[sheetId];
+  const base = String(sheetId || "").replace(/^.*[/\\]/, "").split("#")[0].toLowerCase();
+  for (const [k, v] of Object.entries(sheetLevels || {})) {
+    const kb = String(k).replace(/^.*[/\\]/, "").split("#")[0].toLowerCase();
+    if (kb === base) return v;
+  }
+  const label = sheetLabel?.(sheetId) || sheetId;
+  const m = String(label).match(/(\d+(?:st|nd|rd|th))(?:\s*(?:&|and)\s*(\d+(?:st|nd|rd|th)))?\s*floor/i);
+  if (m) return m[2] ? `${m[1]} & ${m[2]} Floor` : `${m[1]} Floor`;
+  return "";
+}
+
+/** Match on-screen BOQ row pricing for CSV export (catalog rates, overrides, notes). */
+function resolveExportRow(r, meta, units, conditions, pricingCtx) {
+  const pq = primaryQty(r, units);
+  const qty = meta.qty_override !== "" && meta.qty_override != null ? Number(meta.qty_override) : pq.qty;
+  const unit = meta.unit || pq.unit;
+  const primaryRef = r.schedule_refs?.find((x) => x.tag === r.finish_tag) || r.schedule_refs?.[0];
+  const description = meta.description || primaryRef?.description || r.finish_tag || "";
+  const priced = pricingCtx?.priceRow?.({
+    qty,
+    unit,
+    finish_tag: r.finish_tag,
+    description,
+    waste_pct: conditions.find((c) => c.id === r.condition_id)?.waste_pct,
+  }) || {};
+  const rate = meta.rate_material != null
+    ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0)
+      + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
+    : (Number(meta.rate) || priced.rate || 0);
+  const amount = meta.amount != null ? Number(meta.amount) : (priced.amount ?? round2(qty * rate));
+  const notes = meta.notes || priced.rate_row?.notes || "";
+  const rateRow = priced.rate_row || null;
+  const materialName = rateRow?.name || priced.priced_from || description || r.finish_tag || "";
+  const materialQty = priced.qty != null ? priced.qty : qty;
+  const materialUnit = rateRow?.unit || unit;
+  const materialAmount = priced.material_ext != null ? priced.material_ext : round2(materialQty * (Number(rateRow?.rate_material) || 0));
+  return { qty, unit, rate, amount, description, notes, materialName, materialQty, materialUnit, materialAmount };
+}
+
 function ScheduleRefsBlock({ refs }) {
   if (!refs?.length) return null;
   return (
@@ -244,21 +286,19 @@ export default function BoqPanel({
   }, [shapeRows, onBoqLinesChange]);
 
   const exportCsv = useCallback(() => {
-    const header = ["Floor/Level", "Sheet", "Room/Area", "Finish", "Description", "Floor SF", "Wall SF", "LF", "EA", "Qty", "Unit", "Rate", "Amount", "Notes", "Source"];
+    const header = ["Floor/Level", "Sheet", "Room/Area", "Finish", "Description", "Floor SF", "Wall SF", "LF", "EA", "Qty", "Unit", "Rate", "Amount", "Material Name", "Material Qty", "Material Unit", "Material Amount", "Notes", "Source"];
     const lines = [`# Bill of Quantities${projectName ? ` — ${projectName}` : ""}`, header.map(csvEsc).join(",")];
     for (const g of bySheet) {
-      const floor = sheetLevels[g.sheet_id] || "";
+      const floor = resolveFloorLevel(g.sheet_id, sheetLevels, sheetLabel);
       const sheet = sheetLabel(g.sheet_id);
       for (const r of g.shapeRows) {
         const key = rowKey(r.shape_id);
         const meta = lineForKey(boqLines, key) || {};
-        const pq = primaryQty(r, units);
-        const qty = meta.qty_override !== "" && meta.qty_override != null ? Number(meta.qty_override) : pq.qty;
-        const unit = meta.unit || pq.unit;
-        const rate = Number(meta.rate) || 0;
+        const { qty, unit, rate, amount, description, notes, materialName, materialQty, materialUnit, materialAmount } = resolveExportRow(r, meta, units, conditions, pricingCtx);
         lines.push([
-          floor, sheet, meta.room || r.room_detected || "", r.finish_tag, meta.description || r.finish_tag,
-          r.floor_sf || "", r.wall_sf || "", r.lf || "", r.ea || "", qty, unit, rate, round2(qty * rate), meta.notes || "", "takeoff",
+          floor, sheet, meta.room || r.room_detected || "", r.finish_tag, description,
+          r.floor_sf || "", r.wall_sf || "", r.lf || "", r.ea || "", qty, unit, rate, amount,
+          materialName, materialQty, materialUnit, materialAmount, notes, "takeoff",
         ].map(csvEsc).join(","));
       }
     }
@@ -266,9 +306,10 @@ export default function BoqPanel({
       const qty = Number(m.qty_override) || 0;
       const rate = Number(m.rate) || 0;
       lines.push([
-        sheetLevels[m.sheet_id] || "", m.sheet_id ? sheetLabel(m.sheet_id) : "—",
+        resolveFloorLevel(m.sheet_id, sheetLevels, sheetLabel), m.sheet_id ? sheetLabel(m.sheet_id) : "—",
         m.room || "", "", m.description || "",
-        "", "", "", "", qty, m.unit || "", rate, round2(qty * rate), m.notes || "", "manual",
+        "", "", "", "", qty, m.unit || "", rate, round2(qty * rate),
+        m.description || "", qty, m.unit || "", round2(qty * rate), m.notes || "", "manual",
       ].map(csvEsc).join(","));
     }
     const blob = new Blob([lines.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
@@ -277,7 +318,7 @@ export default function BoqPanel({
     a.download = `${(projectName || "takeoff").replace(/[^\w.-]+/g, "_")}-boq.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
-  }, [bySheet, boqLines, manualLines, projectName, sheetLabel, sheetLevels, units]);
+  }, [bySheet, boqLines, manualLines, projectName, sheetLabel, sheetLevels, units, conditions, pricingCtx]);
 
   if (!open) return null;
 

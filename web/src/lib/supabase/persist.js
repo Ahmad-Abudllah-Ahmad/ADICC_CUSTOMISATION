@@ -5,8 +5,58 @@ import { conditionTotals } from "../totals.js";
 import { round2 } from "../totals.js";
 import { pricedConditionTotals, pricedGrandTotals } from "../pricing.js";
 import { ANN_SCHEMA, emptyAnnotations } from "../store.js";
+import { parseSheetKey } from "../sheetKey.ts";
 
 const shapeSnapshot = new Map(); // projectId -> Map(shapeId -> snapshot)
+
+/** A1108/A1109 masks were stored with bare filenames; live sheets use folder paths. */
+const AI_FLOOR_SHEET_FIX = new Set([
+  "a1108-4th floor plan.pdf",
+  "a1109-5th & 6th floor plan.pdf",
+]);
+
+function sheetBasename(sheetId) {
+  return parseSheetKey(String(sheetId || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
+}
+
+function needsAiFloorSheetFix(sheetId) {
+  return AI_FLOOR_SHEET_FIX.has(sheetBasename(sheetId));
+}
+
+/** Resolve bare A1108/A1109 ids to the project’s canonical sheet path (file_folders keys). */
+export function resolveAiFloorSheetId(sheetId, fileFolders = {}) {
+  if (!sheetId || !needsAiFloorSheetFix(sheetId)) return sheetId;
+  const { page } = parseSheetKey(sheetId);
+  const base = sheetBasename(sheetId);
+  const folderKey = Object.keys(fileFolders || {}).find(
+    (k) => k.split("/").pop()?.toLowerCase() === base,
+  );
+  if (!folderKey) return sheetId;
+  return page > 1 ? `${folderKey}#${page}` : folderKey;
+}
+
+export function normalizeAiFloorShapeSheetIds(shapes, fileFolders = {}) {
+  if (!Array.isArray(shapes) || !shapes.length) return shapes || [];
+  let changed = false;
+  const next = shapes.map((s) => {
+    if (!s || !needsAiFloorSheetFix(s.sheet_id)) return s;
+    const sheet_id = resolveAiFloorSheetId(s.sheet_id, fileFolders);
+    if (sheet_id === s.sheet_id) return s;
+    changed = true;
+    return { ...s, sheet_id };
+  });
+  return changed ? next : shapes;
+}
+
+/** Match view key to stored shape sheet_id (exact or A1108/A1109 basename + page). */
+export function aiFloorSheetKeysMatch(shapeSheetId, viewKey) {
+  if (!shapeSheetId || !viewKey) return false;
+  if (shapeSheetId === viewKey) return true;
+  if (!needsAiFloorSheetFix(shapeSheetId) && !needsAiFloorSheetFix(viewKey)) return false;
+  const a = parseSheetKey(shapeSheetId);
+  const b = parseSheetKey(viewKey);
+  return sheetBasename(shapeSheetId) === sheetBasename(viewKey) && a.page === b.page;
+}
 
 function num(v) {
   const n = Number(v);
@@ -313,6 +363,7 @@ export async function loadProjectFromSupabase(projectId) {
     if ((!payload.file_folders || !Object.keys(payload.file_folders).length) && proj.file_folders) {
       payload.file_folders = proj.file_folders;
     }
+    payload.shapes = normalizeAiFloorShapeSheetIds(payload.shapes, payload.file_folders);
     return { payload, updated_at: proj.updated_at };
   }
 
@@ -383,7 +434,7 @@ export async function loadProjectFromSupabase(projectId) {
       units_per_px: s.units_per_px,
       ...(s.scale_source ? { scale_source: s.scale_source } : {}),
     })),
-    shapes: (shapes || []).map((s) => ({
+    shapes: normalizeAiFloorShapeSheetIds((shapes || []).map((s) => ({
       id: s.id,
       sheet_id: s.sheet_id,
       condition_id: s.condition_id,
@@ -398,7 +449,7 @@ export async function loadProjectFromSupabase(projectId) {
       curved: s.curved,
       created_at: s.created_at,
       updated_at: s.updated_at,
-    })),
+    })), proj.file_folders || {}),
     markups: (markups || []).map((m) => ({
       id: m.id,
       sheet_id: m.sheet_id,
@@ -546,7 +597,9 @@ export async function renameSupabaseProject(projectId, name) {
 export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}) {
   if (!supabase || !projectId) return;
 
-  const shapes = payload.shapes || [];
+  const fileFolders = payload.file_folders || {};
+  const shapes = normalizeAiFloorShapeSheetIds(payload.shapes || [], fileFolders);
+  const annPayload = shapes === (payload.shapes || []) ? payload : { ...payload, shapes };
   const conditions = payload.conditions || [];
   const markups = payload.markups || [];
   const rfis = payload.rfis || [];
@@ -568,7 +621,7 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     shape_labels: payload.shape_labels || [],
     palette: payload.palette || [],
     schema_version: ANN_SCHEMA,
-    annotations: payload,
+    annotations: annPayload,
     updated_at: new Date().toISOString(),
   };
 

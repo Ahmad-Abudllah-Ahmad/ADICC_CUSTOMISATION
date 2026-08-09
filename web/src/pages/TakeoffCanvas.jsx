@@ -19,6 +19,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { store, isStaleTabError, STALE_TAB_MESSAGE, projectIdFromUrl } from "../lib/store.js";
 import { isSupabaseConfigured } from "../lib/supabaseStore.js";
+import { aiFloorSheetKeysMatch } from "../lib/supabase/persist.js";
 import { goSupabaseHome } from "../lib/supabase/projects.js";
 import { consumePendingIngest } from "../lib/pendingIngest.js";
 import { isDefaultProjectName, projectNameFromFiles } from "../lib/projectNaming.js";
@@ -691,7 +692,14 @@ export default function TakeoffCanvas() {
   const selectShape = (id) => {
     setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null);
     setSymbolFocus(null); setSymbolHover(null);
-    setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqHoverStickyRef.current = false;
+    setShapeBoqFocus(null); shapeBoqPinPosRef.current = null;
+    if (!id) {
+      setShapeBoqHover(null);
+      shapeBoqHoverStickyRef.current = false;
+    } else {
+      setShapeBoqHover((h) => (h?.id === id ? h : null));
+      shapeBoqHoverStickyRef.current = false;
+    }
     setShapeCtxMenu(null);
     if (!id) setSelectedCutoutIds(new Set());
   };
@@ -818,6 +826,7 @@ export default function TakeoffCanvas() {
   const [boqFocusShapeId, setBoqFocusShapeId] = useState(null); // filtered BOQ view — one mask
   const [shapeBoqHover, setShapeBoqHover] = useState(null);     // { id, cx, cy } canvas-local hover card
   const [shapeBoqFocus, setShapeBoqFocus] = useState(null);     // pinned shape id — static BOQ card
+  const shapeBoqPinPosRef = useRef(null);               // pinned card screen position — survives hover-off
   const shapeBoqHoverStickyRef = useRef(false);       // pointer inside hover card — keep visible
   const pendingFlyShapeRef = useRef(null);             // fly-to shape whose sheet is opening
   const [boqLines, setBoqLines] = useState([]);        // manual BOQ detail rows; persisted in boq_lines
@@ -1026,7 +1035,6 @@ export default function TakeoffCanvas() {
   }
   function revealSheetInFilesSidebar(sheetKey) {
     if (!sheetKey) return;
-    setLeftTab("files");
     const folder = fileFolders[parseSheetKey(sheetKey).file];
     if (folder) {
       const segs = folder.split("/").filter(Boolean);
@@ -1109,8 +1117,8 @@ export default function TakeoffCanvas() {
   // either honestly would recompute every render regardless; these are the
   // real, referentially-stable inputs.
   const visibleShapes = useMemo(() => {
-    const keys = new Set(sheetGroup.length ? sheetGroup : [sheetKey]);
-    return shapes.filter((s) => keys.has(s.sheet_id));
+    const keys = sheetGroup.length ? sheetGroup : [sheetKey];
+    return shapes.filter((s) => keys.some((k) => k === s.sheet_id || aiFloorSheetKeysMatch(s.sheet_id, k)));
   }, [shapes, sheetGroup, sheetKey]);
   // AI Detection targets the sheet the user is viewing; reveal counts are kept
   // per file so switching among A1105–A1109 keeps already-revealed masks visible.
@@ -1119,32 +1127,48 @@ export default function TakeoffCanvas() {
     : sheetKey);
   const aiDetectShapes = useMemo(() => {
     if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return [];
-    return shapes.filter((s) => s.sheet_id === aiDetectViewKey);
+    return shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, aiDetectViewKey));
   }, [shapes, aiDetectViewKey, isAiDetectFloorPlan]);
   const aiDetectShownNow = aiDetectShownBySheet[aiDetectViewKey] || 0;
   const aiDetectShapeRevealed = useCallback((shape) => {
     if (!shape || !isAiDetectFloorPlan(shape.sheet_id)) return true;
     // Manual cutouts stay visible on top of the parent until the user applies them.
     if (shape.measure_role === "deduct") return true;
-    const list = shapes.filter((s) => s.sheet_id === shape.sheet_id && s.measure_role !== "deduct");
+    const list = shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, shape.sheet_id) && s.measure_role !== "deduct");
     const idx = list.findIndex((s) => s.id === shape.id);
-    const shown = aiDetectShownBySheet[shape.sheet_id] || 0;
+    const shown = aiDetectShownBySheet[shape.sheet_id]
+      ?? Object.entries(aiDetectShownBySheet).find(([k]) => aiFloorSheetKeysMatch(shape.sheet_id, k))?.[1]
+      ?? 0;
     return idx >= 0 && idx < shown;
   }, [shapes, aiDetectShownBySheet, isAiDetectFloorPlan]);
-  // BOQ + Estimate both follow Auto-Takeoff reveal (hidden masks stay out of totals).
+  const aiDetectSheetRevealCount = useCallback((shapeSheetId) => (
+    aiDetectShownBySheet[shapeSheetId]
+      ?? Object.entries(aiDetectShownBySheet).find(([k]) => aiFloorSheetKeysMatch(shapeSheetId, k))?.[1]
+      ?? 0
+  ), [aiDetectShownBySheet]);
+  // BOQ + Estimate follow Auto-Takeoff reveal — totals grow mask-by-mask in real time.
   const boqShapes = useMemo(
-    () => shapes.filter((s) => aiDetectShapeRevealed(s)),
-    [shapes, aiDetectShapeRevealed],
+    () => shapes.filter((s) => {
+      if (!isAiDetectFloorPlan(s.sheet_id)) return true;
+      if (s.measure_role === "deduct") return aiDetectSheetRevealCount(s.sheet_id) > 0;
+      return aiDetectShapeRevealed(s);
+    }),
+    [shapes, aiDetectShapeRevealed, isAiDetectFloorPlan, aiDetectSheetRevealCount],
+  );
+  const visibleRevealedShapes = useMemo(
+    () => visibleShapes.filter((s) => aiDetectShapeRevealed(s)),
+    [visibleShapes, aiDetectShapeRevealed],
   );
   const runAiDetection = useCallback(() => {
     stopAiDetectReveal();
     setShapeBoqFocus(null);
     setShapeBoqHover(null);
+    shapeBoqPinPosRef.current = null;
     shapeBoqHoverStickyRef.current = false;
     if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return;
     const key = aiDetectViewKey;
     // Floor masks only — cutouts stay visible separately and must not pad the reveal count.
-    const list = shapes.filter((s) => s.sheet_id === key && s.measure_role !== "deduct");
+    const list = shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, key) && s.measure_role !== "deduct");
     const total = list.length;
     // Click again always restarts reveal on this file from the first mask.
     setAiDetectShownBySheet((prev) => ({ ...prev, [key]: 0 }));
@@ -1551,19 +1575,9 @@ export default function TakeoffCanvas() {
     // display units ride the payload (additive) — a metric project opens metric
     // on any machine; payloads without the field keep this browser's toggle
     if (a.units === "metric" || a.units === "imperial") setUnits(a.units);
-    // additive ai_detect_shown — per-sheet Auto-Takeoff reveal counts so revealed
-    // (and edited) masks stay visible/editable after reload. Else-clear: a payload
-    // without the key must not inherit the replaced project's reveal progress.
-    {
-      const raw = a.ai_detect_shown;
-      const next = {};
-      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-        for (const [k, v] of Object.entries(raw)) {
-          if (typeof k === "string" && Number.isFinite(v) && v > 0) next[k] = Math.floor(Number(v));
-        }
-      }
-      setAiDetectShownBySheet(next);
-    }
+    // Floor-plan masks (A1105–A1109) start unrevealed every session; reveal is
+    // driven only by Auto-Takeoff (not restored from saved payload).
+    setAiDetectShownBySheet({});
   };
   useEffect(() => {
     let off = false;
@@ -2160,13 +2174,13 @@ export default function TakeoffCanvas() {
 
   const projectEstimateTotal = useMemo(() => {
     const rows = pricedConditionTotals(
-      conditionTotals(conditions, shapes).filter((r) => r.shape_count > 0),
+      conditionTotals(conditions, boqShapes).filter((r) => r.shape_count > 0),
       materialRates,
       units,
       projectSettings,
     );
     return pricedGrandTotals(rows, projectSettings).grand_total;
-  }, [conditions, shapes, materialRates, units, projectSettings]);
+  }, [conditions, boqShapes, materialRates, units, projectSettings]);
 
   const [estimateValuePulse, setEstimateValuePulse] = useState(false);
   const [estimateHistory, setEstimateHistory] = useState(() => [{ t: Date.now(), v: 0 }]);
@@ -2205,12 +2219,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    // ai_detect_shown is additive the same way — omit when empty so legacy
-    // payloads stay byte-identical until Auto-Takeoff has revealed anything.
-    const aiShown = Object.fromEntries(
-      Object.entries(aiDetectShownBySheet).filter(([, n]) => Number.isFinite(n) && n > 0),
-    );
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(aiShown).length ? { ai_detect_shown: aiShown } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -2269,7 +2278,7 @@ export default function TakeoffCanvas() {
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, aiDetectShownBySheet, lastGroup, openTabs, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -2683,15 +2692,6 @@ export default function TakeoffCanvas() {
     // (select+move a vertex, move a whole edge, or Shift-click to insert a point) —
     // it must win here, before the deferred add-a-region click below.
     if (tool === "oneclick" && proposal && oneClickHandleAt(e)) return;
-    // Mask click — open that plan in the Files sidebar (same as clicking the file row)
-    if (tool !== "select") {
-      const thr = 8 / tfRef.current.scale;
-      const maskHit = [...visibleShapes].reverse().find((s) => {
-        const sp = panelByKey(s.sheet_id);
-        return sp && hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
-      });
-      if (maskHit) revealSheetInFilesSidebar(maskHit.sheet_id);
-    }
     // every point-placing tool DEFERS to pointer-up: hold-and-drag (mouse left
     // or one-finger trackpad press) pans mid-measurement instead of placing
     pendingClickRef.current = { p, cx: e.clientX, cy: e.clientY };
@@ -2980,7 +2980,19 @@ export default function TakeoffCanvas() {
     if (hit?.measure_role === "deduct") setSelectedCutoutIds(new Set([hit.id]));
     else setSelectedCutoutIds(new Set());
     selectShape(hit ? hit.id : null);
-    if (hit) { revealSheetInFilesSidebar(hit.sheet_id); dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return; }
+    if (hit) {
+      revealSheetInFilesSidebar(hit.sheet_id);
+      const el = containerRef.current;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        setShapeBoqHover({
+          id: hit.id,
+          cx: Math.min(e.clientX - r.left + 14, r.width - 260),
+          cy: Math.min(e.clientY - r.top + 16, r.height - 220),
+        });
+      }
+      dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return;
+    }
     // 4b. plan symbol (door/type mark) — pin the detail card for review / manual fill
     {
       const panel = panelAt(p[0]);
@@ -3341,7 +3353,11 @@ export default function TakeoffCanvas() {
     if (!el) return;
     if (panRef.current || dragRef.current || pendingClickRef.current || status !== "ready" || symbolFocus || shapeBoqFocus) {
       el.style.display = "none"; hoverIdRef.current = "";
-      if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
+      if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) {
+        const keepSelBoq = tool === "select" && selectedId
+          && (dragRef.current?.shapeId === selectedId || shapeBoqHover?.id === selectedId);
+        if (!keepSelBoq) setShapeBoqHover(null);
+      }
       if (!symbolFocus) setSymbolHover(null);
       return;
     }
@@ -3417,6 +3433,16 @@ export default function TakeoffCanvas() {
     }
     if (shapeBoqFocus) {
       el.style.display = "none"; hoverIdRef.current = "";
+      return;
+    }
+    if (hit && selectedId === hit.id && !hit.isProposal) {
+      setSymbolHover(null);
+      const r = containerRef.current.getBoundingClientRect();
+      if (!(isAiDetectFloorPlan(hit.sheet_id) && !aiDetectShapeRevealed(hit))) {
+        const cx = Math.min(e.clientX - r.left + 14, r.width - 260);
+        const cy = Math.min(e.clientY - r.top + 16, r.height - 220);
+        setShapeBoqHover((prev) => (prev?.id === hit.id && prev?.cx === cx && prev?.cy === cy ? prev : { id: hit.id, cx, cy }));
+      }
       return;
     }
     if (hit) {
@@ -3533,9 +3559,11 @@ export default function TakeoffCanvas() {
               ? prev
               : { shapeId: _sel.id, i: _bestI, length: _len, t: _t }
           ));
-          // Suppress the BOQ hover card when showing the edge length label
-          setShapeBoqHover(null);
-          shapeBoqHoverStickyRef.current = false;
+          // Suppress the BOQ hover card when showing the edge length label (never while pinned or selected).
+          if (!shapeBoqFocus && !(tool === "select" && selectedId === _sel.id)) {
+            setShapeBoqHover(null);
+            shapeBoqHoverStickyRef.current = false;
+          }
           _foundEdge = true;
           break;
         }
@@ -6067,7 +6095,7 @@ export default function TakeoffCanvas() {
     dispatchShape({ type: "delete", ids: [shapeId] });
     if (selectedId === shapeId) setSelectedId(null);
     if (boqFocusShapeId === shapeId) setBoqFocusShapeId(null);
-    if (shapeBoqFocus === shapeId) setShapeBoqFocus(null);
+    if (shapeBoqFocus === shapeId) { setShapeBoqFocus(null); shapeBoqPinPosRef.current = null; }
     setBoqLines((prev) => prev.filter((l) => l.shape_id !== shapeId && l.id !== rowKey(shapeId)));
     setShapeBoqHover((h) => (h?.id === shapeId ? null : h));
     shapeBoqHoverStickyRef.current = false;
@@ -6077,6 +6105,7 @@ export default function TakeoffCanvas() {
     setShowBoq(true);
     setBoqFocusShapeId(shapeId);
     setShapeBoqFocus(null);
+    shapeBoqPinPosRef.current = null;
     if (s) centerOnShape(s);
     setShapeBoqHover(null);
     shapeBoqHoverStickyRef.current = false;
@@ -7285,12 +7314,12 @@ export default function TakeoffCanvas() {
   // VISIBLE shapes through the same conditionTotals rules the Report uses —
   // one source of role math, two scopes. Memoized: visRowById is a prop of the
   // memoized panel, so its identity must only change when the totals can.
-  const visibleShapesMeasured = useMemo(() => visibleShapes.map((s) => {
+  const visibleShapesMeasured = useMemo(() => visibleRevealedShapes.map((s) => {
     if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
       return { ...s, computed: recomputeShape(s) };
     }
     return s;
-  }), [visibleShapes, scales, conditions]);
+  }), [visibleRevealedShapes, scales, conditions]);
   const visRows = useMemo(() => conditionTotals(conditions, visibleShapesMeasured), [conditions, visibleShapesMeasured]);
   const visRowById = useMemo(() => new Map(visRows.map((r) => [r.id, r])), [visRows]);
   // Zone check: the SAME conditionTotals rules on the shapes whose center point
@@ -7311,7 +7340,7 @@ export default function TakeoffCanvas() {
   const sheetWallSf = visRows.reduce((n, r) => n + r.wall_sf, 0);
   // display-only Kreo-style derived metric: floor-area perimeters × the condition height
   const condH = Number(aCond?.height_ft) || 0; // the live-readout JSX below still reads this
-  const vertTotal = verticalWallSf(visibleShapes, activeCond, aCond?.height_ft, condMult);
+  const vertTotal = verticalWallSf(visibleRevealedShapes, activeCond, aCond?.height_ft, condMult);
   const num = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d });
   // unit-system display edge: internal math is always feet (lib/units.ts)
   const fa = (sf, d = 1) => `${num(areaVal(sf, units), d)} ${areaUnit(units)}`;
@@ -8853,9 +8882,8 @@ export default function TakeoffCanvas() {
             }
             if (shapeBoqHover?.id) {
               setShapeBoqFocus(shapeBoqHover.id);
+              shapeBoqPinPosRef.current = { cx: shapeBoqHover.cx, cy: shapeBoqHover.cy };
               shapeBoqHoverStickyRef.current = true;
-              const s = shapes.find((x) => x.id === shapeBoqHover.id);
-              if (s) revealSheetInFilesSidebar(s.sheet_id);
               return;
             }
             if (symbolHover) { setSymbolFocus(symbolHover.id); return; }
@@ -8888,7 +8916,8 @@ export default function TakeoffCanvas() {
           {(shapeBoqFocus || shapeBoqHover) && (() => {
             const cardId = shapeBoqFocus || shapeBoqHover?.id;
             const s = shapes.find((x) => x.id === cardId);
-            if (!s || !shapeBoqHover) return null;
+            const cardPos = shapeBoqHover || (shapeBoqFocus ? shapeBoqPinPosRef.current : null);
+            if (!s || !cardPos) return null;
             if (isAiDetectFloorPlan(s.sheet_id) && !aiDetectShapeRevealed(s)) return null;
             const boqShape = (s.measure_role === "surface_area" || s.measure_role === "wall_area" || s.measure_role === "floor_area")
               ? { ...s, computed: recomputeShape(s) }
@@ -8899,8 +8928,8 @@ export default function TakeoffCanvas() {
             return (
               <ShapeBoqHoverCard
                 data={data}
-                left={shapeBoqHover.cx}
-                top={shapeBoqHover.cy}
+                left={cardPos.cx}
+                top={cardPos.cy}
                 units={units}
                 pinned={pinned}
                 onOpenBoq={() => openBoqForShape(s.id)}
@@ -8909,8 +8938,8 @@ export default function TakeoffCanvas() {
                   if (!sid || !planSymbols.some((p) => p.id === sid)) return;
                   const cw = containerRef.current?.clientWidth || 800;
                   const ch = containerRef.current?.clientHeight || 600;
-                  const cx = Math.min((shapeBoqHover?.cx ?? 24) + 16, cw - 308);
-                  const cy = Math.min(shapeBoqHover?.cy ?? 24, ch - 380);
+                  const cx = Math.min((cardPos?.cx ?? 24) + 16, cw - 308);
+                  const cy = Math.min(cardPos?.cy ?? 24, ch - 380);
                   setSymbolHover({ id: sid, cx: Math.max(8, cx), cy: Math.max(8, cy) });
                   setSymbolFocus(sid);
                 }}
@@ -8920,10 +8949,11 @@ export default function TakeoffCanvas() {
                   const ch = containerRef.current?.clientHeight || 800;
                   const cx = Math.max(8, Math.min(cw - 256, nx));
                   const cy = Math.max(8, Math.min(ch - 80, ny));
-                  setShapeBoqHover((prev) => (prev ? { ...prev, cx, cy } : prev));
+                  setShapeBoqHover((prev) => (prev ? { ...prev, cx, cy } : { id: cardId, cx, cy }));
+                  if (shapeBoqFocus) shapeBoqPinPosRef.current = { cx, cy };
                   shapeBoqHoverStickyRef.current = true;
                 }}
-                onClose={() => { setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqHoverStickyRef.current = false; }}
+                onClose={() => { setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqPinPosRef.current = null; shapeBoqHoverStickyRef.current = false; }}
                 onPointerEnter={() => { shapeBoqHoverStickyRef.current = true; }}
                 onPointerLeave={() => {
                   shapeBoqHoverStickyRef.current = false;
@@ -9124,7 +9154,7 @@ export default function TakeoffCanvas() {
               </defs>
               {/* committed shapes + markups, one group per panel in its local frame */}
               {panels.map((p) => {
-                const pShapes = visibleShapes.filter((s) => s.sheet_id === p.key);
+                const pShapes = visibleShapes.filter((s) => s.sheet_id === p.key || aiFloorSheetKeysMatch(s.sheet_id, p.key));
                 const dn = (vn) => vn.map(([x, y]) => [x * p.img.w, y * p.img.h]);
                 const label = labelFor(p);
                 return (
@@ -10444,7 +10474,7 @@ export default function TakeoffCanvas() {
         <ReportPanel
           projectName={projectName} onProjectName={setProjectName}
           clientInfo={clientInfo} onClientInfo={setClientInfo} units={units}
-          conditions={conditions} shapes={shapes} markups={markups} rfis={rfis}
+          conditions={conditions} shapes={boqShapes} markups={markups} rfis={rfis}
           conditionColumns={conditionColumns} shapeLabels={shapeLabels}
           scaleInfo={Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, scale_source: scaleSources[sheet_id] || "unknown" }))}
           provenanceCounters={provCounters}

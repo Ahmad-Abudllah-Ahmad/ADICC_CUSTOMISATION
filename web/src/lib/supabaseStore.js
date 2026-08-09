@@ -13,6 +13,7 @@ import {
   createSupabaseProject,
   seedShapeSnapshot,
   clearProjectDataInSupabase,
+  normalizeAiFloorShapeSheetIds,
 } from "./supabase/persist.js";
 import {
   listProjectFiles,
@@ -254,6 +255,7 @@ export function createSupabaseStore(projectId = null) {
             ...payload,
             file_folders: { ...fileFolders, ...(payload.file_folders || {}) },
           };
+          payload.shapes = normalizeAiFloorShapeSheetIds(payload.shapes, payload.file_folders);
         }
         notifyPlanManifestReady();
         // The sheets the user left open are the ones about to render — fetch those
@@ -294,9 +296,11 @@ export function createSupabaseStore(projectId = null) {
 
       const wrapped = { ...payload, schema: ANN_SCHEMA };
       const projectId = await ensureProjectId();
-      await syncProjectToSupabase(projectId, wrapped);
+      const shapes = normalizeAiFloorShapeSheetIds(wrapped.shapes || [], wrapped.file_folders || {});
+      const toSave = shapes === (wrapped.shapes || []) ? wrapped : { ...wrapped, shapes };
+      await syncProjectToSupabase(projectId, toSave);
       lastRemoteUpdatedAt = new Date().toISOString();
-      await local.saveAnnotations(wrapped);
+      await local.saveAnnotations(toSave);
       createSupabaseRecents(browserStorage()).remember({
         id: projectId,
         name: wrapped.project_name || "ADICC Project",
