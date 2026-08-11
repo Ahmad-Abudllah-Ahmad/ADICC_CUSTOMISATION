@@ -1,5 +1,5 @@
 // Hover card — BOQ summary for a masked area; double-click mask to pin, then open BOQ.
-import React from "react";
+import React, { useState } from "react";
 import { areaUnit, lenUnit, areaVal, lenVal } from "../lib/units";
 
 const num = (v, d = 2) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
@@ -33,6 +33,16 @@ function displayQty(qty, unit, units) {
   return Number(qty) || 0;
 }
 
+function FinishDetailRow({ label, value }) {
+  const empty = !value;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "96px 1fr", gap: 6, alignItems: "baseline" }}>
+      <span style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+      <span style={{ color: empty ? "var(--ink-faint)" : "var(--ink)", lineHeight: 1.35, fontSize: 11.5 }}>{empty ? dash : value}</span>
+    </div>
+  );
+}
+
 export default function ShapeBoqHoverCard({
   data,
   left,
@@ -46,7 +56,9 @@ export default function ShapeBoqHoverCard({
   onClose,
   onPointerEnter,
   onPointerLeave,
+  onOpenFinishSource,
 }) {
+  const [showFinishDetails, setShowFinishDetails] = useState(false);
   if (!data) return null;
   const aU = areaUnit(units);
   const lU = lenUnit(units);
@@ -66,6 +78,22 @@ export default function ShapeBoqHoverCard({
   const floorLabel = showFloor
     ? `${num(displayArea(Number(data.floor_sf) || 0, units))} ${aU}`
     : null;
+  const isFloorMask = data.role === "floor_area";
+  const finishDetails = isFloorMask ? data.finish_details : null;
+  const finishFieldRows = finishDetails
+    ? [
+      ["Room name", finishDetails.room_name],
+      ["Type", finishDetails.type],
+      ["Description", finishDetails.description],
+      ["Size / opening", finishDetails.size],
+      ["Fire rating", finishDetails.fire_rating],
+      ["Floors", finishDetails.floors],
+      ["Manufacturer", finishDetails.manufacturer],
+      ["Style", finishDetails.style],
+      ["Color", finishDetails.color],
+      ["Remarks", finishDetails.remarks],
+    ]
+    : [];
 
   return (
     <div
@@ -181,6 +209,47 @@ export default function ShapeBoqHoverCard({
             </div>
           ))}
         </div>
+      )}
+      {isFloorMask && finishDetails && (
+        <>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setShowFinishDetails((v) => !v); }}
+            style={{
+              display: "block", width: "100%", padding: "8px 12px", border: "none",
+              borderTop: "1px solid var(--ink-faint)", background: showFinishDetails ? "var(--paper-cream)" : "transparent",
+              fontSize: 10.5, color: "var(--ink)", fontWeight: 600, textAlign: "center",
+              cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            {showFinishDetails ? "Hide finish details" : "View finish details"}
+          </button>
+          {showFinishDetails && (
+            <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", display: "grid", gap: 6 }}>
+              {finishFieldRows.map(([label, value]) => (
+                <FinishDetailRow key={label} label={label} value={value} />
+              ))}
+              {finishDetails.source && (
+                <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
+                  <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Source</div>
+                  {finishDetails.source_sheet && onOpenFinishSource ? (
+                    <button type="button" onClick={(e) => { e.stopPropagation(); onOpenFinishSource(finishDetails); }}
+                      title="Open finish schedule PDF"
+                      style={{
+                        display: "block", width: "100%", textAlign: "left", padding: 0, border: "none",
+                        background: "transparent", cursor: "pointer", fontSize: 11.5, color: "var(--ink)",
+                        lineHeight: 1.35, fontFamily: "inherit", textDecoration: "underline", textUnderlineOffset: 2,
+                      }}>
+                      {finishDetails.source}
+                    </button>
+                  ) : (
+                    <span style={{ fontSize: 11.5, color: "var(--ink)", lineHeight: 1.35 }}>{finishDetails.source}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
       <button
         type="button"

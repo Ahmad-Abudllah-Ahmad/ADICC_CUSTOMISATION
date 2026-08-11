@@ -4,7 +4,7 @@ import { areaUnit, lenUnit } from "./units";
 import { distToSeg, pointInPoly } from "./geometry.js";
 import { shapeLabelValue } from "./shapeLabels.js";
 import { resolveSymbolFields, symbolNoteKey } from "./planSymbols";
-import { lookupScheduleKb } from "./symbolScheduleKb";
+import { lookupScheduleKb, lookupScheduleKbForRoom } from "./symbolScheduleKb";
 import { parseOpeningSize, openingsDeductSfLinear, openingsDeductSfFloorPerim } from "./wallOpenings.js";
 
 export function rowKey(shapeId) {
@@ -82,6 +82,65 @@ function tagsInsideMask(shape, planSymbols, panelImgs) {
   return tags;
 }
 
+/** Floor label from plan sheet filename (A1105-1st FLOOR PLAN.pdf → 1ST FLOOR). */
+export function floorLabelFromSheetId(sheetId) {
+  const fn = String(sheetId || "").replace(/^.*[/\\]/, "").toUpperCase();
+  const m = fn.match(/(\d+(?:ST|ND|RD|TH))\s*FLOOR/);
+  if (m) return `${m[1]} FLOOR`.replace(/\s+/g, " ");
+  if (/\b1ST\b/.test(fn)) return "1ST FLOOR";
+  if (/2ND[\s\S]{0,8}25TH|TO\s*25TH/.test(fn)) return "2ND FLOOR TO 25TH FLOOR";
+  if (/\b2ND\b/.test(fn)) return "2ND FLOOR";
+  if (/\b3RD\b/.test(fn)) return "3RD FLOOR";
+  if (/\b4TH\b/.test(fn)) return "4TH FLOOR";
+  if (/\b5TH\b/.test(fn) && /\b6TH\b/.test(fn)) return "5TH & 6TH FLOOR";
+  if (/\b5TH\b/.test(fn)) return "5TH FLOOR";
+  if (/\b6TH\b/.test(fn)) return "6TH FLOOR";
+  if (/\b7TH\b/.test(fn)) return "7TH FLOOR";
+  if (/\b26TH\b/.test(fn)) return "26TH FLOOR";
+  if (/\b27TH\b/.test(fn)) return "27TH FLOOR";
+  return "";
+}
+
+/** Finish schedule fields for a floor mask — room + sheet floor scoped. */
+export function resolveMaskFinishDetails(row, conditionDescription = "") {
+  if (!row) return null;
+  const tag = (row.finish_tag || "").trim().toUpperCase();
+  const room = row.room || row.room_detected || "";
+  const sheetFloor = floorLabelFromSheetId(row.sheet_id);
+  const refs = row.schedule_refs || [];
+  const finishRef = refs
+    .filter((r) => r.tag?.toUpperCase() === tag || r.kind === "finish")
+    .sort((a, b) => {
+      let sa = a.description ? 40 : 0;
+      let sb = b.description ? 40 : 0;
+      sa += roomMatchScore(a.room_name || "", room);
+      sb += roomMatchScore(b.room_name || "", room);
+      if (sheetFloor && a.floors) sa += a.floors.toUpperCase().includes(sheetFloor.split(" ")[0]) ? 25 : 0;
+      if (sheetFloor && b.floors) sb += b.floors.toUpperCase().includes(sheetFloor.split(" ")[0]) ? 25 : 0;
+      return sb - sa;
+    })[0]
+    || refs.find((r) => r.description)
+    || refs[0];
+  const description = row.description || finishRef?.description || conditionDescription || "";
+  if (!description && !finishRef && !tag) return null;
+  return {
+    tag,
+    room_name: row.room || row.room_detected || finishRef?.room_name || "",
+    type: finishRef?.type || "Finish code",
+    description,
+    size: finishRef?.size || "",
+    fire_rating: finishRef?.fire_rating || "",
+    floors: finishRef?.floors || sheetFloor || "",
+    manufacturer: finishRef?.manufacturer || "",
+    style: finishRef?.style || "",
+    color: finishRef?.color || "",
+    remarks: finishRef?.remarks || "",
+    source: finishRef?.source || finishRef?.source_title || "",
+    source_sheet: finishRef?.source_sheet || "",
+    source_bbox: finishRef?.source_bbox || null,
+  };
+}
+
 function refFromKb(entry, sourceLabel = "Schedule") {
   if (!entry) return null;
   return {
@@ -92,8 +151,14 @@ function refFromKb(entry, sourceLabel = "Schedule") {
     color: entry.color || "",
     size: entry.size || "",
     room_name: entry.room_name || "",
+    fire_rating: entry.fire_rating || "",
+    floors: entry.floors || "",
+    type: entry.type || "",
+    remarks: entry.remarks || "",
     source: entry.source_title || entry.source_sheet || sourceLabel,
     source_sheet: entry.source_sheet || "",
+    source_title: entry.source_title || "",
+    source_bbox: entry.source_bbox || null,
     relevance: 0,
   };
 }
@@ -129,20 +194,25 @@ function rankRefs(refs, finishTag, room) {
 }
 
 /** Best finish-schedule row for this mask's finish code, preferring the matched room. */
-function lookupMaskFinish(kb, finishTag, room) {
+function lookupMaskFinish(kb, finishTag, room, sheetFloor = "") {
   if (!finishTag || !kb) return null;
-  const tag = finishTag.toUpperCase();
+  const hit = lookupScheduleKbForRoom(kb, finishTag, room, sheetFloor);
+  if (hit?.description) return hit;
+  if (hit && !room) return hit;
 
+  const tag = finishTag.toUpperCase();
   if (room) {
     for (const e of kbEntriesForRoomStrict(kb, room)) {
-      if (e.tag?.toUpperCase() === tag) return e;
+      if (e.tag?.toUpperCase() === tag && e.description) return e;
     }
   }
 
   const global = lookupScheduleKb(kb, tag);
-  if (!global) return null;
-  if (global.room_name && room && roomMatchScore(global.room_name, room) < 65) return null;
-  return global;
+  if (!global) return hit;
+  if (global.room_name && room && roomMatchScore(global.room_name, room) < 65) {
+    return hit?.description ? hit : null;
+  }
+  return global.description ? global : (hit || global);
 }
 
 /** Search plan marks + schedule PDFs — only data tied to this mask's room, finish, or in-mask marks. */
@@ -151,10 +221,11 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
   const refs = [];
   const finishTag = (condition?.finish_tag || "").trim().toUpperCase();
   const room = roomName || detectRoomName(shape, detectCtx);
+  const sheetFloor = floorLabelFromSheetId(shape.sheet_id);
   const inMaskTags = tagsInsideMask(shape, planSymbols, panelImgs);
 
   // 1. Primary finish spec — room-scoped finish schedule row for the assigned finish code
-  const finishKb = lookupMaskFinish(scheduleKb, finishTag, room);
+  const finishKb = lookupMaskFinish(scheduleKb, finishTag, room, sheetFloor);
   const finishRef = refFromKb(finishKb, "Finish schedule");
   if (finishRef) {
     finishRef.relevance = 60;
@@ -169,7 +240,7 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
 
     const symTag = (sym.tag || "").toUpperCase();
     if (sym.kind === "detail" || sym.kind === "type") continue;
-    if (sym.kind === "finish" && symTag === finishTag && finishRef) continue;
+    if (sym.kind === "finish" && symTag === finishTag && finishRef?.description) continue;
 
     const isOpening = sym.kind === "door" || sym.kind === "window";
     // Border pad is for openings on the wall — don't pull finish marks from the next room.
@@ -177,7 +248,9 @@ export function gatherShapeScheduleRefs(shape, condition, detectCtx, roomName = 
 
     const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
     const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
-    const kb = lookupScheduleKb(scheduleKb, sym.tag);
+    const kb = (sym.kind === "finish" || symTag === finishTag)
+      ? lookupScheduleKbForRoom(scheduleKb, sym.tag, room, sheetFloor)
+      : lookupScheduleKb(scheduleKb, sym.tag);
     const kbRef = refFromKb(kb, "Schedule");
 
     const description = fields.description || kbRef?.description || "";
@@ -600,6 +673,12 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
     unit: meta.unit || pq.unit,
     description: meta.description || autoDesc,
     schedule_refs: r.schedule_refs || [],
+    finish_details: resolveMaskFinishDetails({
+      ...r,
+      ...displayRow,
+      room: meta.room || r.room_detected || "",
+      description: meta.description || autoDesc,
+    }, cond?.description || ""),
     rate: meta.rate_material != null
       ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0) + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
       : (pricing.rate ?? null),

@@ -7,6 +7,7 @@ import {
   tagLookupKeys,
   parseDoorScheduleTokens,
   parseFinishScheduleTokens,
+  parseFinishesScheduleTable,
   parseSteelDoorFrameSchedule,
   parseElevationTypeTables,
   extractScheduleKbFromSheet,
@@ -243,6 +244,37 @@ test("parseFinishScheduleTokens: code after description", () => {
   assert.equal(pt.room_name, "STORE");
   const sk = rows.find((r) => r.tag === "SK-2");
   assert.ok(sk);
+});
+
+test("parseFinishesScheduleTable: A0002 tabular floor band + space + PT-1", () => {
+  const tokens = [
+    { str: "FINISHES SCHEDULE", x: 200, y: 40, h: 14 },
+    { str: "SPACE NAME", x: 40, y: 90, h: 10 },
+    { str: "FLOOR FINISH", x: 240, y: 90, h: 10 },
+    { str: "SKIRTING", x: 500, y: 90, h: 10 },
+    { str: "2ND - 25TH FLOOR", x: 40, y: 130, h: 12 },
+    { str: "RESIDENTS", x: 40, y: 160, h: 10 },
+    { str: "600X1200X10MM HEAVY DUTY DECORATIVE ANTI SLIP COLOR BODY PORCELAIN TILE FLOORING, MATT FINISH", x: 240, y: 160, h: 10 },
+    { str: "PT-1", x: 470, y: 160, h: 10 },
+    { str: "SK-1", x: 520, y: 160, h: 10 },
+    { str: "1ST FLOOR PLAN", x: 40, y: 200, h: 12 },
+    { str: "LIFT LOBBY / CORRIDOR", x: 40, y: 230, h: 10 },
+    { str: "600X1200X10MM HEAVY DUTY DECORATIVE ANTI SLIP COLOR BODY PORCELAIN TILE FLOORING, MATT FINISH", x: 240, y: 230, h: 10 },
+    { str: "PT-1", x: 470, y: 230, h: 10 },
+  ];
+  const rows = parseFinishScheduleTokens(tokens, {
+    sheet_id: "A0002-FINISHES SCHEDUALE.pdf",
+    file_name: "A0002-FINISHES SCHEDUALE.pdf",
+  });
+  const residents = rows.find((r) => r.room_name === "RESIDENTS" && r.tag === "PT-1");
+  assert.ok(residents, "RESIDENTS PT-1 row missing");
+  assert.ok(residents.description?.toUpperCase().includes("PORCELAIN"), `desc=${residents.description}`);
+  assert.equal(residents.floors, "2ND - 25TH FLOOR");
+  assert.equal(residents.skirting_tag, "SK-1");
+
+  const kb = buildScheduleKb(rows);
+  const hit = lookupScheduleKb(kb, "PT-1");
+  assert.ok(hit?.description?.includes("PORCELAIN"));
 });
 
 test("extractScheduleKbFromSheet respects filename class", () => {

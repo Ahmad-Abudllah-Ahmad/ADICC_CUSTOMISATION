@@ -781,7 +781,7 @@ textarea {
     color var(--t-fast) var(--ease);
 }
 
-.takeoff-sticky-opt:hover:not(:disabled) {
+.takeoff-sticky-opt:hover:not(:disabled):not(.is-active) {
   background: rgba(255, 255, 255, 0.72);
   border-color: color-mix(in srgb, var(--cobalt) 28%, rgba(255, 255, 255, 0.52));
 }
@@ -795,6 +795,16 @@ textarea {
     0 4px 16px color-mix(in srgb, var(--cobalt) 16%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
   color: var(--accent-contrast);
+}
+
+.takeoff-sticky-opt.is-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent) !important;
+  color: var(--accent-contrast) !important;
+}
+
+.takeoff-sticky-opt.is-active svg {
+  color: inherit;
 }
 
 .takeoff-sticky-opt.is-report {
@@ -1965,7 +1975,8 @@ textarea {
   color: var(--glass-fg) !important;
 }
 
-:root[data-theme="dark"] .takeoff-sticky-opt.is-active {
+:root[data-theme="dark"] .takeoff-sticky-opt.is-active,
+:root[data-theme="dark"] .takeoff-sticky-opt.is-active:hover:not(:disabled) {
   color: var(--accent-contrast) !important;
 }
 

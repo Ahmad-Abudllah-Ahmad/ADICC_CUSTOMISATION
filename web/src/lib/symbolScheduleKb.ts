@@ -31,6 +31,9 @@ export interface ScheduleKbEntry {
   fire_rating?: string;
   floors?: string;
   type?: string;               // free-text type label from schedule title
+  skirting_tag?: string;
+  wall_tag?: string;
+  ceiling_tag?: string;
   source_sheet: string;
   source_title: string;
   source_bbox: SourceBBox;
@@ -117,7 +120,33 @@ export function tagLookupKeys(tag: string): string[] {
     keys.add(`${xm[1]}${parseInt(xm[2], 10)}`);
     keys.add(`${xm[1]}-${parseInt(xm[2], 10)}`);
   }
+  const fm = n.match(/^(PT|CPT|STN|RUB|EPD|SK|WP|WD|FC|PC)-([A-Z0-9]{1,4})$/);
+  if (fm) {
+    if (fm[1] === "PT" || fm[1] === "CPT") {
+      keys.add(`PT-${fm[2]}`);
+      keys.add(`CPT-${fm[2]}`);
+    } else {
+      keys.add(`${fm[1]}-${fm[2]}`);
+    }
+  }
   return [...keys];
+}
+
+function normRoomKey(s: string): string {
+  return (s || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+}
+
+function roomKeyMatch(a: string, b: string): boolean {
+  const na = normRoomKey(a);
+  const nb = normRoomKey(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const wa = na.split(" ").filter((w) => w.length > 2);
+  const wb = nb.split(" ").filter((w) => w.length > 2);
+  if (!wa.length || !wb.length) return false;
+  const common = wa.filter((w) => wb.includes(w));
+  return common.length >= 2 || (common.length === 1 && (wa.length === 1 || wb.length === 1));
 }
 
 function tokW(t: SymbolToken): number {
@@ -619,7 +648,196 @@ export function parseElevationTypeTables(
   return out;
 }
 
+function normFloorKey(s: string): string {
+  return normRoomKey(s);
+}
+
+/** 0–100: how well a schedule floor band matches the open plan sheet floor. */
+function floorKeyMatch(sheetFloor: string, entryFloors: string): number {
+  const sf = normFloorKey(sheetFloor);
+  const ef = normFloorKey(entryFloors);
+  if (!sf || !ef) return 0;
+  if (ef === sf || ef.includes(sf) || sf.includes(ef)) return 100;
+  const sn = sf.match(/\b(\d+)(ST|ND|RD|TH)\b/);
+  const range = ef.match(/\b(\d+)(ST|ND|RD|TH)\s*-\s*(\d+)(ST|ND|RD|TH)\b/);
+  if (sn && range) {
+    const n = parseInt(sn[1], 10);
+    const lo = parseInt(range[1], 10);
+    const hi = parseInt(range[3], 10);
+    if (n >= lo && n <= hi) return 95;
+  }
+  if (/\b1ST\b/.test(sf) && /\b1ST\b/.test(ef) && /PODIUM|PLAN/.test(ef)) return 85;
+  if (/\bGROUND\b/.test(sf) && /\bGROUND\b/.test(ef)) return 100;
+  return 0;
+}
+
+function finishLinesFromTokens(tokens: SymbolToken[]): { y: number; text: string; tokens: SymbolToken[] }[] {
+  const toks = (tokens || []).filter((t) => (t.str || "").trim())
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  if (!toks.length) return [];
+  const lines: { y: number; text: string; tokens: SymbolToken[] }[] = [];
+  let cur: SymbolToken[] = [];
+  let cy = 0;
+  for (const t of toks) {
+    const tol = Math.max(t.h * 0.65, 4);
+    if (cur.length && Math.abs(t.y - cy) > tol) {
+      lines.push({
+        y: cy,
+        text: cur.map((x) => x.str.trim()).join(" ").replace(/\s+/g, " ").trim(),
+        tokens: cur,
+      });
+      cur = [];
+    }
+    cur.push(t);
+    cy = cur.reduce((s, w) => s + w.y, 0) / cur.length;
+  }
+  if (cur.length) {
+    lines.push({
+      y: cy,
+      text: cur.map((x) => x.str.trim()).join(" ").replace(/\s+/g, " ").trim(),
+      tokens: cur,
+    });
+  }
+  return lines;
+}
+
+function isFinishesTablePage(text: string): boolean {
+  const up = (text || "").toUpperCase();
+  return /FINISHES?\s*SCHED/.test(up)
+    && (/SPACE\s*NAME/.test(up) || /FLOOR\s*FINISH/.test(up));
+}
+
 const FINISH_CODE_RE = /^[A-Z]{2,4}-[A-Z0-9]{1,4}$/;
+const FLOOR_FINISH_MARK_RE = /^(PT|STN|RUB|EPD|CPT|LVT|VCT|RB|ACT|SK|WP|WD|FC|PC)-[A-Z0-9]{1,4}$/i;
+
+function isFloorSectionHeader(text: string): string | null {
+  const up = (text || "").toUpperCase().trim().replace(/\s+/g, " ");
+  if (!up || up.length > 90) return null;
+  if (/^(GROUND\s+FLOOR|BASEMENT\b|PODIUM\b|PENTHOUSE\b)/.test(up)) return up;
+  if (/\bFLOOR\s+PLAN\b/.test(up)) return up;
+  if (/\d+(ST|ND|RD|TH)\s*-\s*\d+(ST|ND|RD|TH)\s+FLOOR/.test(up)) return up;
+  if (/\d+(ST|ND|RD|TH)\s+FLOOR/.test(up) && !FINISH_CODE_RE.test(up.replace(/\s+/g, ""))) return up;
+  return null;
+}
+
+/**
+ * A0002-style tabular finishes schedule: floor band → space name → floor-finish
+ * description → mark (PT-1, STN-1, …) in the Floor Finish column.
+ */
+export function parseFinishesScheduleTable(
+  tokens: SymbolToken[],
+  meta: SheetMeta,
+): ScheduleKbEntry[] {
+  const lines = finishLinesFromTokens(tokens);
+  if (!lines.length) return [];
+  const pageText = lines.map((l) => l.text).join(" ");
+  if (!isFinishesTablePage(pageText)) return [];
+
+  let spaceColX = -1;
+  let floorFinishColX = -1;
+  let skirtingColX = -1;
+  for (const line of lines) {
+    const up = line.text.toUpperCase();
+    if (!/SPACE/.test(up) || !/FLOOR/.test(up) || !/FINISH/.test(up)) continue;
+    for (const t of line.tokens) {
+      const u = (t.str || "").toUpperCase();
+      if (/SPACE/.test(u)) spaceColX = spaceColX < 0 ? t.x : Math.min(spaceColX, t.x);
+      if (/FLOOR/.test(u) && /FINISH/.test(u)) floorFinishColX = t.x;
+      if (/SKIRTING/.test(u)) skirtingColX = t.x;
+    }
+    if (floorFinishColX >= 0) break;
+  }
+
+  const out: ScheduleKbEntry[] = [];
+  const byKey = new Map<string, ScheduleKbEntry>();
+  let floorCtx = "";
+
+  for (const line of lines) {
+    const section = isFloorSectionHeader(line.text);
+    if (section) {
+      floorCtx = section;
+      continue;
+    }
+    const up = line.text.toUpperCase();
+    if (/^(SPACE\s*NAME|FLOOR\s*FINISH|SKIRTING|WALL\s*FINISH|CEILING|MARK|LEGEND|PT\s|STN\s|RUB\s|EPD\s|SK\s|WP\s|WD\s|FC\s|PC\s)/.test(up)) continue;
+    if (/^(PROJECT|DRAWING|SCALE|REVISION|GENERAL\s+NOTES|SHEET\s+NO)/.test(up)) continue;
+
+    const marks = line.tokens.filter((t) => {
+      const tag = (t.str || "").trim().toUpperCase().replace(/\s+/g, "");
+      return FINISH_CODE_RE.test(tag);
+    });
+    if (!marks.length) continue;
+
+    let floorMark = marks[0];
+    if (floorFinishColX >= 0) {
+      const floorMarks = marks.filter((m) => {
+        const tag = (m.str || "").trim().toUpperCase().replace(/\s+/g, "");
+        return FLOOR_FINISH_MARK_RE.test(tag);
+      });
+      if (floorMarks.length) {
+        const rightBound = skirtingColX >= 0 ? skirtingColX - 8 : Infinity;
+        floorMark = floorMarks.find((m) => m.x >= floorFinishColX - 24 && m.x < rightBound)
+          || floorMarks.find((m) => m.x >= floorFinishColX - 24)
+          || floorMarks[0];
+      }
+    } else {
+      const floorType = marks.find((m) => FLOOR_FINISH_MARK_RE.test((m.str || "").trim().toUpperCase().replace(/\s+/g, "")));
+      if (floorType) floorMark = floorType;
+    }
+
+    const tag = (floorMark.str || "").trim().toUpperCase().replace(/\s+/g, "");
+    if (!FINISH_CODE_RE.test(tag)) continue;
+
+    const normMark = (t: SymbolToken) => (t.str || "").trim().toUpperCase().replace(/\s+/g, "");
+    const skirtingMark = marks.find((m) => m !== floorMark && /^SK-/i.test(normMark(m)));
+    const wallMark = marks.find((m) => /^(WP|WD)-/i.test(normMark(m)));
+    const ceilingMark = marks.find((m) => /^(FC|PC)-/i.test(normMark(m)));
+
+    const splitX = floorFinishColX >= 0
+      ? floorFinishColX - 12
+      : (spaceColX >= 0 ? spaceColX + 80 : floorMark.x - 120);
+    const spaceTokens = line.tokens.filter((t) => t.x < splitX && t !== floorMark);
+    const room_name = spaceTokens.map((t) => t.str.trim()).join(" ").replace(/\s+/g, " ").trim();
+
+    const descTokens = line.tokens.filter((t) => t.x >= splitX && t.x < floorMark.x - 4);
+    let description = descTokens.map((t) => t.str.trim()).join(" ").replace(/\s+/g, " ").trim();
+    if (!description) {
+      description = line.text
+        .replace(new RegExp(`\\b${tag.replace("-", "\\-")}\\b`, "i"), "")
+        .replace(room_name, "")
+        .replace(/\b(SK|WP|WD|FC|PC|STN|RUB|EPD)-[A-Z0-9]{1,4}\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+    if (!description || description.length < 8) continue;
+
+    const h = Math.max(6, floorMark.h || 10);
+    const entry: ScheduleKbEntry = {
+      tag,
+      kind: "finish",
+      room_name: room_name || undefined,
+      floors: floorCtx || undefined,
+      description,
+      skirting_tag: skirtingMark ? normMark(skirtingMark) : undefined,
+      wall_tag: wallMark ? normMark(wallMark) : undefined,
+      ceiling_tag: ceilingMark ? normMark(ceilingMark) : undefined,
+      source_sheet: meta.sheet_id,
+      source_title: meta.file_name.replace(/\.pdf$/i, ""),
+      source_bbox: {
+        x: Math.min(...line.tokens.map((t) => t.x)) - 8,
+        y: floorMark.y - h * 2,
+        w: Math.max(tokW(floorMark) + 220, 240),
+        h: h * 8,
+      },
+    };
+    const dedupeKey = `${tag}::${normRoomKey(room_name)}::${normFloorKey(floorCtx)}`;
+    const prev = byKey.get(dedupeKey);
+    if (!prev || (description.length > (prev.description?.length || 0))) byKey.set(dedupeKey, entry);
+  }
+
+  for (const e of byKey.values()) out.push(e);
+  return out;
+}
 
 /**
  * Parse a finishes schedule sheet: each finish code picks up the nearest
@@ -629,6 +847,9 @@ export function parseFinishScheduleTokens(
   tokens: SymbolToken[],
   meta: SheetMeta,
 ): ScheduleKbEntry[] {
+  const tableRows = parseFinishesScheduleTable(tokens, meta);
+  if (tableRows.length) return tableRows;
+
   const toks = (tokens || []).filter((t) => (t.str || "").trim())
     .sort((a, b) => a.y - b.y || a.x - b.x);
   if (!toks.length) return [];
@@ -703,10 +924,11 @@ export function parseFinishScheduleTokens(
           h: h * 10,
         },
       };
-      // Prefer first (often floor) description; keep if richer
-      const prev = byTag.get(tag);
+      // Keep one row per finish tag per room group (same tag can repeat under different rooms).
+      const dedupeKey = `${tag}::${normRoomKey(roomCtx)}`;
+      const prev = byTag.get(dedupeKey);
       if (!prev || ((desc?.length || 0) > (prev.description?.length || 0))) {
-        byTag.set(tag, entry);
+        byTag.set(dedupeKey, entry);
       }
       continue;
     }
@@ -795,9 +1017,133 @@ export function buildScheduleKb(entries: ScheduleKbEntry[]): Map<string, Schedul
     for (const k of tagLookupKeys(e.tag)) {
       const prev = map.get(k);
       if (!prev || score(e) > score(prev)) map.set(k, e);
+      if (e.room_name?.trim()) {
+        map.set(`${k}@${normRoomKey(e.room_name)}`, e);
+        if (e.floors?.trim()) {
+          map.set(`${k}@${normRoomKey(e.room_name)}#${normFloorKey(e.floors)}`, e);
+        }
+      }
     }
   }
   return map;
+}
+
+const FINISH_LEGEND_ORDER = ["PT", "CPT", "STN", "RUB", "EPD", "SK", "WP", "WD", "FC", "PC", "VN", "MT", "SF", "MR", "GRP"];
+
+/** Tabular finish-schedule rows for the Finishes panel — one row per room × floor band. */
+export function listFinishesScheduleRows(
+  kb: Map<string, ScheduleKbEntry> | Record<string, ScheduleKbEntry> | null | undefined,
+): ScheduleKbEntry[] {
+  if (!kb) return [];
+  const list: ScheduleKbEntry[] = kb instanceof Map ? [...kb.values()] : Object.values(kb || {});
+  const seen = new Set<string>();
+  const rows: ScheduleKbEntry[] = [];
+  for (const e of list) {
+    if (e.kind !== "finish" || !e.room_name?.trim()) continue;
+    const key = `${normFloorKey(e.floors || "")}::${normRoomKey(e.room_name)}::${e.tag}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(e);
+  }
+  rows.sort((a, b) => {
+    const fa = normFloorKey(a.floors || "");
+    const fb = normFloorKey(b.floors || "");
+    if (fa !== fb) return fa.localeCompare(fb);
+    return (a.room_name || "").localeCompare(b.room_name || "");
+  });
+  return rows;
+}
+
+/** Unique finish marks for the materials legend sidebar. */
+export function finishesLegendEntries(
+  kb: Map<string, ScheduleKbEntry> | Record<string, ScheduleKbEntry> | null | undefined,
+): { prefix: string; tag: string; description: string }[] {
+  if (!kb) return [];
+  const list: ScheduleKbEntry[] = kb instanceof Map ? [...kb.values()] : Object.values(kb || {});
+  const byTag = new Map<string, ScheduleKbEntry>();
+  for (const e of list) {
+    if (e.kind !== "finish" || !e.tag) continue;
+    const prev = byTag.get(e.tag);
+    if (!prev || (e.description?.length || 0) > (prev.description?.length || 0)) byTag.set(e.tag, e);
+  }
+  const out = [...byTag.values()].map((e) => ({
+    prefix: e.tag.split("-")[0] || e.tag,
+    tag: e.tag,
+    description: e.description || "",
+  }));
+  out.sort((a, b) => {
+    const ia = FINISH_LEGEND_ORDER.indexOf(a.prefix);
+    const ib = FINISH_LEGEND_ORDER.indexOf(b.prefix);
+    if (ia !== ib) return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    return a.tag.localeCompare(b.tag);
+  });
+  return out;
+}
+
+/** Room + floor scoped schedule lookup — prefers finish rows for the detected room/plan sheet. */
+export function lookupScheduleKbForRoom(
+  kb: Map<string, ScheduleKbEntry> | Record<string, ScheduleKbEntry> | null | undefined,
+  tag: string,
+  room?: string,
+  sheetFloor?: string,
+): ScheduleKbEntry | null {
+  if (!kb || !tag) return null;
+  const get = (k: string) => (kb instanceof Map ? kb.get(k) : kb[k]) || null;
+  const roomName = (room || "").trim();
+  const floorName = (sheetFloor || "").trim();
+
+  if (floorName && roomName) {
+    const nr = normRoomKey(roomName);
+    const nf = normFloorKey(floorName);
+    for (const k of tagLookupKeys(tag)) {
+      const exact = get(`${k}@${nr}#${nf}`);
+      if (exact?.description) return exact;
+    }
+  }
+  if (roomName) {
+    const nr = normRoomKey(roomName);
+    for (const k of tagLookupKeys(tag)) {
+      const exact = get(`${k}@${nr}`);
+      if (exact?.description) return exact;
+    }
+  }
+
+  const tagSet = new Set(tagLookupKeys(tag).map((k) => k.toUpperCase()));
+  const list: ScheduleKbEntry[] = kb instanceof Map ? [...kb.values()] : Object.values(kb || {});
+  let best: ScheduleKbEntry | null = null;
+  let bestScore = 0;
+  for (const e of list) {
+    if (!e?.tag || !tagSet.has(String(e.tag).toUpperCase())) continue;
+    let sc = e.description?.length || 0;
+    if (roomName) {
+      if (roomKeyMatch(e.room_name || "", roomName)) sc += 120;
+      else if (e.room_name) sc -= 40;
+    }
+    if (floorName && e.floors) sc += floorKeyMatch(floorName, e.floors);
+    if (sc > bestScore) { best = e; bestScore = sc; }
+  }
+  if (best && bestScore >= 40) return best;
+
+  if (roomName) {
+    const iter: Iterable<[string, ScheduleKbEntry]> = kb instanceof Map
+      ? kb.entries()
+      : Object.entries(kb || {}) as [string, ScheduleKbEntry][];
+    best = null;
+    bestScore = 0;
+    for (const [key, e] of iter) {
+      if (!String(key).includes("@")) continue;
+      const at = String(key).indexOf("@");
+      const tagPart = String(key).slice(0, at);
+      const roomPart = String(key).slice(at + 1).split("#")[0];
+      if (!tagLookupKeys(tag).some((t) => t.toUpperCase() === tagPart.toUpperCase())) continue;
+      if (!roomKeyMatch(roomPart, roomName)) continue;
+      const rs = (e.description?.length || 0) + (e.room_name ? 20 : 0)
+        + (floorName ? floorKeyMatch(floorName, e.floors || "") : 0);
+      if (rs > bestScore) { best = e; bestScore = rs; }
+    }
+    if (best) return best;
+  }
+  return lookupScheduleKb(kb, tag);
 }
 
 /** Look up a plan mark in the KB. */

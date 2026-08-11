@@ -73,6 +73,7 @@ import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
 import OpenSheetsPill from "../components/OpenSheetsPill.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
 import EstimatePanel from "../components/EstimatePanel.jsx";
+import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
@@ -813,6 +814,7 @@ export default function TakeoffCanvas() {
   }, [drawingsChatPill]);
   const [showRates, setShowRates] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
+  const [showFinishesSchedule, setShowFinishesSchedule] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const paletteRef = useRef(null);
   const [showCondEdit, setShowCondEdit] = useState(false);
@@ -1582,9 +1584,17 @@ export default function TakeoffCanvas() {
     // display units ride the payload (additive) — a metric project opens metric
     // on any machine; payloads without the field keep this browser's toggle
     if (a.units === "metric" || a.units === "imperial") setUnits(a.units);
-    // Floor-plan masks (A1105–A1109) start unrevealed every session; reveal is
-    // driven only by Auto-Takeoff (not restored from saved payload).
-    setAiDetectShownBySheet({});
+    // Saved floor-plan masks (A1105–A1109) stay visible after refresh; Auto-Takeoff
+    // still drives the sequential reveal animation when the user clicks it.
+    {
+      const aiReveal = {};
+      for (const s of (a.shapes || [])) {
+        if (s.measure_role === "deduct") continue;
+        if (!isAiDetectFloorPlan(s.sheet_id)) continue;
+        aiReveal[s.sheet_id] = (aiReveal[s.sheet_id] || 0) + 1;
+      }
+      setAiDetectShownBySheet(aiReveal);
+    }
   };
   useEffect(() => {
     let off = false;
@@ -3945,7 +3955,7 @@ export default function TakeoffCanvas() {
       if (ax1 + tol < bx0 || bx1 + tol < ax0 || ay1 + tol < by0 || by1 + tol < ay0) return false;
       for (const [x, y] of bPx) if (pointInPoly(x, y, aPx)) return true;
       for (const [x, y] of aPx) if (pointInPoly(x, y, bPx)) return true;
-      return true;
+      return false;
     };
     const unionRingsPx = (rings) => {
       const valid = rings.filter((r) => r && r.length >= 3);
@@ -4028,6 +4038,8 @@ export default function TakeoffCanvas() {
   // Overlap victims for a pending draw — same filter mergeIntoExistingShapes uses.
   function overlapVictimsFor(newPoly, sheetId, condId, role) {
     if (!newPoly || newPoly.length < 3) return [];
+    // Cutout overlays stack independently on the parent until Apply — never merge them.
+    if (role === "deduct") return [];
     if (role !== "floor_area" && role !== "deduct") return [];
     const tp = panelByKey(sheetId);
     const w = tp?.img?.w, h = tp?.img?.h;
@@ -4059,7 +4071,7 @@ export default function TakeoffCanvas() {
       if (ax1 + tol < bx0 || bx1 + tol < ax0 || ay1 + tol < by0 || by1 + tol < ay0) return false;
       for (const [x, y] of bPx) if (pointInPoly(x, y, aPx)) return true;
       for (const [x, y] of aPx) if (pointInPoly(x, y, bPx)) return true;
-      return true;
+      return false;
     };
     const unionRingsPx = (rings) => {
       const valid = rings.filter((r) => r && r.length >= 3);
@@ -7343,6 +7355,42 @@ export default function TakeoffCanvas() {
   const countTotal = condRow?.ea || 0;
   const wallTotal = condRow?.wall_sf || 0;
   const borderTotal = condRow?.border_sf || 0;
+  const condDeduction = useMemo(() => {
+    if (!activeCond) return { floorBefore: 0, floorAfter: 0, wallBefore: 0, wallAfter: 0 };
+    const mult = condMult || 1;
+    let floorGross = 0;
+    let floorNet = 0;
+    let floorDed = 0;
+    let wallGross = 0;
+    let wallNet = 0;
+    for (const s of visibleShapesMeasured) {
+      if (s.condition_id !== activeCond) continue;
+      const cp = s.computed || {};
+      if (s.measure_role === "floor_area") {
+        floorNet += cp.area_sf || 0;
+        const sp = panelByKey(s.sheet_id);
+        const u = uppFor(s.sheet_id) || 0;
+        if (sp?.img?.w && u && s.verts_norm?.length >= 3) {
+          const pts = s.verts_norm.map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
+          floorGross += closedMetrics(pts).area * u * u;
+        } else floorGross += cp.area_sf || 0;
+      } else if (s.measure_role === "deduct") floorDed += cp.area_sf || 0;
+      else if (s.measure_role === "surface_area") {
+        wallGross += cp.gross_face_sf || cp.area_sf || 0;
+        wallNet += cp.area_sf || 0;
+      } else if (s.measure_role === "wall_area") {
+        wallGross += cp.gross_face_sf || cp.wall_face_sf || cp.area_sf || 0;
+        wallNet += cp.wall_face_sf || cp.area_sf || 0;
+      }
+    }
+    const r2 = (v) => +((Number(v) || 0).toFixed(2));
+    return {
+      floorBefore: r2(floorGross * mult),
+      floorAfter: r2((floorNet - floorDed) * mult),
+      wallBefore: r2(wallGross * mult),
+      wallAfter: r2(wallNet * mult),
+    };
+  }, [activeCond, visibleShapesMeasured, condMult, scales]);
   const sheetFloorSf = visRows.reduce((n, r) => n + r.floor_sf, 0);
   const sheetWallSf = visRows.reduce((n, r) => n + r.wall_sf, 0);
   // display-only Kreo-style derived metric: floor-area perimeters × the condition height
@@ -8056,10 +8104,10 @@ export default function TakeoffCanvas() {
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
         {/* Central Toolbars - The Pill UI */}
-        <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
           
           {/* Pill 1 */}
-          <div className="toolbar-glass-pill" style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, borderRadius: 14, padding: "3px 12px", whiteSpace: "nowrap" }}>
+          <div className="toolbar-glass-pill" style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, borderRadius: 14, padding: "3px 12px", whiteSpace: "nowrap", width: 268, minWidth: 268, maxWidth: 268, boxSizing: "border-box" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
                 <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>ESTIMATION & TAKEOFF</div>
@@ -8076,25 +8124,26 @@ export default function TakeoffCanvas() {
             </div>
 
             {/* Auto-Takeoff + Takeoff Tool Palette — side by side on the bottom */}
-            <div className="takeoff-sticky-stack">
+            <div className="takeoff-sticky-stack" style={{ width: "100%", minWidth: 0, maxWidth: "100%" }}>
               <button type="button" onClick={runAiDetection}
                 className="toolbar-glass-btn-ghost-positive"
                 title="Auto-Takeoff"
-                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "4px 10px", border: "1px solid var(--c-positive)", borderRadius: 999, color: "var(--c-positive)", cursor: "pointer", fontWeight: 600, fontSize: 11, lineHeight: 1, whiteSpace: "nowrap" }}>
+                style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "4px 10px", border: "1px solid var(--c-positive)", borderRadius: 999, color: "var(--c-positive)", cursor: "pointer", fontWeight: 600, fontSize: 11, lineHeight: 1, whiteSpace: "nowrap", flex: "0 0 auto" }}>
                 <Icon name="sparkle" size={11} />
                 Auto-Takeoff
               </button>
 
-              <span ref={paletteRef} className="takeoff-sticky-menu takeoff-sticky-menu--stack">
+              <span ref={paletteRef} className="takeoff-sticky-menu takeoff-sticky-menu--stack" style={{ flex: "1 1 0", minWidth: 0, maxWidth: "100%", overflow: "hidden" }}>
                 <button
                   type="button"
                   className={`takeoff-sticky-trigger takeoff-sticky-trigger--compact${paletteOpen ? " is-open" : ""}`}
                   title="Takeoff Tool Palette"
                   onClick={() => setPaletteOpen((v) => !v)}
                   aria-expanded={paletteOpen}
+                  style={{ width: "100%", minWidth: 0, maxWidth: "100%", overflow: "hidden" }}
                 >
                   <Icon name="takeoffs" size={11} />
-                  Takeoff Tool Palette
+                  <span style={{ flex: "1 1 0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>Takeoff Tool Palette</span>
                 </button>
                 {paletteOpen && (
                   <div className="takeoff-sticky-panel-shell">
@@ -8128,6 +8177,14 @@ export default function TakeoffCanvas() {
                         onClick={() => { setShowRates((v) => !v); setPaletteOpen(false); }}
                       >
                         <Icon name="takeoffs" size={15} /> Rates
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={`takeoff-sticky-opt${showFinishesSchedule ? " is-active" : ""}`}
+                        onClick={() => { setShowFinishesSchedule((v) => !v); setPaletteOpen(false); }}
+                      >
+                        <Icon name="spec" size={15} /> Finishes
                       </button>
                       <button
                         type="button"
@@ -8285,7 +8342,6 @@ export default function TakeoffCanvas() {
           </div>
 
           {/* Live readout — condition totals + in-progress measure */}
-          <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "stretch", borderRadius: 14, padding: "3px 10px" }}>
             <LiveReadoutBar
               tool={tool}
               aCond={aCond}
@@ -8307,6 +8363,10 @@ export default function TakeoffCanvas() {
               condMult={condMult}
               condTotal={condTotal}
               wallTotal={wallTotal}
+              floorBeforeDeduction={condDeduction.floorBefore}
+              floorAfterDeduction={condDeduction.floorAfter}
+              wallBeforeDeduction={condDeduction.wallBefore}
+              wallAfterDeduction={condDeduction.wallAfter}
               borderTotal={borderTotal}
               lfTotal={lfTotal}
               countTotal={countTotal}
@@ -8324,7 +8384,6 @@ export default function TakeoffCanvas() {
               onRemoveWallOpening={removeWallOpening}
               onFlyToWallOpening={flyToWallOpening}
             />
-          </div>
         </div>
       </div>
 
@@ -8917,6 +8976,7 @@ export default function TakeoffCanvas() {
             const pinned = !!shapeBoqFocus;
             return (
               <ShapeBoqHoverCard
+                key={cardId}
                 data={data}
                 left={cardPos.cx}
                 top={cardPos.cy}
@@ -8944,6 +9004,15 @@ export default function TakeoffCanvas() {
                   shapeBoqHoverStickyRef.current = true;
                 }}
                 onClose={() => { setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqPinPosRef.current = null; shapeBoqHoverStickyRef.current = false; }}
+                onOpenFinishSource={(fd) => {
+                  if (!fd?.source_sheet) return;
+                  setSymbolSourceView({
+                    sheetId: fd.source_sheet,
+                    title: fd.source || fd.source_sheet,
+                    bbox: fd.source_bbox || null,
+                    tag: fd.tag || data.finish_tag || "",
+                  });
+                }}
                 onPointerEnter={() => { shapeBoqHoverStickyRef.current = true; }}
                 onPointerLeave={() => {
                   shapeBoqHoverStickyRef.current = false;
@@ -10292,7 +10361,21 @@ export default function TakeoffCanvas() {
           </FloatingWindow>
         )}
 
-        {/* Takeoffs panel — DOCKED in the layout row (reflows the canvas, not an
+        {showFinishesSchedule && (
+          <FloatingWindow
+            defaultRect={{ x: Math.max(16, ((typeof window !== "undefined" ? window.innerWidth : 1280) - 920) / 2), y: 72, w: 920, h: Math.min(680, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+            minW={520}
+            minH={360}
+          >
+            <FinishesSchedulePanel
+              open={showFinishesSchedule}
+              onClose={() => setShowFinishesSchedule(false)}
+              scheduleKb={scheduleKb}
+            />
+          </FloatingWindow>
+        )}
+
+        {/* Takeoffs panel — DOCKED in the row (reflows the canvas, not an
             overlay): every condition with its running totals, plus the Library,
             Materials, and Columns tabs. Extracted to components/TakeoffsPanel.jsx and
             ALWAYS mounted (it renders null while collapsed) so its view state —

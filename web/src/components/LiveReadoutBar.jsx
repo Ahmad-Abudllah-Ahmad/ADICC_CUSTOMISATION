@@ -25,6 +25,10 @@ export default function LiveReadoutBar({
   condMult,
   condTotal,
   wallTotal,
+  floorBeforeDeduction = 0,
+  floorAfterDeduction = 0,
+  wallBeforeDeduction = 0,
+  wallAfterDeduction = 0,
   borderTotal,
   lfTotal,
   countTotal,
@@ -46,9 +50,24 @@ export default function LiveReadoutBar({
   const fa = (sf, d = 1) => `${num(areaVal(sf, units), d)} ${areaUnit(units)}`;
   const fl = (lf, d = 1) => `${num(lenVal(lf, units), d)} ${lenUnit(units)}`;
 
+  const showWallOpenings = selShape?.measure_role === "surface_area" || selShape?.measure_role === "wall_area";
+
   return (
-    <div className="live-readout-bar" style={{ display: "flex", flexDirection: "column", minWidth: 220, maxWidth: 280, width: 268, height: 72, maxHeight: 72, overflow: "hidden", fontVariantNumeric: "tabular-nums" }}>
-      <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", minHeight: 0, overscrollBehavior: "contain" }}>
+    <div className="live-readout-stack" style={{ position: "relative", overflow: "visible", alignSelf: "flex-start", minWidth: 220, maxWidth: 280, width: 268, fontVariantNumeric: "tabular-nums" }}>
+      <div
+        className="toolbar-glass-pill live-readout-bar"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          borderRadius: showWallOpenings ? "14px 14px 0 0" : 14,
+          padding: "3px 10px 6px",
+          minHeight: 72,
+          height: "auto",
+          overflow: "visible",
+          borderBottom: showWallOpenings ? "none" : undefined,
+        }}
+      >
+        <div>
           {tool === "oneclick" && proposal?.regions.length ? (() => {
             const pos = proposal.regions.filter((r) => r.kind === "pos");
             const neg = proposal.regions.filter((r) => r.kind === "neg");
@@ -126,156 +145,176 @@ export default function LiveReadoutBar({
               </div>
             );
           })()}
-          {(selShape?.measure_role === "surface_area" || selShape?.measure_role === "wall_area") && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }} title="Height for THIS wall only. ↺ returns to the condition height.">
-                  <Icon name="height" size={12} />
-                  <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>wall H</span>
-                  <input name="shape-height-ft" type="number" min="0" step="0.25" value={selShape.height_ft ?? ""}
-                    onChange={(e) => onSetShapeHeight(e.target.value)}
-                    style={{ width: 48, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-                  {condH > 0 && Number(selShape.height_ft) !== condH && (
-                    <button type="button" onClick={onClearShapeHeight} title="Set this wall to the condition height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
+          {showWallOpenings && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, marginBottom: 6, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }} title="Height for THIS wall only. ↺ returns to the condition height.">
+                <Icon name="height" size={12} />
+                <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>wall H</span>
+                <input name="shape-height-ft" type="number" min="0" step="0.25" value={selShape.height_ft ?? ""}
+                  onChange={(e) => onSetShapeHeight(e.target.value)}
+                  style={{ width: 48, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 12 }} />
+                {condH > 0 && Number(selShape.height_ft) !== condH && (
+                  <button type="button" onClick={onClearShapeHeight} title="Set this wall to the condition height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
+                )}
+              </div>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+                <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Door openings</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selShape?.measure_role === "wall_area" && onStartWallCutout) onStartWallCutout();
+                    else onAddWallOpening({ source: "cutout" });
+                  }}
+                  title={selShape?.measure_role === "wall_area"
+                    ? "Add a custom cutout — click two points on the wall area line (snaps to that line)"
+                    : "Add a custom wall cutout (W × H) subtracted from wall face"}
+                  style={{ border: "1px solid var(--ink-faint)", background: "var(--paper)", fontSize: 11, padding: "1px 7px", cursor: "pointer" }}
+                >
+                  + Add
+                </button>
+              </div>
+            </div>
+          )}
+          {(floorBeforeDeduction > 0 || floorAfterDeduction !== 0 || wallBeforeDeduction > 0 || wallAfterDeduction > 0) && (
+            <div style={{ marginTop: 3, display: "flex", flexDirection: showWallOpenings ? "column" : "row", flexWrap: "wrap", alignItems: "baseline", gap: showWallOpenings ? 2 : "0 8px" }}>
+              {(floorBeforeDeduction > 0 || floorAfterDeduction !== 0) && (
+                <div style={{ fontSize: 11.5, lineHeight: 1.35, display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0 4px" }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.35, color: "var(--ink-muted)" }}>Floor</span>
+                  <span style={{ fontWeight: 700 }}>{fa(floorBeforeDeduction)}</span>
+                  <span style={{ color: "var(--ink-muted)", fontWeight: 500 }}>→</span>
+                  <span style={{ fontWeight: 700 }}>{fa(floorAfterDeduction)}</span>
+                  {units === "imperial" && floorAfterDeduction > 0 && (
+                    <span style={{ fontSize: 10.5, fontWeight: 500, color: "var(--ink-secondary)" }}>({num(floorAfterDeduction / 9)} SY)</span>
                   )}
                 </div>
-                <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
-                  <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Door openings</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (selShape?.measure_role === "wall_area" && onStartWallCutout) onStartWallCutout();
-                      else onAddWallOpening({ source: "cutout" });
-                    }}
-                    title={selShape?.measure_role === "wall_area"
-                      ? "Add a custom cutout — click two points on the wall area line (snaps to that line)"
-                      : "Add a custom wall cutout (W × H) subtracted from wall face"}
-                    style={{ border: "1px solid var(--ink-faint)", background: "var(--paper)", fontSize: 11, padding: "1px 7px", cursor: "pointer" }}
-                  >
-                    + Add
-                  </button>
+              )}
+              {!showWallOpenings && (floorBeforeDeduction > 0 || floorAfterDeduction !== 0) && (wallBeforeDeduction > 0 || wallAfterDeduction > 0) && (
+                <span style={{ fontWeight: 500, color: "var(--ink-muted)" }}>|</span>
+              )}
+              {(wallBeforeDeduction > 0 || wallAfterDeduction > 0) && (
+                <div style={{ fontSize: 11.5, lineHeight: 1.35, display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0 4px" }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.35, color: "var(--ink-muted)" }}>Wall</span>
+                  <span style={{ fontWeight: 700 }}>{fa(wallBeforeDeduction)}</span>
+                  <span style={{ color: "var(--ink-muted)", fontWeight: 500 }}>→</span>
+                  <span style={{ fontWeight: 700 }}>{fa(wallAfterDeduction)}</span>
                 </div>
-              </div>
-              <div style={{ paddingTop: 8, borderTop: "1px solid var(--divider-soft)" }}>
-                {doorScheduleOptions.length > 0 && (
-                  <select
-                    aria-label="Prefill opening from door schedule"
-                    defaultValue=""
-                    onChange={(e) => {
-                      const tag = e.target.value;
-                      e.target.value = "";
-                      if (!tag) return;
-                      const opt = doorScheduleOptions.find((o) => o.tag === tag);
-                      onAddWallOpening({ tag, kind: opt?.kind || "door", size: opt?.size || "", symbol_id: opt?.symbol_id || "", source: "schedule" });
-                    }}
-                    style={{ width: "100%", marginBottom: 6, fontSize: 11, padding: "3px 4px", border: "1px solid var(--ink-faint)", background: "var(--paper)" }}
-                  >
-                    <option value="">Add from door schedule…</option>
-                    {doorScheduleOptions.map((o) => (
-                      <option key={o.tag} value={o.tag}>{o.tag}{o.size ? ` · ${o.size}` : ""}</option>
-                    ))}
-                  </select>
-                )}
-                {(selShape.openings || []).length === 0 && (
-                  <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>No openings — wall face is full height × length.</div>
-                )}
-                {(selShape.openings || []).length > 0 && (
-                <div style={{ maxHeight: 88, overflowY: "auto", overscrollBehavior: "contain", paddingRight: 2 }}>
-                {(selShape.openings || []).map((opn, opnIdx) => {
-                  const wDisp = units === "metric" ? (Number(opn.width_ft) || 0) * M_PER_FT : (Number(opn.width_ft) || 0);
-                  const hDisp = units === "metric" ? (Number(opn.height_ft) || 0) * M_PER_FT : (Number(opn.height_ft) || 0);
-                  const dimUnit = units === "metric" ? "m" : "ft";
-                  const cutN = (selShape.openings || []).filter((o) => o.source === "cutout").length;
-                  const cutIdx = opn.source === "cutout"
-                    ? (selShape.openings || []).slice(0, opnIdx + 1).filter((o) => o.source === "cutout").length
-                    : 0;
-                  const openingLabel = opn.source === "cutout"
-                    ? (cutN > 1 ? `custom cut ${cutIdx}` : "custom cut")
-                    : (opn.tag || "Door");
-                  return (
-                    <div key={opn.id} style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
-                      <button
-                        type="button"
-                        title={opn.source === "cutout" ? "Go to this cutout on the plan" : "Go to this door on the plan"}
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onFlyToWallOpening(opn, selShape); }}
-                        style={{
-                          border: "none", background: "none", padding: 0, cursor: "pointer",
-                          fontSize: 11, fontWeight: 700, minWidth: 28, color: "var(--cobalt)",
-                          textDecoration: "underline", textUnderlineOffset: 2, fontFamily: "inherit",
-                        }}
-                      >
-                        {openingLabel}
-                      </button>
-                      <input
-                        name={`opening-w-${opn.id}`}
-                        type="number"
-                        min="0"
-                        step={units === "metric" ? 0.01 : 0.05}
-                        value={Number.isFinite(wDisp) ? +wDisp.toFixed(units === "metric" ? 3 : 2) : ""}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          const ft = units === "metric" ? calInputToFeet(parseFloat(raw) || 0, units) : Math.max(0, parseFloat(raw) || 0);
-                          onUpdateWallOpening(opn.id, {
-                            width_ft: ft,
-                            ...(opn.source === "cutout" ? {} : { source: "manual" }),
-                          });
-                        }}
-                        title={`Opening width (${dimUnit})`}
-                        style={{ width: 52, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 11 }}
-                      />
-                      <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>×</span>
-                      <input
-                        name={`opening-h-${opn.id}`}
-                        type="number"
-                        min="0"
-                        step={units === "metric" ? 0.01 : 0.05}
-                        value={Number.isFinite(hDisp) ? +hDisp.toFixed(units === "metric" ? 3 : 2) : ""}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          const ft = units === "metric" ? calInputToFeet(parseFloat(raw) || 0, units) : Math.max(0, parseFloat(raw) || 0);
-                          onUpdateWallOpening(opn.id, {
-                            height_ft: ft,
-                            ...(opn.source === "cutout" ? {} : { source: "manual" }),
-                          });
-                        }}
-                        title={`Opening height (${dimUnit})`}
-                        style={{ width: 52, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 11 }}
-                      />
-                      <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>{dimUnit}</span>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveWallOpening(opn.id)}
-                        title="Remove opening"
-                        style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: "0 2px", fontSize: 14, lineHeight: 1 }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  );
-                })}
-                </div>
-                )}
-              </div>
+              )}
             </div>
           )}
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4, color: "light-dark(var(--ink-soft), var(--ink))" }}>{aCond?.finish_tag || "—"} total ({condRow?.shape_count || 0}{condMult > 1 ? ` ×${condMult}` : ""})</div>
-          {(condTotal !== 0 || wallTotal > 0) && (
-            <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2, display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "0 6px" }}>
-              {condTotal !== 0 && <span>{num(areaVal(condTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)}</span>{units === "imperial" && <span style={{ fontSize: 12, fontWeight: 500, color: "var(--ink-secondary)" }}> · {num(condTotal / 9)} SY</span>}</span>}
-              {condTotal !== 0 && wallTotal > 0 && <span style={{ fontWeight: 500, color: "var(--ink-muted)" }}>|</span>}
-              {wallTotal > 0 && <span>{num(areaVal(wallTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} wall</span></span>}
-            </div>
-          )}
-          {borderTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(areaVal(borderTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{areaUnit(units)} border</span></div>}
-          {lfTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(lenVal(lfTotal, units))} <span style={{ fontSize: 12, fontWeight: 600 }}>{lenUnit(units)}</span></div>}
-          {countTotal > 0 && <div style={{ fontSize: 15, fontWeight: 700, marginTop: 2 }}>{num(countTotal, 0)} <span style={{ fontSize: 12, fontWeight: 600 }}>EA</span></div>}
-          {condTotal === 0 && lfTotal === 0 && countTotal === 0 && wallTotal === 0 && borderTotal === 0 && <div style={{ fontSize: 12.5, color: "var(--ink-muted)", marginTop: 2 }}>—</div>}
-          {(sheetFloorSf > 0 || sheetWallSf > 0) && (sheetFloorSf !== condTotal || sheetWallSf !== wallTotal) && (
-            <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 6 }} title="All conditions on this sheet — estimate keeps every committed mask">
-              Sheet: {sheetFloorSf > 0 ? `${fa(sheetFloorSf)} floor` : ""}{sheetFloorSf > 0 && sheetWallSf > 0 ? " · " : ""}{sheetWallSf > 0 ? `${fa(sheetWallSf)} wall` : ""}
-            </div>
-          )}
+        </div>
       </div>
+      {showWallOpenings && (
+        <div
+          className="toolbar-glass-pill live-readout-wall-openings"
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            right: 0,
+            zIndex: 50,
+            borderRadius: "0 0 14px 14px",
+            padding: "8px 10px 10px",
+            overflow: "visible",
+            borderTop: "1px solid var(--divider-soft)",
+            marginTop: -1,
+          }}
+        >
+          {doorScheduleOptions.length > 0 && (
+            <select
+              aria-label="Prefill opening from door schedule"
+              defaultValue=""
+              onChange={(e) => {
+                const tag = e.target.value;
+                e.target.value = "";
+                if (!tag) return;
+                const opt = doorScheduleOptions.find((o) => o.tag === tag);
+                onAddWallOpening({ tag, kind: opt?.kind || "door", size: opt?.size || "", symbol_id: opt?.symbol_id || "", source: "schedule" });
+              }}
+              style={{ width: "100%", marginBottom: 6, fontSize: 11, padding: "3px 4px", border: "1px solid var(--ink-faint)", background: "var(--paper)" }}
+            >
+              <option value="">Add from door schedule…</option>
+              {doorScheduleOptions.map((o) => (
+                <option key={o.tag} value={o.tag}>{o.tag}{o.size ? ` · ${o.size}` : ""}</option>
+              ))}
+            </select>
+          )}
+          {(selShape.openings || []).length === 0 && (
+            <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>No openings — wall face is full height × length.</div>
+          )}
+          {(selShape.openings || []).map((opn, opnIdx) => {
+            const wDisp = units === "metric" ? (Number(opn.width_ft) || 0) * M_PER_FT : (Number(opn.width_ft) || 0);
+            const hDisp = units === "metric" ? (Number(opn.height_ft) || 0) * M_PER_FT : (Number(opn.height_ft) || 0);
+            const dimUnit = units === "metric" ? "m" : "ft";
+            const cutN = (selShape.openings || []).filter((o) => o.source === "cutout").length;
+            const cutIdx = opn.source === "cutout"
+              ? (selShape.openings || []).slice(0, opnIdx + 1).filter((o) => o.source === "cutout").length
+              : 0;
+            const openingLabel = opn.source === "cutout"
+              ? (cutN > 1 ? `custom cut ${cutIdx}` : "custom cut")
+              : (opn.tag || "Door");
+            return (
+              <div key={opn.id} style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  title={opn.source === "cutout" ? "Go to this cutout on the plan" : "Go to this door on the plan"}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onFlyToWallOpening(opn, selShape); }}
+                  style={{
+                    border: "none", background: "none", padding: 0, cursor: "pointer",
+                    fontSize: 11, fontWeight: 700, minWidth: 28, color: "var(--cobalt)",
+                    textDecoration: "underline", textUnderlineOffset: 2, fontFamily: "inherit",
+                  }}
+                >
+                  {openingLabel}
+                </button>
+                <input
+                  name={`opening-w-${opn.id}`}
+                  type="number"
+                  min="0"
+                  step={units === "metric" ? 0.01 : 0.05}
+                  value={Number.isFinite(wDisp) ? +wDisp.toFixed(units === "metric" ? 3 : 2) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    const ft = units === "metric" ? calInputToFeet(parseFloat(raw) || 0, units) : Math.max(0, parseFloat(raw) || 0);
+                    onUpdateWallOpening(opn.id, {
+                      width_ft: ft,
+                      ...(opn.source === "cutout" ? {} : { source: "manual" }),
+                    });
+                  }}
+                  title={`Opening width (${dimUnit})`}
+                  style={{ width: 52, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 11 }}
+                />
+                <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>×</span>
+                <input
+                  name={`opening-h-${opn.id}`}
+                  type="number"
+                  min="0"
+                  step={units === "metric" ? 0.01 : 0.05}
+                  value={Number.isFinite(hDisp) ? +hDisp.toFixed(units === "metric" ? 3 : 2) : ""}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    const ft = units === "metric" ? calInputToFeet(parseFloat(raw) || 0, units) : Math.max(0, parseFloat(raw) || 0);
+                    onUpdateWallOpening(opn.id, {
+                      height_ft: ft,
+                      ...(opn.source === "cutout" ? {} : { source: "manual" }),
+                    });
+                  }}
+                  title={`Opening height (${dimUnit})`}
+                  style={{ width: 52, padding: "2px 4px", border: "1px solid var(--ink-faint)", fontSize: 11 }}
+                />
+                <span style={{ fontSize: 10, color: "var(--ink-muted)" }}>{dimUnit}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveWallOpening(opn.id)}
+                  title="Remove opening"
+                  style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: "0 2px", fontSize: 14, lineHeight: 1 }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
