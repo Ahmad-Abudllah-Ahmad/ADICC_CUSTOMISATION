@@ -1584,17 +1584,9 @@ export default function TakeoffCanvas() {
     // display units ride the payload (additive) — a metric project opens metric
     // on any machine; payloads without the field keep this browser's toggle
     if (a.units === "metric" || a.units === "imperial") setUnits(a.units);
-    // Saved floor-plan masks (A1105–A1109) stay visible after refresh; Auto-Takeoff
-    // still drives the sequential reveal animation when the user clicks it.
-    {
-      const aiReveal = {};
-      for (const s of (a.shapes || [])) {
-        if (s.measure_role === "deduct") continue;
-        if (!isAiDetectFloorPlan(s.sheet_id)) continue;
-        aiReveal[s.sheet_id] = (aiReveal[s.sheet_id] || 0) + 1;
-      }
-      setAiDetectShownBySheet(aiReveal);
-    }
+    // Floor-plan masks (A1105–A1109) start unrevealed every session; reveal is
+    // driven only by Auto-Takeoff (not restored from saved payload).
+    setAiDetectShownBySheet({});
   };
   useEffect(() => {
     let off = false;
