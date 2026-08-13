@@ -69,6 +69,7 @@ import RfiPanel from "../components/RfiPanel.jsx";
 import StampPanel from "../components/StampPanel.jsx";
 import ImportSchedulePanel from "../components/ImportSchedulePanel.jsx";
 import BoqPanel from "../components/BoqPanel.jsx";
+import LayersSidebar from "../components/LayersSidebar.jsx";
 import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
 import OpenSheetsPill from "../components/OpenSheetsPill.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
@@ -76,6 +77,8 @@ import EstimatePanel from "../components/EstimatePanel.jsx";
 import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
+import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
+import { segmentHeightsForShape, grossFaceFromSegments, wallSegmentRows, withSegmentHeights, concatSegmentHeightsForMerge, defaultWallHeightFt } from "../lib/wallSegmentHeights.js";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
 import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty } from "../lib/boqDetect.js";
 import { parseOpeningSize, openingsDeductSf, openingsDeductSfLinear, netWallFaceSf, openingDimsFromCutoutPx, bboxIntersectRing } from "../lib/wallOpenings.js";
@@ -355,17 +358,19 @@ export default function TakeoffCanvas() {
   const resetZone = () => { setZoneCheck(null); setZoneExpand(null); };
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
-  // Floating LEFT panel — one at a time: null | "files" | "markup" | "stamp" | "rfi".
+  // Floating LEFT panel — one at a time: null | "files" | "sheets" | "markup" | "stamp" | "rfi" | "layers".
   // Opens on rail button click only (not canvas / not hover); auto-closes on mouse leave. Fixed size, not resizable.
   const [leftTab, setLeftTab] = useState(null);
+  const [layersFloating, setLayersFloating] = useState(false); // Layers tab double-click → draggable/resizable window
   const lastLeftTabRef = useRef("files");
   const leftHoverCloseRef = useRef(null);
   const openLeftHover = useCallback((tab) => {
     if (leftHoverCloseRef.current) { clearTimeout(leftHoverCloseRef.current); leftHoverCloseRef.current = null; }
     const next = tab || lastLeftTabRef.current || "files";
     lastLeftTabRef.current = next;
+    if (next === "layers" && layersFloating) setLayersFloating(false);
     setLeftTab(next);
-  }, []);
+  }, [layersFloating]);
   const cancelLeftHoverClose = useCallback(() => {
     if (leftHoverCloseRef.current) { clearTimeout(leftHoverCloseRef.current); leftHoverCloseRef.current = null; }
   }, []);
@@ -374,6 +379,12 @@ export default function TakeoffCanvas() {
     leftHoverCloseRef.current = setTimeout(() => setLeftTab(null), 220);
   }, []);
   useEffect(() => () => { if (leftHoverCloseRef.current) clearTimeout(leftHoverCloseRef.current); }, []);
+  // Layers panel — session-only (never persisted): hide, group, pick for merge.
+  const [hiddenShapeIds, setHiddenShapeIds] = useState({});
+  const [layerPickIds, setLayerPickIds] = useState({});
+  const [layerGroups, setLayerGroups] = useState({});
+  const [shapeToLayerGroup, setShapeToLayerGroup] = useState({});
+  const [layersSheetOpen, setLayersSheetOpen] = useState({});
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
   const [panelEditId, setPanelEditId] = useState(null);       // markup id whose text is being edited inline in the markup panel (off-screen fallback for the ✎ button)
@@ -461,6 +472,7 @@ export default function TakeoffCanvas() {
   const [scaleGuide, setScaleGuide] = useState(null); // ephemeral calibrated ruler {key, feet, px, label, at:[x,y]} — never persisted (buildPayload doesn't read it)
   const scaleGuideTimerRef = useRef(0);
   const scaleGuidePreviewRef = useRef(false); // true while the visible guide is a hover PREVIEW of an unaccepted scale — the preview must die with the hover/menu; an accepted bar stays
+  const wallAreaLoopCloseRef = useRef(false); // Wall Area: finishShape closes the run back to its first point
   // One-slot revert stash: the scale a quantity-changing rescale replaced
   // ({key, upp, source}). An oops-hatch, not an undo history — ephemeral by
   // design (never persisted): a mistyped recalibrate is caught within a menu
@@ -505,6 +517,7 @@ export default function TakeoffCanvas() {
   const shapeCtxMenuRef = useRef(null);
   shapeCtxMenuRef.current = shapeCtxMenu;
   const [selVert, setSelVert] = useState(null);         // selected vertex index of the selected shape — Delete removes just that point
+  const [wallSegmentFocus, setWallSegmentFocus] = useState(null); // surface_area segment index highlighted from panel
   const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
   const [hoverEdge, setHoverEdge] = useState(null);   // { shapeId, i, length, t } — edge length chip follows cursor along the segment (t ∈ [0,1])
   const [selectedMarkupId, setSelectedMarkupId] = useState(null); // selected markup — mutually exclusive with selectedId
@@ -692,7 +705,7 @@ export default function TakeoffCanvas() {
   // finish-code popup) and any pinned mask BOQ card so neither lingers or blocks
   // hover on other masks after the selection changes (or is cleared).
   const selectShape = (id) => {
-    setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null);
+    setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null); setWallSegmentFocus(null);
     setSymbolFocus(null); setSymbolHover(null);
     setShapeBoqFocus(null); shapeBoqPinPosRef.current = null;
     if (!id) {
@@ -896,6 +909,8 @@ export default function TakeoffCanvas() {
   const hoverRef = useRef(null);        // hover tooltip div (DOM-direct like the crosshair)
   const hoverIdRef = useRef("");        // shape id currently described by the tooltip
   const lastMeasureRef = useRef("area"); // last armed measure tool — shown on the Measure menu face
+  const lastCutRef = useRef("deduct");
+  const lastMarkupRef = useRef("highlighter");
   const prevToolRef = useRef("pan");   // previous armed tool — detects a LEAVE-zone transition so the shared `poly` array only clears when zone itself was left, not on every tool change
   const menuDepthRef = useRef(0);      // >0 while a toolbar menu is open (letter shortcuts pause)
   // ONE stable open/close listener for every toolbar menu — ToolMenu re-fires
@@ -1085,7 +1100,15 @@ export default function TakeoffCanvas() {
     const next = openTabs.filter((k) => k !== key);
     setOpenTabs(next);
     if (sheetGroup.includes(key)) { const f = sheetGroup.filter((k) => k !== key); setSheetGroup(f.length >= 2 ? f : []); }
-    if (!next.length) { setView("gallery"); return; }
+    if (!next.length) {
+      setActive("");
+      setPage(1);
+      setSheetGroup([]);
+      setPanelImgs({});
+      setStatus("ready");
+      setView("canvas");
+      return;
+    }
     if (!sheetGroup.length && key === sheetKey) { const nb = next[Math.min(Math.max(i, 0), next.length - 1)]; if (nb) goToSheet(nb); }
   }
   const tabLabel = (k) => {
@@ -1102,7 +1125,7 @@ export default function TakeoffCanvas() {
   // Every coordinate on screen lives in "stage space": panel i's image px plus
   // its xOffset. With one panel xOffset is 0, so stage space IS image space and
   // all the original single-sheet math is unchanged.
-  const groupKeys = sheetGroup.length ? sheetGroup : [sheetKey];
+  const groupKeys = openTabs.length === 0 ? [] : (sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []));
   const groupSig = JSON.stringify(groupKeys);
   let _px = 0;
   const panels = groupKeys.map((key) => {
@@ -1168,6 +1191,48 @@ export default function TakeoffCanvas() {
     () => visibleShapes.filter((s) => aiDetectShapeRevealed(s)),
     [visibleShapes, aiDetectShapeRevealed],
   );
+  const drawableShapes = useMemo(
+    () => visibleRevealedShapes.filter((s) => !hiddenShapeIds[s.id]),
+    [visibleRevealedShapes, hiddenShapeIds],
+  );
+  const layerPanelShapes = useMemo(
+    () => shapes.filter((s) => {
+      if (!groupKeys.some((k) => k === s.sheet_id || aiFloorSheetKeysMatch(s.sheet_id, k))) return false;
+      if (!isAiDetectFloorPlan(s.sheet_id)) return true;
+      if (s.measure_role === "deduct") return aiDetectSheetRevealCount(s.sheet_id) > 0;
+      return aiDetectShapeRevealed(s);
+    }),
+    [shapes, groupKeys, aiDetectShapeRevealed, isAiDetectFloorPlan, aiDetectSheetRevealCount],
+  );
+  useEffect(() => {
+    const ids = new Set(shapes.map((s) => s.id));
+    setHiddenShapeIds((h) => {
+      const next = {};
+      for (const [id, on] of Object.entries(h)) if (on && ids.has(id)) next[id] = true;
+      return Object.keys(next).length === Object.keys(h).length ? h : next;
+    });
+    setLayerPickIds((p) => {
+      const next = {};
+      for (const [id, on] of Object.entries(p)) if (on && ids.has(id)) next[id] = true;
+      return Object.keys(next).length === Object.keys(p).length ? p : next;
+    });
+    setShapeToLayerGroup((m) => {
+      const next = {};
+      for (const [id, gid] of Object.entries(m)) if (ids.has(id)) next[id] = gid;
+      return next;
+    });
+    setLayerGroups((g) => {
+      let changed = false;
+      const next = {};
+      for (const [gid, grp] of Object.entries(g)) {
+        const shapeIds = (grp.shapeIds || []).filter((id) => ids.has(id));
+        if (shapeIds.length) next[gid] = { ...grp, shapeIds };
+        else changed = true;
+        if (shapeIds.length !== (grp.shapeIds || []).length) changed = true;
+      }
+      return changed ? next : g;
+    });
+  }, [shapes]);
   const runAiDetection = useCallback(() => {
     stopAiDetectReveal();
     setShapeBoqFocus(null);
@@ -1208,7 +1273,7 @@ export default function TakeoffCanvas() {
   // scale is PER PAGE (plan sets are never one uniform scale) — set it once per
   // sheet and it's remembered. In group mode the scale dropdown and hints target
   // the FOCUSED panel (the one last clicked); single mode focuses the lone panel.
-  const focusPanel = (focusKey && groupKeys.includes(focusKey) && panelByKey(focusKey)) || panels[0];
+  const focusPanel = (focusKey && groupKeys.includes(focusKey) && panelByKey(focusKey)) || panels[0] || { key: "", file: "", page: 1, img: { w: 0, h: 0 }, xOffset: 0 };
   const unitsPerPx = scales[focusPanel.key] ?? null;
   const labelFor = (p) => (p.file === active && pageLabels[p.page]) || (p.page > 1 ? `Sheet ${p.page}` : p.file);
   // Scale semantics (why geometry divides by factorFor and calibration
@@ -1285,7 +1350,9 @@ export default function TakeoffCanvas() {
   const reconcileAfterRemoval = useCallback((name, list) => {
     if (!list.length) {
       setOpenTabs([]); setSheetGroup([]); setLastGroup([]); setActive(""); setPage(1);
-      setView("gallery");
+      setPanelImgs({});
+      setStatus("ready");
+      setView("canvas");
       return;
     }
     if (name === active) { setActive(list[0].name); setPage(1); setSheetGroup([]); }
@@ -1394,7 +1461,7 @@ export default function TakeoffCanvas() {
       goToSheet(names[0]);
       setView("canvas");
     } else {
-      setView("gallery");   // a plan set → land in the gallery to pick sheets
+      setView("canvas");
     }
     setCommitMsg(`Opened ${names.length} sheet${names.length === 1 ? "" : "s"}${tail}.`);
     const suggested = projectNameFromFiles(incoming);
@@ -1433,7 +1500,7 @@ export default function TakeoffCanvas() {
         else setStatus("empty");
         // decide the landing only once the annotations effect has also reported
         // no open tabs (see hydrate) — avoids a picker→gallery flash + wasted list
-        if (noTabsRef.current) setView(cloudMode && !hasSheetsRef.current ? "picker" : "gallery");
+        if (noTabsRef.current) setView("canvas");
       })
       .catch((e) => !off && (setErr(String(e.message || e)), setStatus("error")));
     const onManifest = () => {
@@ -1567,7 +1634,7 @@ export default function TakeoffCanvas() {
     else {
       setOpenTabs([]);
       noTabsRef.current = true;
-      if (sheetsLoadedRef.current) setView(cloudMode && !hasSheetsRef.current ? "picker" : "gallery");
+      if (sheetsLoadedRef.current) setView("canvas");
     }
     const sc = {};
     const src = {};
@@ -1783,7 +1850,7 @@ export default function TakeoffCanvas() {
   // can never paint, resize, or cancel a newer chain's work (the old code had
   // that race between document-load and render).
   useEffect(() => {
-    if (!active) return;
+    if (!active || !openTabs.length) return;
     const seq = ++renderSeqRef.current;
     const stale = () => seq !== renderSeqRef.current;
     setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
@@ -2523,7 +2590,7 @@ export default function TakeoffCanvas() {
         if (agentOfferFnsRef.current?.pending()) { e.preventDefault(); agentOfferFnsRef.current.confirm(); return; }
         if (tool === "oneclick" && proposal?.regions.length) { e.preventDefault(); createProposal(); return; }
         if (tool === "walltrace" && wallProposal?.regions.length) { e.preventDefault(); createWallProposal(); return; }
-        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve") && poly.length >= 2);
+        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
         if (ok) { e.preventDefault(); finishShape(); return; }
         // ⏎ with agent proposals pending on a visible sheet = accept them all —
         // the agent's analogue of one-click's Create gate. Only fires when no
@@ -2535,6 +2602,7 @@ export default function TakeoffCanvas() {
       if (viewRef.current === "gallery") return;
       if (lower === "g") { setView("gallery"); return; }
       if (e.key === "D" && e.shiftKey) { setTool("deduct-rect"); return; }
+      if (e.key === "Q" && e.shiftKey) { setTool("deduct-curve"); return; }
       const map = { p: "pan", v: "select", a: "area", r: "rect", l: "linear", q: "curve", s: "surface", c: "count", d: "deduct", o: "oneclick", w: "walltrace", u: "wallarea", k: "check", h: "highlighter" };
       const t = map[lower];
       if (t) setTool(t);
@@ -2549,6 +2617,8 @@ export default function TakeoffCanvas() {
 
   // remember the last armed measure tool — the Measure menu face shows it
   useEffect(() => { if (MEASURE_TOOLS.some((t) => t.id === tool)) lastMeasureRef.current = tool; }, [tool]);
+  useEffect(() => { if (CUT_TOOLS.some((t) => t.id === tool)) lastCutRef.current = tool; }, [tool]);
+  useEffect(() => { if (MARKUP_IDS.includes(tool)) lastMarkupRef.current = tool; }, [tool]);
 
   // Number keys 1–9 switch the active condition (material) fast — through
   // activateCondition with reassign:false: a digit press has no visual
@@ -2639,12 +2709,41 @@ export default function TakeoffCanvas() {
     prevToolRef.current = tool;
   }, [tool]);
 
+  function canFinishCurrentDraw() {
+    if (tool === "zone" && zoneTraceCross) return false;
+    return ((tool === "area" || tool === "deduct") && poly.length >= 3)
+      || (tool === "zone" && poly.length >= 3)
+      || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
+  }
+  /** Right-click while drawing: finish & save when valid, else cancel preview — tool stays armed. */
+  function stopDrawOnRightClick() {
+    const polyDraw = tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone";
+    if (polyDraw && poly.length > 0) {
+      if (canFinishCurrentDraw()) finishShape();
+      else setPoly([]);
+      if (rubberRef.current) rubberRef.current.style.display = "none";
+      pendingClickRef.current = null;
+      return true;
+    }
+    if ((tool === "rect" || tool === "deduct-rect") && poly.length > 0) {
+      setPoly([]);
+      if (rectRef.current) rectRef.current.style.display = "none";
+      pendingClickRef.current = null;
+      return true;
+    }
+    return false;
+  }
+
   // ── pointer ────────────────────────────────────────────────────────────────
   function onPointerDown(e) {
     if (status !== "ready") return;
     // inline editor open: the blur that follows this click commits it; swallow the
     // canvas interaction so pan/zoom stays frozen and no stray point is placed
     if (editingRef.current) return;
+    if (e.button === 2 && stopDrawOnRightClick()) {
+      e.preventDefault();
+      return;
+    }
     // Pan WITHOUT leaving the draw tool: middle-drag, right-drag, Space-drag, or Pan tool.
     if (tool === "pan" || e.button === 1 || e.button === 2 || spaceRef.current) {
       panRef.current = { sx: e.clientX, sy: e.clientY, ox: tfRef.current.x, oy: tfRef.current.y };
@@ -2661,7 +2760,7 @@ export default function TakeoffCanvas() {
     // a vector vertex would shift the box off the schedule and misread the region
     const rawCursor = tool === "select" || tool === "schedule";
     const p = (!rawCursor && snapOn && snapRef.current) ? snapRef.current
-      : (!rawCursor && tool === "deduct" && snapRef.current) ? snapRef.current
+      : (!rawCursor && (tool === "deduct" || tool === "deduct-curve") && snapRef.current) ? snapRef.current
       : (!rawCursor && angleOn && angleRef.current) ? angleRef.current
         : toImage(e.clientX, e.clientY);
     const fp = panelAt(p[0]);
@@ -2724,22 +2823,26 @@ export default function TakeoffCanvas() {
     else if (tool === "check") setCheck((c) => (c.length >= 2 ? [p] : [...c, p]));
     else if (tool === "oneclick") oneClickAt(p, !!(ev && ev.altKey));
     else if (tool === "walltrace") wallTraceAt(p);
-    else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") {
+    else if (tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") {
       // Join the end — click near the first vertex to close & commit (autosaves via shapes).
-      // Wall Area is an open linear run (like Surface) — no close-to-first.
-      if ((tool === "area" || tool === "deduct") && poly.length >= 3) {
-        const thr = 12 / tfRef.current.scale;
-        if (Math.hypot(p[0] - poly[0][0], p[1] - poly[0][1]) < thr) { finishShape(); return; }
+      if ((tool === "area" || tool === "deduct" || tool === "wallarea") && poly.length >= 3) {
+        const thr = (tool === "area" || tool === "wallarea" ? 18 : 12) / tfRef.current.scale;
+        if (Math.hypot(p[0] - poly[0][0], p[1] - poly[0][1]) < thr) {
+          if (tool === "wallarea") wallAreaLoopCloseRef.current = true;
+          finishShape();
+          return;
+        }
       }
       let pt = p;
-      if (tool === "deduct") {
+      if (tool === "deduct" || tool === "deduct-curve") {
         const wallSnap = snapDeductToWallLine(p[0], p[1]);
         if (wallSnap) pt = wallSnap;
       } else if ((tool === "wallarea" || tool === "surface") && activeCond) {
         const tp = panelAt(p[0]);
-        const joinThr = tool === "wallarea" ? (8 / tfRef.current.scale) : undefined;
-        const snapped = snapPointToSurfaceEndpoints(tp.key, activeCond, null, p[0] - tp.xOffset, p[1], joinThr);
-        if (snapped) pt = [snapped[0] + tp.xOffset, snapped[1]];
+        const joinThr = tool === "wallarea" ? (12 / tfRef.current.scale) : undefined;
+        const epOnly = tool === "wallarea";
+        const hit = snapPointToSurfaceEndpoints(tp.key, activeCond, null, p[0] - tp.xOffset, p[1], joinThr, epOnly);
+        if (hit) pt = [hit[0] + tp.xOffset, hit[1]];
       }
       setPoly((q) => [...q, pt]);
     }
@@ -2880,6 +2983,7 @@ export default function TakeoffCanvas() {
         if (Math.hypot(pts[i][0] - p[0], pts[i][1] - p[1]) < thr * 1.6) {
           setSelHole(null);
           setSelVert(i);   // select this corner + arm its move drag
+          setWallSegmentFocus(wallSegmentIndexFromVert(sel, i));
           // prev = the grab-time snapshot the commit-on-release geom command
           // stamps/freezes from; gx/gy only gate the live PREVIEW now (the
           // zero-motion no-stamp guard is structural: no motion ⇒ no command)
@@ -2908,6 +3012,7 @@ export default function TakeoffCanvas() {
             const inserted = { ...sel, verts_norm: vnIns, computed: recomputeShape({ ...sel, verts_norm: vnIns }) };
             setShapes((ss) => ss.map((s) => (s.id === sel.id ? inserted : s)));
             setSelVert(i + 1);
+            setWallSegmentFocus(i);
             dragRef.current = { kind: "vertex", shapeId: selectedId, vIndex: i + 1, prev: geomSnapshot(inserted), shape: inserted, gx: e.clientX, gy: e.clientY };
           } else {
             dragRef.current = { kind: "edge", shapeId: selectedId, i, j, oaN: [...sel.verts_norm[i]], obN: [...sel.verts_norm[j]], start: p, prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY };
@@ -2945,10 +3050,18 @@ export default function TakeoffCanvas() {
         return;
       }
     }
-    // 3. move the selected shape if its body (not a handle) was hit
-    if (sel && selSp && hitShapeC(sel, p[0] - selSp.xOffset, p[1], selSp.img.w, selSp.img.h, thr)) {
-      dragRef.current = { kind: "move", shapeId: selectedId, start: p, orig: sel.verts_norm, prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY };
-      e.currentTarget.setPointerCapture(e.pointerId); return;
+    // 3. move the selected shape (or any grouped member) if its body was hit
+    if (sel && selSp) {
+      const memberIds = layerGroupIdsFor(selectedId);
+      for (const mid of memberIds) {
+        const msh = mid === selectedId ? sel : shapes.find((s) => s.id === mid);
+        const msp = msh && panelKeySet.has(msh.sheet_id) ? panelByKey(msh.sheet_id) : null;
+        if (msh && msp && hitShapeC(msh, p[0] - msp.xOffset, p[1], msp.img.w, msp.img.h, thr)) {
+          if (memberIds.length > 1) armGroupMoveDrag(msh, p, e, memberIds);
+          else dragRef.current = { kind: "move", shapeId: selectedId, start: p, orig: sel.verts_norm, prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY };
+          e.currentTarget.setPointerCapture(e.pointerId); return;
+        }
+      }
     }
     // 4. otherwise pick a shape (or clear the selection)
     // Prefer deduct cutouts (drawn on top) so multi-select / edit hits the overlay first.
@@ -2956,7 +3069,7 @@ export default function TakeoffCanvas() {
       const ad = a.measure_role === "deduct" ? 1 : 0, bd = b.measure_role === "deduct" ? 1 : 0;
       return ad - bd;
     }).reverse().find((s) => {
-      if (!aiDetectShapeRevealed(s)) return false;
+      if (!aiDetectShapeRevealed(s) || hiddenShapeIds[s.id]) return false;
       const sp = panelByKey(s.sheet_id);
       return hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
     });
@@ -2971,25 +3084,32 @@ export default function TakeoffCanvas() {
       revealSheetInFilesSidebar(hit.sheet_id);
       return;
     }
-    // Two separate Wall Area runs — Shift+click joins; nearby endpoints auto-join on click.
+    // Wall area lines — join at endpoints: drag an endpoint onto another run, or click
+    // another run while an endpoint is selected; nearby endpoints auto-join on click.
     if (hit?.measure_role === "surface_area" && selectedId && selectedId !== hit.id) {
       const cur = shapesRef.current.find((s) => s.id === selectedId);
       if (cur?.measure_role === "surface_area"
         && cur.sheet_id === hit.sheet_id
-        && cur.condition_id === hit.condition_id
-        && (e.shiftKey || e.metaKey || e.ctrlKey || surfaceEndpointJoin(selectedId, hit.id))) {
-        dragRef.current = null;
-        setSelVert(null);
-        setSelHole(null);
-        joinSurfaceRuns(selectedId, hit.id);
-        revealSheetInFilesSidebar(hit.sheet_id);
-        return;
+        && cur.condition_id === hit.condition_id) {
+        const last = cur.verts_norm.length - 1;
+        const endpointSelected = selVert === 0 || selVert === last;
+        const shouldJoin = endpointSelected
+          || e.shiftKey || e.metaKey || e.ctrlKey || surfaceEndpointJoin(selectedId, hit.id);
+        if (shouldJoin) {
+          dragRef.current = null;
+          setSelVert(null);
+          setSelHole(null);
+          joinSurfaceRuns(selectedId, hit.id);
+          revealSheetInFilesSidebar(hit.sheet_id);
+          return;
+        }
       }
     }
     if (hit?.measure_role === "deduct") setSelectedCutoutIds(new Set([hit.id]));
     else setSelectedCutoutIds(new Set());
     selectShape(hit ? hit.id : null);
     if (hit) {
+      setLayerPickFromShape(hit.id);
       revealSheetInFilesSidebar(hit.sheet_id);
       const el = containerRef.current;
       if (el) {
@@ -3000,7 +3120,10 @@ export default function TakeoffCanvas() {
           cy: Math.min(e.clientY - r.top + 16, r.height - 220),
         });
       }
-      dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY }; e.currentTarget.setPointerCapture(e.pointerId); return;
+      const memberIds = layerGroupIdsFor(hit.id);
+      if (memberIds.length > 1) armGroupMoveDrag(hit, p, e, memberIds);
+      else dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY };
+      e.currentTarget.setPointerCapture(e.pointerId); return;
     }
     // 4b. plan symbol (door/type mark) — pin the detail card for review / manual fill
     {
@@ -3083,18 +3206,13 @@ export default function TakeoffCanvas() {
     const u = uppOverride ?? (uppFor(s.sheet_id) || 0);
     if (s.measure_role === "count") return { count: 1 };
     if (s.measure_role === "surface_area") {
-      // the wall keeps the height it was DRAWN at; the condition H is only the
-      // default for new traces (and the fallback for legacy shapes without one).
-      // An explicit override wins outright — even 0 (a zero-height wall is a
-      // deliberate statement, not an invitation to fall back to the condition).
-      const h = s.height_override === true
-        ? Number(s.height_ft) || 0
-        : Number(s.height_ft) || Number(condById[s.condition_id]?.height_ft) || 0;
-      const LF = openLen(pts) * u;
-      const gross_face_sf = +(LF * h).toFixed(2);
-      const opening_sf = openingsDeductSfLinear(s.openings, LF, h);
+      const condH = Number(condById[s.condition_id]?.height_ft) || 0;
+      const segHs = segmentHeightsForShape(s, condH);
+      const closedLoop = !!(s.origin?.closed_loop);
+      const { perimeter_lf: LF, gross_face_sf, avg_height_ft } = grossFaceFromSegments(pts, segHs, u, closedLoop);
+      const opening_sf = openingsDeductSfLinear(s.openings, LF, avg_height_ft);
       const area_sf = +Math.max(0, gross_face_sf - opening_sf).toFixed(2);
-      return { area_sf, perimeter_lf: +LF.toFixed(2), gross_face_sf, opening_sf };
+      return { area_sf, perimeter_lf: LF, gross_face_sf, opening_sf };
     }
     if (s.measure_role === "wall_area") {
       const h = s.height_override === true
@@ -3152,7 +3270,7 @@ export default function TakeoffCanvas() {
     snapRef.current = null;
     if (snapMarkRef.current) snapMarkRef.current.style.display = "none";
     // Cut Out: sticky snap to wall area / wall run lines only (overrides PDF snap).
-    if (tool === "deduct" && !panRef.current) {
+    if ((tool === "deduct" || tool === "deduct-curve") && !panRef.current) {
       const sc = tfRef.current.scale;
       const wallSnap = snapDeductToWallLine(cur[0], cur[1]);
       if (wallSnap) {
@@ -3168,9 +3286,8 @@ export default function TakeoffCanvas() {
       const sp = panelAt(cur[0]);
       const grid = snapGridsRef.current.get(sp.key);
       // Wall Area: skip PDF corner magnet — join snap below uses its own tight thr.
-      const hit = tool === "wallarea"
-        ? (grid ? nearestSnap(grid, cur[0] - sp.xOffset, cur[1], 7 / sc) : null)
-        : (grid ? nearestSnap(grid, cur[0] - sp.xOffset, cur[1], 11 / sc) : null);
+      const snapThr = tool === "wallarea" ? (11 / sc) : tool === "area" ? (14 / sc) : (11 / sc);
+      const hit = grid ? nearestSnap(grid, cur[0] - sp.xOffset, cur[1], snapThr) : null;
       if (hit) {
         const pt = [hit[0] + sp.xOffset, hit[1]];
         snapRef.current = pt; cur = pt;
@@ -3179,14 +3296,39 @@ export default function TakeoffCanvas() {
     }
 
     // rubber-band preview: last point → cur (area/deduct/zone); rect preview: corner → cur
-    const drawing = (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone");
+    const drawing = (tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone");
     if (!snapRef.current && (tool === "wallarea" || tool === "surface") && activeCond && drawing) {
       const sp = panelAt(cur[0]);
       const sc = tfRef.current.scale;
       // Wall Area only: ~2.5 screen-px join magnet (was max(18, 22/scale) — yanked to corners).
-      const joinThr = tool === "wallarea" ? (8 / sc) : undefined;
-      const epSnap = snapPointToSurfaceEndpoints(sp.key, activeCond, null, cur[0] - sp.xOffset, cur[1], joinThr);
+      const joinThr = tool === "wallarea" ? (12 / sc) : undefined;
+      const epOnly = tool === "wallarea";
+      const epSnap = snapPointToSurfaceEndpoints(sp.key, activeCond, null, cur[0] - sp.xOffset, cur[1], joinThr, epOnly);
       if (epSnap) cur = [epSnap[0] + sp.xOffset, epSnap[1]];
+    }
+    if (tool === "area" && poly.length >= 3) {
+      const sc = tfRef.current.scale;
+      const closeThr = 18 / sc;
+      if (Math.hypot(cur[0] - poly[0][0], cur[1] - poly[0][1]) < closeThr) {
+        cur = poly[0];
+        snapRef.current = poly[0];
+        if (snapMarkRef.current) {
+          snapMarkRef.current.setAttribute("d", starPath(poly[0][0], poly[0][1], 5.5 / sc));
+          snapMarkRef.current.style.display = "block";
+        }
+      }
+    }
+    if (tool === "wallarea" && poly.length >= 3) {
+      const sc = tfRef.current.scale;
+      const closeThr = 18 / sc;
+      if (Math.hypot(cur[0] - poly[0][0], cur[1] - poly[0][1]) < closeThr) {
+        cur = poly[0];
+        snapRef.current = poly[0];
+        if (snapMarkRef.current) {
+          snapMarkRef.current.setAttribute("d", starPath(poly[0][0], poly[0][1], 5.5 / sc));
+          snapMarkRef.current.style.display = "block";
+        }
+      }
     }
 
     // polar tracking: endpoint snap wins (osnap beats polar); otherwise pull the
@@ -3632,7 +3774,8 @@ export default function TakeoffCanvas() {
             const [slx, sly] = ocSnap(sp.key, p[0] - sp.xOffset, p[1], !!d.shape.origin?.raster_traced);   // snap the corner to true endpoints (never on a raster-traced shape — see ocSnap)
             let lx = slx, ly = sly;
             if (d.shape.measure_role === "surface_area") {
-              const epSnap = snapPointToSurfaceEndpoints(sp.key, d.shape.condition_id, d.shapeId, slx, sly);
+              const endOnly = d.vIndex === 0 || d.vIndex === d.prev.verts_norm.length - 1;
+              const epSnap = snapPointToSurfaceEndpoints(sp.key, d.shape.condition_id, d.shapeId, slx, sly, undefined, endOnly);
               if (epSnap) { lx = epSnap[0]; ly = epSnap[1]; }
             }
             vn = d.prev.verts_norm.map((v, i) => (i === d.vIndex ? [lx / sp.img.w, ly / sp.img.h] : v));
@@ -3658,14 +3801,28 @@ export default function TakeoffCanvas() {
             // only the normalizing divisor is the shape's own panel
             const dx = (p[0] - d.start[0]) / sp.img.w, dy = (p[1] - d.start[1]) / sp.img.h;
             vn = d.orig.map(([nx, ny]) => [nx + dx, ny + dy]);
+            d.lastVerts = vn;
+            d.lastComputed = undefined;
+            if (d.groupOrigs) {
+              d.groupLastVerts = {};
+              for (const [id, orig] of Object.entries(d.groupOrigs)) {
+                d.groupLastVerts[id] = orig.map(([nx, ny]) => [nx + dx, ny + dy]);
+              }
+              setShapes((ss) => ss.map((s) => (d.groupLastVerts[s.id]
+                ? { ...s, verts_norm: d.groupLastVerts[s.id] }
+                : s)));
+            } else {
+              setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s : { ...s, verts_norm: vn })));
+            }
           }
+          if (d.kind !== "move") {
           d.lastVerts = vn;
           // a translation never re-prices (same lengths/areas) — matches the old
           // move updater, which left `computed` untouched
-          d.lastComputed = d.kind === "move" ? undefined : recomputeShape({ ...d.shape, verts_norm: vn });
+          d.lastComputed = recomputeShape({ ...d.shape, verts_norm: vn });
           setShapes((ss) => ss.map((s) => (s.id !== d.shapeId ? s
-            : d.kind === "move" ? { ...s, verts_norm: vn }
               : { ...s, verts_norm: vn, computed: d.lastComputed })));
+          }
         }
       } else if (d.kind === "markupMove") {
         // raw cursor point — markups aren't snapped/angle-locked, and this matches the
@@ -3765,7 +3922,28 @@ export default function TakeoffCanvas() {
       // too, so an interrupted drag still lands as a stamped command, never as
       // orphaned preview state.)
       if ((d.kind === "vertex" || d.kind === "edge" || d.kind === "move" || d.kind === "holeVertex" || d.kind === "holeEdge")
-          && (d.lastVerts || d.lastHoles)) {
+          && (d.lastVerts || d.lastHoles || d.groupLastVerts)) {
+        if (d.groupLastVerts && d.groupPrevs) {
+          for (const id of (d.groupIds || Object.keys(d.groupLastVerts))) {
+            const prev = d.groupPrevs[id];
+            const lastVerts = d.groupLastVerts[id];
+            if (!prev || !lastVerts || vertsEqual(lastVerts, prev.verts_norm)) continue;
+            const res = dispatchShape({
+              type: "geom", id, editKind: "move",
+              verts_norm: lastVerts,
+              prev,
+            });
+            const edited = res.shapes.find((s) => s.id === id);
+            if (edited && !edited.holes_norm?.length && (edited.measure_role === "floor_area" || edited.measure_role === "deduct")) {
+              const tp = panelByKey(edited.sheet_id);
+              const w = tp?.img?.w, h = tp?.img?.h;
+              if (w > 0 && h > 0) {
+                const editedPoly = edited.verts_norm.map(([nx, ny]) => [nx * w, ny * h]);
+                mergeIntoExistingShapes(editedPoly, edited.sheet_id, edited.condition_id, edited.measure_role, edited.id, res.shapes, "move");
+              }
+            }
+          }
+        } else {
         const vertsChanged = d.lastVerts && !vertsEqual(d.lastVerts, d.prev.verts_norm);
         const holesChanged = d.lastHoles && !holesEqual(d.lastHoles, d.prev.holes_norm || []);
         if (vertsChanged || holesChanged) {
@@ -3789,9 +3967,15 @@ export default function TakeoffCanvas() {
           // Wall Area / Surface: dragging an endpoint onto another run joins them.
           if (edited && edited.measure_role === "surface_area" && (d.kind === "vertex" || d.kind === "edge")) {
             tryMergeSurfaceRun(edited.id);
+            for (const s of shapesRef.current) {
+              if (s.sheet_id === edited.sheet_id && s.condition_id === edited.condition_id && s.measure_role === "surface_area") {
+                if (tryCloseSurfaceLoopAtEndpoints(s.id)) break;
+              }
+            }
             setSelVert(null);
             setSelHole(null);
           }
+        }
         }
       }
       try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
@@ -4472,24 +4656,22 @@ export default function TakeoffCanvas() {
   }
   function mergeSurfacePolylinesAt(a, b, thr) {
     const dPt = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
-    const tryPair = (aPts, aIdx, bPts, bIdx) => {
-      if (dPt(aPts[aIdx], bPts[bIdx]) >= thr) return null;
-      if (aIdx === aPts.length - 1) return dedupeRunPx([...aPts.slice(0, -1), ...bPts.slice(bIdx)]);
-      if (aIdx === 0) return dedupeRunPx([...bPts.slice(0, bIdx + 1), ...aPts.slice(1)]);
-      return null;
-    };
+    let best = null;
     for (const ai of [0, a.length - 1]) {
-      for (let bi = 0; bi < b.length; bi++) {
-        const m = tryPair(a, ai, b, bi);
-        if (m && m.length >= 2) return m;
+      for (const bi of [0, b.length - 1]) {
+        const d = dPt(a[ai], b[bi]);
+        if (d < thr && (!best || d < best.d)) best = { ai, bi, d };
       }
     }
-    for (const bi of [0, b.length - 1]) {
-      for (let ai = 0; ai < a.length; ai++) {
-        const m = tryPair(b, bi, a, ai);
-        if (m && m.length >= 2) return m;
-      }
-    }
+    if (!best) return null;
+    const anchor = [a[best.ai][0], a[best.ai][1]];
+    const aPts = a.map((p) => [p[0], p[1]]);
+    const bPts = b.map((p, i) => (i === best.bi ? anchor : [p[0], p[1]]));
+    const { ai, bi } = best;
+    if (ai === aPts.length - 1 && bi === 0) return dedupeRunPx([...aPts.slice(0, -1), ...bPts]);
+    if (ai === aPts.length - 1 && bi === bPts.length - 1) return dedupeRunPx([...aPts.slice(0, -1), ...bPts.slice(0, -1).reverse()]);
+    if (ai === 0 && bi === 0) return dedupeRunPx([...aPts.slice(1).reverse(), ...bPts]);
+    if (ai === 0 && bi === bPts.length - 1) return dedupeRunPx([...bPts.slice(0, -1), ...aPts.slice(1)]);
     return null;
   }
   function surfaceEndpointsPx(sheetKey, condId, excludeId = null) {
@@ -4506,7 +4688,9 @@ export default function TakeoffCanvas() {
   }
   // Snap onto peer run endpoints OR any point along a peer segment (T-attach).
   // `thrOverride` — Wall Area live-draw uses a tight radius so corners don't yank from far away.
-  function snapPointToSurfaceEndpoints(sheetKey, condId, excludeId, lx, ly, thrOverride) {
+  // `endpointsOnly` — when dragging a run endpoint, prefer joining at another run's end.
+  // `returnMeta` — return { point, shapeId } so callers can auto-join the snapped peer.
+  function snapPointToSurfaceEndpoints(sheetKey, condId, excludeId, lx, ly, thrOverride, endpointsOnly = false, returnMeta = false) {
     const thr = thrOverride != null ? thrOverride : surfaceJoinThr();
     const tp = panelByKey(sheetKey);
     if (!tp?.img?.w) return null;
@@ -4515,10 +4699,18 @@ export default function TakeoffCanvas() {
       if (s.sheet_id !== sheetKey || s.condition_id !== condId || s.measure_role !== "surface_area") continue;
       if (excludeId && s.id === excludeId) continue;
       const pts = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
+      if (endpointsOnly && pts.length >= 2) {
+        for (const p of [pts[0], pts[pts.length - 1]]) {
+          const d = Math.hypot(p[0] - lx, p[1] - ly);
+          if (d < thr && (!best || d < best.d)) best = { d, point: p, shapeId: s.id };
+        }
+        continue;
+      }
       const hit = nearestPointOnPolylinePx(pts, lx, ly);
-      if (hit && hit.d < thr && (!best || hit.d < best.d)) best = hit;
+      if (hit && hit.d < thr && (!best || hit.d < best.d)) best = { ...hit, shapeId: s.id };
     }
-    return best ? best.point : null;
+    if (!best) return null;
+    return returnMeta ? { point: best.point, shapeId: best.shapeId } : best.point;
   }
   // Custom cutout linear — snap ONLY to the selected wall_area perimeter (closed ring).
   function snapPointToWallAreaLine(shapeId, stageX, stageY) {
@@ -4586,12 +4778,6 @@ export default function TakeoffCanvas() {
     for (const pa of ae) for (const pb of be) {
       if (dPt(pa, pb) < thr) return true;
     }
-    for (const pa of ae) {
-      if (nearestPointOnPolylinePx(b, pa[0], pa[1])?.d < thr) return true;
-    }
-    for (const pb of be) {
-      if (nearestPointOnPolylinePx(a, pb[0], pb[1])?.d < thr) return true;
-    }
     return false;
   }
   // Merge 2+ touching surface_area runs on the same sheet/condition into one polyline.
@@ -4623,25 +4809,6 @@ export default function TakeoffCanvas() {
     }
     if (cluster.length < 2) return false;
     const pxById = new Map(cluster.map((s) => [s.id, toPx(s)]));
-    // Single prep pass — avoid re-insert loops that freeze the UI.
-    for (const sa of cluster) for (const sb of cluster) {
-      if (sa.id === sb.id) continue;
-      const aPx = pxById.get(sa.id);
-      let bPx = pxById.get(sb.id);
-      if (!aPx || !bPx) continue;
-      for (const ei of [0, aPx.length - 1]) {
-        const hit = nearestPointOnPolylinePx(bPx, aPx[ei][0], aPx[ei][1]);
-        if (!hit || hit.d >= thr) continue;
-        aPx[ei] = hit.point;
-        if (hit.kind === "segment") {
-          if (!hasVertexNearPx(bPx, hit.point)) bPx = insertPointOnRunPx(bPx, hit.segIndex, hit.point);
-        } else {
-          bPx[hit.index] = hit.point;
-        }
-        pxById.set(sb.id, bPx);
-      }
-      pxById.set(sa.id, aPx);
-    }
     const chained = chainSurfacePolylines([...pxById.values()], thr);
     const mergedPts = chained[0];
     if (!mergedPts || mergedPts.length < 2) {
@@ -4666,12 +4833,14 @@ export default function TakeoffCanvas() {
       ...(keep.openings || []),
       ...others.flatMap((s) => s.openings || []),
     ];
+    const fallbackH = defaultWallHeightFt(keep, Number(condById[keep.condition_id]?.height_ft) || 0);
+    const mergedSegH = concatSegmentHeightsForMerge(cluster, condById, vn.length - 1, fallbackH);
     const drop = new Set(others.map((s) => s.id));
     const nextShapes = shapesRef.current
       .filter((s) => !drop.has(s.id))
       .map((s) => {
         if (s.id !== keep.id) return s;
-        const next = { ...s, verts_norm: vn, openings };
+        const next = withSegmentHeights({ ...s, verts_norm: vn, openings }, mergedSegH);
         return { ...next, computed: recomputeShape(next) };
       });
     shapesRef.current = nextShapes;
@@ -4714,7 +4883,25 @@ export default function TakeoffCanvas() {
     if (aPx.length < 2 || bPx.length < 2) return false;
     return surfaceRunsNear(aPx, bPx, surfaceJoinThr());
   }
-  // Join two separate wall runs — attach at endpoints or anywhere along the other run.
+  function tryCloseSurfaceLoopAtEndpoints(shapeId) {
+    const s = shapesRef.current.find((x) => x.id === shapeId);
+    if (!s || s.measure_role !== "surface_area" || s.origin?.closed_loop) return false;
+    const tp = panelByKey(s.sheet_id);
+    const vn = s.verts_norm || [];
+    if (!tp?.img?.w || vn.length < 3) return false;
+    const w = tp.img.w, h = tp.img.h;
+    const d = Math.hypot((vn[0][0] - vn[vn.length - 1][0]) * w, (vn[0][1] - vn[vn.length - 1][1]) * h);
+    if (d >= surfaceJoinThr()) return false;
+    const next = shapesRef.current.map((sh) => {
+      if (sh.id !== shapeId) return sh;
+      const updated = { ...sh, origin: { ...(sh.origin || {}), closed_loop: true } };
+      return { ...updated, computed: recomputeShape(updated) };
+    });
+    shapesRef.current = next;
+    setShapes(next);
+    return true;
+  }
+  // Join two separate wall runs — connect at endpoints only; geometry of each run stays intact.
   function joinSurfaceRuns(idA, idB) {
     const a = shapesRef.current.find((s) => s.id === idA);
     const b = shapesRef.current.find((s) => s.id === idB);
@@ -4722,35 +4909,22 @@ export default function TakeoffCanvas() {
     if (a.sheet_id !== b.sheet_id || a.condition_id !== b.condition_id) return false;
     const tp = panelByKey(a.sheet_id);
     if (!tp?.img?.w) return false;
+    const thr = surfaceJoinThr();
+    const dPt = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
     const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
     let aPx = toPx(a), bPx = toPx(b);
     if (aPx.length < 2 || bPx.length < 2) return false;
     let best = null;
     for (const ai of [0, aPx.length - 1]) {
-      const hit = nearestPointOnPolylinePx(bPx, aPx[ai][0], aPx[ai][1]);
-      if (hit && (!best || hit.d < best.d)) best = { d: hit.d, moveA: true, endIndex: ai, target: hit };
-    }
-    for (const bi of [0, bPx.length - 1]) {
-      const hit = nearestPointOnPolylinePx(aPx, bPx[bi][0], bPx[bi][1]);
-      if (hit && (!best || hit.d < best.d)) best = { d: hit.d, moveA: false, endIndex: bi, target: hit };
+      for (const bi of [0, bPx.length - 1]) {
+        const d = dPt(aPx[ai], bPx[bi]);
+        if (d < thr && (!best || d < best.d)) best = { ai, bi, d };
+      }
     }
     if (!best) return false;
-    const join = best.target.point;
-    if (best.moveA) {
-      aPx = aPx.map((p, i) => (i === best.endIndex ? join : p));
-      if (best.target.kind === "segment") {
-        if (!hasVertexNearPx(bPx, join)) bPx = insertPointOnRunPx(bPx, best.target.segIndex, join);
-      } else {
-        bPx = bPx.map((p, i) => (i === best.target.index ? join : p));
-      }
-    } else {
-      bPx = bPx.map((p, i) => (i === best.endIndex ? join : p));
-      if (best.target.kind === "segment") {
-        if (!hasVertexNearPx(aPx, join)) aPx = insertPointOnRunPx(aPx, best.target.segIndex, join);
-      } else {
-        aPx = aPx.map((p, i) => (i === best.target.index ? join : p));
-      }
-    }
+    const anchor = [aPx[best.ai][0], aPx[best.ai][1]];
+    aPx[best.ai] = anchor;
+    bPx[best.bi] = anchor;
     const newAVn = aPx.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
     const newBVn = bPx.map(([x, y]) => [x / tp.img.w, y / tp.img.h]);
     const next = shapesRef.current.map((s) => {
@@ -4766,7 +4940,13 @@ export default function TakeoffCanvas() {
     });
     shapesRef.current = next;
     setShapes(next);
-    return tryMergeSurfaceRun(idA);
+    tryMergeSurfaceRun(idA);
+    for (const s of shapesRef.current) {
+      if (s.sheet_id === a.sheet_id && s.condition_id === a.condition_id && s.measure_role === "surface_area") {
+        if (tryCloseSurfaceLoopAtEndpoints(s.id)) break;
+      }
+    }
+    return true;
   }
 
   // Surface Area / Wall Area — open linear wall run in plan; SF = traced LF × H.
@@ -4779,26 +4959,49 @@ export default function TakeoffCanvas() {
     const h = Number(aCond?.height_ft) || 0;
     if (!(h > 0)) { setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Wall Area = traced LF × height.`); return; }
     let local = points.map(([x, y]) => [x - tp.xOffset, y]);
+    const snappedPeerIds = new Set();
     for (const idx of [0, local.length - 1]) {
       // Wall Area: keep the same tight draw thr so finish doesn't yank ends to far corners.
-      const joinThr = tool === "wallarea" ? (8 / tfRef.current.scale) : undefined;
-      const snapped = snapPointToSurfaceEndpoints(tp.key, activeCond, null, local[idx][0], local[idx][1], joinThr);
-      if (snapped) local[idx] = [snapped[0], snapped[1]];
+      const joinThr = tool === "wallarea" ? (12 / tfRef.current.scale) : undefined;
+      const epOnly = tool === "wallarea";
+      const hit = snapPointToSurfaceEndpoints(tp.key, activeCond, null, local[idx][0], local[idx][1], joinThr, epOnly, tool === "wallarea");
+      if (hit?.point) {
+        local[idx] = [hit.point[0], hit.point[1]];
+        if (hit.shapeId) snappedPeerIds.add(hit.shapeId);
+      } else if (hit && !hit.shapeId) {
+        local[idx] = [hit[0], hit[1]];
+      }
     }
-    const LF = openLen(local) * upp;
-    const gross = +(LF * h).toFixed(2);
-    const beforeIds = new Set(shapesRef.current.map((s) => s.id));
-    const res = dispatchShape({ type: "add", shapes: [{
+    const isLoop = tool === "wallarea" && wallAreaLoopCloseRef.current && local.length >= 3;
+    wallAreaLoopCloseRef.current = false;
+    const segN = isLoop ? local.length : Math.max(0, local.length - 1);
+    const segH = Array(segN).fill(h);
+    const draft = {
       sheet_id: tp.key, condition_id: activeCond, measure_role: "surface_area", height_ft: h,
       verts_norm: local.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
-      computed: { area_sf: gross, perimeter_lf: +LF.toFixed(2), gross_face_sf: gross, opening_sf: 0 },
+      ...(segN > 0 ? { segment_heights_ft: segH } : {}),
       ...(activeLabel ? { label: activeLabel } : {}),
-      origin: { method: "manual" },
+      origin: { method: "manual", ...(segN > 0 ? { segment_heights_ft: segH } : {}), ...(isLoop ? { closed_loop: true } : {}) },
+    };
+    const beforeIds = new Set(shapesRef.current.map((s) => s.id));
+    const res = dispatchShape({ type: "add", shapes: [{
+      ...draft,
+      computed: recomputeShape(draft),
     }] });
     const added = res.shapes.find((s) => !beforeIds.has(s.id) && s.measure_role === "surface_area");
-    // Wall Area: keep separate rooms as separate runs — no auto-merge on Enter.
-    // Explicit join remains via Shift+click on another run.
-    if (added && tool !== "wallarea") tryMergeSurfaceRun(added.id);
+    // Wall Area: auto-join only when an endpoint snapped to a peer run (completing a loop after separate).
+    // Other runs stay separate — no blind merge on Enter.
+    if (added && tool === "wallarea" && snappedPeerIds.size) {
+      let primaryId = added.id;
+      for (const peerId of snappedPeerIds) {
+        if (peerId === primaryId) continue;
+        if (surfaceEndpointJoin(primaryId, peerId)) joinSurfaceRuns(primaryId, peerId);
+        if (shapesRef.current.some((s) => s.id === primaryId)) continue;
+        const merged = shapesRef.current.find((s) =>
+          s.sheet_id === tp.key && s.condition_id === activeCond && s.measure_role === "surface_area" && snappedPeerIds.has(s.id));
+        if (merged) primaryId = merged.id;
+      }
+    } else if (added && tool !== "wallarea") tryMergeSurfaceRun(added.id);
   }
   function commitWallPoly(points) {
     if (points.length < 3) return;
@@ -6149,6 +6352,10 @@ export default function TakeoffCanvas() {
     if (tool === "surface" || tool === "wallarea") commitSurface(poly);
     else if (tool === "linear") commitLinear(poly);
     else if (tool === "curve") commitLinear(poly, true);
+    else if (tool === "deduct-curve") {
+      const flat = flattenCurve(poly);
+      if (flat.length >= 3) commitPoly(flat, true);
+    }
     else commitPoly(poly, tool === "deduct");
     setPoly([]);
   }
@@ -6381,6 +6588,111 @@ export default function TakeoffCanvas() {
   }
   function reassignSelected(condId) { if (selectedId) dispatchShape({ type: "reassign", ids: [selectedId], condition_id: condId }); }
   function reassignSelectedLabel(value) { if (selectedId) dispatchShape({ type: "label", ids: [selectedId], value }); }   // Select-tool single-shape re-label (#111) — value "" / null clears it; label commands never stamp
+  function toggleLayerPick(id) {
+    setLayerPickIds((p) => {
+      const next = { ...p };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
+  }
+  function toggleShapeHidden(id) {
+    setHiddenShapeIds((h) => {
+      const next = { ...h };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
+  }
+  function deleteLayerShape(id) {
+    dispatchShape({ type: "delete", ids: [id] });
+    setHiddenShapeIds((h) => { const next = { ...h }; delete next[id]; return next; });
+    setLayerPickIds((p) => { const next = { ...p }; delete next[id]; return next; });
+    setShapeToLayerGroup((m) => { const next = { ...m }; delete next[id]; return next; });
+    if (selectedId === id) selectShape(null);
+  }
+  function layerGroupIdsFor(shapeId) {
+    if (!shapeId) return [];
+    const gid = shapeToLayerGroup[shapeId];
+    if (!gid) return [shapeId];
+    const ids = layerGroups[gid]?.shapeIds;
+    return ids?.length ? ids : [shapeId];
+  }
+  function setLayerPickFromShape(id) {
+    const ids = layerGroupIdsFor(id);
+    if (ids.length > 1) setLayerPickIds(Object.fromEntries(ids.map((x) => [x, true])));
+    else if (id) setLayerPickIds({ [id]: true });
+    else setLayerPickIds({});
+  }
+  function armGroupMoveDrag(shape, p, e, memberIds) {
+    const groupOrigs = {};
+    const groupPrevs = {};
+    for (const id of memberIds) {
+      const sh = shapesRef.current.find((s) => s.id === id);
+      if (sh) {
+        groupOrigs[id] = sh.verts_norm;
+        groupPrevs[id] = geomSnapshot(sh);
+      }
+    }
+    dragRef.current = {
+      kind: "move",
+      shapeId: shape.id,
+      start: p,
+      orig: shape.verts_norm,
+      prev: geomSnapshot(shape),
+      shape,
+      gx: e.clientX,
+      gy: e.clientY,
+      groupIds: memberIds,
+      groupOrigs,
+      groupPrevs,
+    };
+  }
+  function openLayerConditionEdit(shapeId) {
+    const s = shapesRef.current.find((x) => x.id === shapeId);
+    if (!s) return;
+    selectShape(shapeId);
+    setFocusKey(s.sheet_id || focusKey);
+    activateCondition(s.condition_id, { reassign: false });
+    setShowCondEdit(true);
+  }
+  function groupLayerSelection() {
+    const ids = Object.keys(layerPickIds).filter((id) => shapesRef.current.some((s) => s.id === id));
+    if (ids.length < 2) return;
+    const sheetKey = shapesRef.current.find((s) => s.id === ids[0])?.sheet_id;
+    const gid = uid("lg");
+    setLayerGroups((g) => ({
+      ...g,
+      [gid]: { id: gid, label: `Group ${Object.keys(g).length + 1}`, sheetKey, shapeIds: ids },
+    }));
+    setShapeToLayerGroup((m) => {
+      const next = { ...m };
+      for (const id of ids) next[id] = gid;
+      return next;
+    });
+    selectShape(ids[0]);
+    setLayerPickIds(Object.fromEntries(ids.map((id) => [id, true])));
+  }
+  function ungroupLayerSelection() {
+    const ids = Object.keys(layerPickIds);
+    const gids = new Set(ids.map((id) => shapeToLayerGroup[id]).filter(Boolean));
+    setShapeToLayerGroup((m) => {
+      const next = { ...m };
+      for (const id of ids) delete next[id];
+      return next;
+    });
+    setLayerGroups((g) => {
+      const next = { ...g };
+      for (const gid of gids) {
+        if (!next[gid]) continue;
+        const keep = next[gid].shapeIds.filter((id) => !ids.includes(id));
+        if (!keep.length) delete next[gid];
+        else next[gid] = { ...next[gid], shapeIds: keep };
+      }
+      return next;
+    });
+    setLayerPickIds({});
+  }
 
   // pan/zoom the canvas to fit a condition's takeoffs on the open sheets —
   // the panel's ⌖ / double-click navigation. Fit zoom is capped so a lone
@@ -7325,12 +7637,12 @@ export default function TakeoffCanvas() {
   // VISIBLE shapes through the same conditionTotals rules the Report uses —
   // one source of role math, two scopes. Memoized: visRowById is a prop of the
   // memoized panel, so its identity must only change when the totals can.
-  const visibleShapesMeasured = useMemo(() => visibleRevealedShapes.map((s) => {
+  const visibleShapesMeasured = useMemo(() => drawableShapes.map((s) => {
     if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
       return { ...s, computed: recomputeShape(s) };
     }
     return s;
-  }), [visibleRevealedShapes, scales, conditions]);
+  }), [drawableShapes, scales, conditions]);
   const visRows = useMemo(() => conditionTotals(conditions, visibleShapesMeasured), [conditions, visibleShapesMeasured]);
   const visRowById = useMemo(() => new Map(visRows.map((r) => [r.id, r])), [visRows]);
   // Zone check: the SAME conditionTotals rules on the shapes whose center point
@@ -7387,7 +7699,7 @@ export default function TakeoffCanvas() {
   const sheetWallSf = visRows.reduce((n, r) => n + r.wall_sf, 0);
   // display-only Kreo-style derived metric: floor-area perimeters × the condition height
   const condH = Number(aCond?.height_ft) || 0; // the live-readout JSX below still reads this
-  const vertTotal = verticalWallSf(visibleRevealedShapes, activeCond, aCond?.height_ft, condMult);
+  const vertTotal = verticalWallSf(drawableShapes, activeCond, aCond?.height_ft, condMult);
   const num = (v, d = 1) => v.toLocaleString(undefined, { maximumFractionDigits: d });
   // unit-system display edge: internal math is always feet (lib/units.ts)
   const fa = (sf, d = 1) => `${num(areaVal(sf, units), d)} ${areaUnit(units)}`;
@@ -7412,21 +7724,155 @@ export default function TakeoffCanvas() {
     }
     return selShapeRaw;
   }, [selShapeRaw, visibleShapes, scales, conditions]);
-  const setShapeHeight = (raw) => {
+  const selectedLayerGroupMemberIds = useMemo(() => {
+    if (!selectedId) return new Set();
+    const gid = shapeToLayerGroup[selectedId];
+    if (!gid) return new Set([selectedId]);
+    const ids = layerGroups[gid]?.shapeIds;
+    return ids?.length ? new Set(ids) : new Set([selectedId]);
+  }, [selectedId, shapeToLayerGroup, layerGroups]);
+  const selWallSegmentRows = useMemo(() => {
+    if (!selShape || selShape.measure_role !== "surface_area") return [];
+    const sp = panelByKey(selShape.sheet_id);
+    const upp = uppFor(selShape.sheet_id) || 0;
+    if (!sp?.img?.w || !upp) return [];
+    return wallSegmentRows(selShape, sp.img.w, sp.img.h, upp, Number(condById[selShape.condition_id]?.height_ft) || 0);
+  }, [selShape, scales, conditions, condById]);
+  function patchShapeHeight(shapeId, raw, clear = false) {
+    setShapes((ss) => ss.map((s) => {
+      if (s.id !== shapeId) return s;
+      if (clear) {
+        const origin = { ...(s.origin || {}) };
+        delete origin.segment_heights_ft;
+        const next = {
+          ...s,
+          origin,
+          height_ft: Number(condById[s.condition_id]?.height_ft) || 0,
+          height_override: false,
+        };
+        delete next.segment_heights_ft;
+        return { ...next, computed: recomputeShape(next) };
+      }
+      const v = Math.max(0, parseFloat(raw) || 0);
+      const n = Math.max(0, (s.verts_norm?.length || 0) - 1);
+      let next = { ...s, height_ft: v, height_override: true };
+      if (s.measure_role === "surface_area" && n > 0) {
+        next = withSegmentHeights(next, Array(n).fill(v));
+      }
+      return { ...next, computed: recomputeShape(next) };
+    }));
+  }
+  const setShapeHeight = (raw) => { if (selectedId) patchShapeHeight(selectedId, raw); };
+  const clearShapeHeight = () => { if (selectedId) patchShapeHeight(selectedId, null, true); };
+  function setSegmentHeight(shapeId, segIndex, raw) {
     const v = Math.max(0, parseFloat(raw) || 0);
     setShapes((ss) => ss.map((s) => {
-      if (s.id !== selectedId) return s;
-      const next = { ...s, height_ft: v, height_override: true };
+      if (s.id !== shapeId || s.measure_role !== "surface_area") return s;
+      const condH = Number(condById[s.condition_id]?.height_ft) || 0;
+      const hs = [...segmentHeightsForShape(s, condH)];
+      if (segIndex < 0 || segIndex >= hs.length) return s;
+      hs[segIndex] = v;
+      const next = withSegmentHeights({ ...s, height_ft: v }, hs);
       return { ...next, computed: recomputeShape(next) };
     }));
-  };
-  const clearShapeHeight = () => {
-    setShapes((ss) => ss.map((s) => {
-      if (s.id !== selectedId) return s;
-      const next = { ...s, height_ft: Number(condById[s.condition_id]?.height_ft) || 0, height_override: false };
-      return { ...next, computed: recomputeShape(next) };
-    }));
-  };
+  }
+  function wallSegmentIndexFromVert(shape, vertIndex) {
+    if (!shape || shape.measure_role !== "surface_area" || vertIndex == null) return null;
+    const n = shape.verts_norm?.length || 0;
+    if (n <= 2) return null;
+    return vertIndex > 0 ? vertIndex - 1 : 0;
+  }
+  function vertsForClosedSplit(vn, vertIndex) {
+    const n = vn.length;
+    const out = [vn[vertIndex]];
+    let j = (vertIndex + 1) % n;
+    const stop = (vertIndex - 1 + n) % n;
+    while (j !== stop) {
+      out.push(vn[j]);
+      j = (j + 1) % n;
+    }
+    return out;
+  }
+  function separateSurfaceRunAtVertex(shapeId, vertIndex) {
+    const s = shapesRef.current.find((x) => x.id === shapeId);
+    if (!s || s.measure_role !== "surface_area") return false;
+    const vn = s.verts_norm || [];
+    const n = vn.length;
+    if (vertIndex == null || vertIndex < 1 || vertIndex > n - 2) return false;
+    const closed = !!s.origin?.closed_loop;
+    const condH = Number(condById[s.condition_id]?.height_ft) || 0;
+    const hs = segmentHeightsForShape(s, condH);
+    const vnA = vn.slice(0, vertIndex + 1);
+    const vnB = closed ? vertsForClosedSplit(vn, vertIndex) : vn.slice(vertIndex);
+    if (vnA.length < 2 || vnB.length < 2) return false;
+    const hsA = hs.slice(0, vertIndex);
+    const hsB = hs.slice(vertIndex);
+    const pick = (verts, segHs) => {
+      const origin = { ...(s.origin || {}), method: s.origin?.method || "manual" };
+      delete origin.closed_loop;
+      let draft = {
+        sheet_id: s.sheet_id,
+        condition_id: s.condition_id,
+        measure_role: "surface_area",
+        height_ft: s.height_ft,
+        height_override: s.height_override,
+        verts_norm: verts,
+        openings: [],
+        origin,
+        ...(s.label ? { label: s.label } : {}),
+      };
+      if (s.appearance_override) {
+        for (const k of ["color", "fill", "hatch", "line_style", "weight"]) {
+          if (s[k] != null) draft[k] = s[k];
+        }
+        draft.appearance_override = true;
+      }
+      if (segHs.length) draft = withSegmentHeights(draft, segHs);
+      return { ...draft, computed: recomputeShape(draft) };
+    };
+    const beforeIds = new Set(shapesRef.current.map((x) => x.id));
+    dispatchShape({ type: "delete", ids: [shapeId] });
+    const res = dispatchShape({ type: "add", shapes: [pick(vnA, hsA), pick(vnB, hsB)] });
+    const added = res.shapes.filter((x) => !beforeIds.has(x.id) && x.measure_role === "surface_area");
+    const partA = added.find((x) => x.verts_norm.length === vnA.length) || added[0];
+    if (partA) {
+      selectShape(partA.id);
+      setSelVert(partA.verts_norm.length - 1);
+      setWallSegmentFocus(Math.max(0, partA.verts_norm.length - 2));
+    } else {
+      setSelVert(null);
+      setWallSegmentFocus(null);
+    }
+    setCommitMsg("Separated wall line at selected corner.");
+    return true;
+  }
+  function flyToWallSegment(shapeId, segIndex) {
+    const s = shapesRef.current.find((x) => x.id === shapeId);
+    if (!s || s.measure_role !== "surface_area") return;
+    if (!panelKeySet.has(s.sheet_id)) {
+      pendingFlyShapeRef.current = shapeId;
+      openSheets([s.sheet_id], false);
+      return;
+    }
+    const sp = panelByKey(s.sheet_id);
+    const el = containerRef.current;
+    const a = s.verts_norm?.[segIndex];
+    const b = s.verts_norm?.[segIndex + 1];
+    if (!sp?.img?.w || !el || !a || !b) { flyToShape(shapeId); return; }
+    const ax = a[0] * sp.img.w + sp.xOffset, ay = a[1] * sp.img.h;
+    const bx = b[0] * sp.img.w + sp.xOffset, by = b[1] * sp.img.h;
+    const minX = Math.min(ax, bx), maxX = Math.max(ax, bx);
+    const minY = Math.min(ay, by), maxY = Math.max(ay, by);
+    const r = el.getBoundingClientRect();
+    const w = Math.max(maxX - minX, 48), h = Math.max(maxY - minY, 48);
+    const pad = 80;
+    const scale = clamp(Math.min((r.width - pad) / w, (r.height - pad) / h, 2.5));
+    setTfNow({ x: (r.width - w * scale) / 2 - minX * scale, y: (r.height - h * scale) / 2 - minY * scale, scale });
+    selectShape(shapeId);
+    setWallSegmentFocus(segIndex);
+    setSelVert(segIndex + 1);
+    revealSheetInFilesSidebar(s.sheet_id);
+  }
   // Door/window openings on wall face — qty deduct only (not floor-style holes).
   const patchWallOpeningsFor = (shapeId, mutate) => {
     if (!shapeId) return;
@@ -7520,7 +7966,7 @@ export default function TakeoffCanvas() {
       height_ft: Number(partial.height_ft) > 0 ? Number(partial.height_ft) : (parsed?.height_ft || defaultH),
       source: partial.source || (tag || parsed ? "schedule" : "manual"),
     };
-    patchWallOpeningsFor(shapeId, (list) => upsertWallOpening(list, opn));
+    patchWallOpeningsFor(shapeId, (list) => [...list, opn]);
   };
   const deductDoorOnWall = (shapeId, ref) => {
     if (!shapeId || !ref?.tag) return;
@@ -7647,9 +8093,23 @@ export default function TakeoffCanvas() {
       } else {
         setShapes((ss) => ss.map((s) => {
           if (s.id !== sel.id) return s;
-          const next = v == null
-            ? { ...s, height_ft: Number(condById[s.condition_id]?.height_ft) || 0, height_override: false }
-            : { ...s, height_ft: Math.max(0, Number(v) || 0), height_override: true };
+          if (v == null || v === "") {
+            const origin = { ...(s.origin || {}) };
+            delete origin.segment_heights_ft;
+            const next = {
+              ...s,
+              origin,
+              height_ft: Number(condById[s.condition_id]?.height_ft) || 0,
+              height_override: false,
+            };
+            delete next.segment_heights_ft;
+            return { ...next, computed: recomputeShape(next) };
+          }
+          const n = Math.max(0, (s.verts_norm?.length || 0) - 1);
+          let next = { ...s, height_ft: Math.max(0, Number(v) || 0), height_override: true };
+          if (s.measure_role === "surface_area" && n > 0) {
+            next = withSegmentHeights(next, Array(n).fill(Math.max(0, Number(v) || 0)));
+          }
           return { ...next, computed: recomputeShape(next) };
         }));
       }
@@ -7699,7 +8159,11 @@ export default function TakeoffCanvas() {
   const liveDrawLook = drawAppearance && aCond ? { ...aCond, ...drawAppearance } : aCond;
   const measureActive = MEASURE_TOOLS.some((t) => t.id === tool);
   const faceTool = MEASURE_TOOLS.find((t) => t.id === (measureActive ? tool : lastMeasureRef.current)) || MEASURE_TOOLS[0];
-  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve") && poly.length >= 2);
+  const cutActive = CUT_TOOLS.some((t) => t.id === tool);
+  const cutFaceTool = CUT_TOOLS.find((t) => t.id === (cutActive ? tool : lastCutRef.current)) || CUT_TOOLS[0];
+  const markupActive = MARKUP_IDS.includes(tool);
+  const markupFaceTool = MARKUP_TOOLS.find((t) => t.id === (markupActive ? tool : lastMarkupRef.current)) || MARKUP_TOOLS[0];
+  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
 
   // panel-toggle for the right-edge rail — circular like the zoom cluster, count as a
   // tiny mono line under the icon. Lives on the canvas, costs the toolbar zero rows.
@@ -8078,6 +8542,39 @@ export default function TakeoffCanvas() {
     );
   })();
 
+  const renderLayersSidebar = () => (
+    <LayersSidebar
+      docked
+      multiSheet={groupKeys.length > 1}
+      sheetKeys={groupKeys}
+      sheetLabel={tabLabel}
+      shapes={layerPanelShapes}
+      condById={condById}
+      hiddenShapeIds={hiddenShapeIds}
+      layerPickIds={new Set(Object.keys(layerPickIds))}
+      layerGroups={layerGroups}
+      shapeToLayerGroup={shapeToLayerGroup}
+      layersSheetOpen={layersSheetOpen}
+      selectedId={selectedId}
+      onToggleSheetOpen={(key) => setLayersSheetOpen((m) => {
+        if (m[key] === false) { const next = { ...m }; delete next[key]; return next; }
+        return { ...m, [key]: false };
+      })}
+      onTogglePick={toggleLayerPick}
+      onSelectShape={(id) => { selectShape(id); setLayerPickFromShape(id); setFocusKey(shapesRef.current.find((s) => s.id === id)?.sheet_id || focusKey); }}
+      onToggleHide={toggleShapeHidden}
+      onDelete={deleteLayerShape}
+      onGroup={groupLayerSelection}
+      onUngroup={ungroupLayerSelection}
+      onOpenConditionEdit={openLayerConditionEdit}
+      wallSegmentRows={selWallSegmentRows}
+      activeWallSegment={selShape?.measure_role === "surface_area" ? (wallSegmentFocus ?? wallSegmentIndexFromVert(selShape, selVert)) : null}
+      onFlyToWallSegment={(idx) => selectedId && flyToWallSegment(selectedId, idx)}
+      selVert={selVert}
+      onSeparateWallLine={() => selectedId != null && selVert != null && separateSurfaceRunAtVertex(selectedId, selVert)}
+    />
+  );
+
   return (
     // .app-shell: the print stylesheet collapses this 100vh flex column while the report is open
     <div
@@ -8206,9 +8703,10 @@ export default function TakeoffCanvas() {
               <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>MODE</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <span className="mode-circle-wrap">
-                  <button type="button" onClick={() => setTool("select")} title="Select"
+                  <button type="button" onClick={() => setTool("select")} title="Select (V)"
                     className={`mode-circle-btn${tool === "select" ? " is-on" : ""}`}>
                     <Icon name="select" size={14} />
+                    <span className="tool-key-badge tool-key-badge--circle">V</span>
                   </button>
                   <span className="mode-circle-hint" aria-hidden="true">Select · V</span>
                 </span>
@@ -8216,6 +8714,7 @@ export default function TakeoffCanvas() {
                   <button type="button" onClick={() => setTool("pan")} title="Pan (P) — or hold right-click / Space mid-measure"
                     className={`mode-circle-btn${tool === "pan" ? " is-on" : ""}`}>
                     <Icon name="pan" size={14} />
+                    <span className="tool-key-badge tool-key-badge--circle">P</span>
                   </button>
                   <span className="mode-circle-hint" aria-hidden="true">Pan · P</span>
                 </span>
@@ -8228,10 +8727,10 @@ export default function TakeoffCanvas() {
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
               <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>DRAW</div>
               <div style={{ display: "flex", gap: 4 }}>
-                <ToolMenu variant="palette" compactFace title="Measure" active={measureActive} onOpenChange={onMenuDepth} face={<><Icon name={faceTool.icon} size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Measure</span></>} items={MEASURE_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))} />
-                <ToolMenu variant="palette" compactFace title="Cut Out — subtract voids/columns" active={tool === "deduct"} accent="danger" onOpenChange={onMenuDepth} face={<><Icon name="cutOut" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Cut Out</span></>} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))} />
+                <ToolMenu variant="palette" compactFace title="Measure" active={measureActive} onOpenChange={onMenuDepth} face={<><Icon name={faceTool.icon} size={13} /><span className="tool-key-badge tool-key-badge--face">{faceTool.shortcut}</span><span style={{ marginLeft: 2, fontWeight: 600, fontSize: 11 }}>Measure</span></>} items={MEASURE_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))} />
+                <ToolMenu variant="palette" compactFace title="Cut Out — subtract voids/columns" active={cutActive} accent="danger" onOpenChange={onMenuDepth} face={<><Icon name="cutOut" size={13} /><span className="tool-key-badge tool-key-badge--face">{cutFaceTool.shortcut}</span><span style={{ marginLeft: 2, fontWeight: 600, fontSize: 11 }}>Cut Out</span></>} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))} />
                 <span style={{ position: "relative" }}>
-                  <ToolMenu variant="palette" compactFace title="Markup — annotations, not measurements" active={MARKUP_IDS.includes(tool)} onOpenChange={onMenuDepth} face={<><Icon name="markup" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Markup</span></>} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
+                  <ToolMenu variant="palette" compactFace title="Markup — annotations, not measurements" active={markupActive} onOpenChange={onMenuDepth} face={<><Icon name="markup" size={13} />{markupFaceTool.shortcut && <span className="tool-key-badge tool-key-badge--face">{markupFaceTool.shortcut}</span>}<span style={{ marginLeft: markupFaceTool.shortcut ? 2 : 3, fontWeight: 600, fontSize: 11 }}>Markup</span></>} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
                   {tool === "highlighter" && (
                     <div className="toolbar-glass-popover" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, borderRadius: 0, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                       <div style={{ display: "flex", gap: 6 }} title="Ink">
@@ -8333,7 +8832,8 @@ export default function TakeoffCanvas() {
             
           </div>
 
-          {/* Live readout — condition totals + in-progress measure */}
+          {/* Live readout — zero flex footprint; white pill floats over the canvas below */}
+          <div style={{ position: "relative", width: 0, height: 0, overflow: "visible", alignSelf: "flex-start", flexShrink: 0 }}>
             <LiveReadoutBar
               tool={tool}
               aCond={aCond}
@@ -8370,12 +8870,17 @@ export default function TakeoffCanvas() {
               zoomScale={tf.scale}
               onSetShapeHeight={setShapeHeight}
               onClearShapeHeight={clearShapeHeight}
+              wallSegmentRows={selWallSegmentRows}
+              onSetSegmentHeight={(idx, raw) => selectedId && setSegmentHeight(selectedId, idx, raw)}
+              onFlyToWallSegment={(idx) => selectedId && flyToWallSegment(selectedId, idx)}
+              activeWallSegment={selShape?.measure_role === "surface_area" ? wallSegmentFocus : null}
               onAddWallOpening={addWallOpening}
               onStartWallCutout={startWallCutoutLinear}
               onUpdateWallOpening={updateWallOpening}
               onRemoveWallOpening={removeWallOpening}
               onFlyToWallOpening={flyToWallOpening}
             />
+          </div>
         </div>
       </div>
 
@@ -8385,7 +8890,7 @@ export default function TakeoffCanvas() {
             x: 24,
             y: 120,
             w: Math.min(720, (typeof window !== "undefined" ? window.innerWidth : 1280) - 48),
-            h: Math.min(280, (typeof window !== "undefined" ? window.innerHeight : 800) - 140),
+            h: Math.min(selWallSegmentRows.length > 1 ? 360 : 280, (typeof window !== "undefined" ? window.innerHeight : 800) - 140),
           }}
           minW={360}
           minH={200}
@@ -8407,6 +8912,49 @@ export default function TakeoffCanvas() {
                 conditionColumns={conditionColumns}
                 layout="row"
               />
+              {selShape?.measure_role === "surface_area" && selWallSegmentRows.length > 1 && (
+                <WallSegmentHeightsEditor
+                  rows={selWallSegmentRows}
+                  units={units}
+                  condH={condH}
+                  activeIndex={wallSegmentFocus}
+                  onSetHeight={(idx, raw) => selectedId && setSegmentHeight(selectedId, idx, raw)}
+                  onFlyToSegment={(idx) => selectedId && flyToWallSegment(selectedId, idx)}
+                  onClearAll={() => selectedId && clearShapeHeight()}
+                />
+              )}
+            </div>
+          </div>
+        </FloatingWindow>
+      )}
+
+      {layersFloating && (
+        <FloatingWindow
+          shellClassName="left-panel-glass"
+          defaultRect={{ x: 56, y: 72, w: 360, h: Math.min(640, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+          minW={280}
+          minH={240}
+        >
+          <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
+            <div
+              className="left-panel-glass-tabs"
+              data-float-drag
+              style={{ display: "flex", alignItems: "stretch", color: "var(--accent-contrast)", flexShrink: 0, cursor: "grab", userSelect: "none" }}
+            >
+              <div style={{ flex: 1, padding: "9px 12px", fontWeight: 700, fontSize: 11.5 }}>
+                Layers{layerPanelShapes.length ? ` · ${layerPanelShapes.length}` : ""}
+              </div>
+              <button
+                type="button"
+                onClick={() => setLayersFloating(false)}
+                title="Close floating Layers panel"
+                style={{ padding: "0 12px", border: "none", background: "transparent", color: "var(--accent-contrast)", fontSize: 16, cursor: "pointer" }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ flex: 1, overflow: "hidden", minHeight: 0, display: "flex", flexDirection: "column" }}>
+              {renderLayersSidebar()}
             </div>
           </div>
         </FloatingWindow>
@@ -8532,6 +9080,7 @@ export default function TakeoffCanvas() {
            }}
          >
            {panelBtn(() => openLeftHover("files"), "sheets", "Project files — plans in this takeoff (upload folder, zip, or PDFs)", leftTab === "files", sheets.length)}
+           {panelBtn(() => openLeftHover("layers"), "takeoffs", "Takeoff layers — hide, group, merge", leftTab === "layers" || layersFloating, layerPanelShapes.length)}
            {panelBtn(() => openLeftHover("markup"), "markup", "Markups on these sheets (clouds, callouts, notes)", leftTab === "markup", markupCount)}
            {panelBtn(() => openLeftHover("stamp"), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
            {panelBtn(() => openLeftHover("rfi"), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
@@ -8549,7 +9098,7 @@ export default function TakeoffCanvas() {
          <div
            className="left-panel-glass"
            role="dialog"
-           aria-label="Files panel"
+           aria-label={leftTab === "layers" ? "Layers panel" : "Files panel"}
            onMouseEnter={cancelLeftHoverClose}
            style={{
              pointerEvents: "auto",
@@ -8564,8 +9113,17 @@ export default function TakeoffCanvas() {
          >
            {/* tab strip */}
            <div className="left-panel-glass-tabs" style={{ display: "flex", alignItems: "stretch", color: "var(--accent-contrast)", flexShrink: 0 }}>
-             {[{ id: "files", label: "Files", n: sheets.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
-               <button key={t.id} onClick={() => { lastLeftTabRef.current = t.id; setLeftTab(t.id); }} title={t.label}
+             {[{ id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "layers", label: "Layers", n: layerPanelShapes.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
+               <button key={t.id} onClick={() => { lastLeftTabRef.current = t.id; setLeftTab(t.id); }}
+                 onDoubleClick={(e) => {
+                   if (t.id !== "layers") return;
+                   e.preventDefault();
+                   e.stopPropagation();
+                   cancelLeftHoverClose();
+                   setLayersFloating(true);
+                   setLeftTab(null);
+                 }}
+                 title={t.id === "layers" ? `${t.label} — double-click to detach as floating window` : t.label}
                  style={{ flex: 1, padding: "9px 4px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5 }}>
                  {t.label}{t.n ? ` · ${t.n}` : ""}
                </button>
@@ -8573,7 +9131,7 @@ export default function TakeoffCanvas() {
              <button onClick={() => setLeftTab(null)} title="Close panel" style={{ padding: "0 12px", border: "none", background: "transparent", color: "var(--accent-contrast)", fontSize: 16, cursor: "pointer" }}>×</button>
            </div>
            {/* body of the active tab */}
-           <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+           <div style={{ flex: 1, overflow: leftTab === "layers" ? "hidden" : "auto", minHeight: 0, display: leftTab === "layers" ? "flex" : "block", flexDirection: "column" }}>
              {leftTab === "files" && (
                <div>
                  <div className="left-panel-glass-actions" style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
@@ -8666,6 +9224,17 @@ export default function TakeoffCanvas() {
                            <span style={{ fontSize: 12.5, fontWeight: on || match ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{highlightName(fileName(s))}</span>
                            <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{open ? "open" : "in project"}{on ? " · viewing" : ""}</span>
                          </button>
+                         <button type="button"
+                           onClick={(e) => {
+                             e.stopPropagation();
+                             const key = s.name;
+                             if (!openTabs.some((k) => parseSheetKey(k).file === s.name)) openSheets([key], false);
+                             toggleInGroup(key);
+                           }}
+                           title="Side-by-side with the current sheet"
+                           style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-positive)", padding: 4, display: "inline-flex" }}>
+                           <Icon name="sideBySide" size={13} />
+                         </button>
                          <button type="button" onClick={() => closePdf(s.name)} title={`Remove ${s.name} from this project`}
                            style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 4, display: "inline-flex" }}>
                            <Icon name="close" size={11} />
@@ -8716,6 +9285,36 @@ export default function TakeoffCanvas() {
                      </div>
                    );
                  })()}
+               </div>
+             )}
+             {leftTab === "sheets" && (
+               <div>
+                 {openTabs.length === 0 ? (
+                   <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
+                     No sheets open. Open a file from the <b>Files</b> tab.
+                   </div>
+                 ) : openTabs.map((k) => {
+                   const inGroup = sheetGroup.includes(k);
+                   const on = sheetGroup.length ? inGroup : k === sheetKey;
+                   const lbl = tabLabel(k);
+                   return (
+                     <div key={k} className={`left-panel-glass-file-row${on ? " is-active" : ""}`} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)" }}>
+                       <button type="button" onClick={() => goToSheet(k)} title={k}
+                         style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
+                         <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{lbl}</span>
+                         <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{inGroup ? "side-by-side" : on ? "viewing" : "open"}</span>
+                       </button>
+                       <button type="button" onClick={() => toggleInGroup(k)} title={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
+                         style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-positive)", padding: 4, display: "inline-flex" }}>
+                         <Icon name="sideBySide" size={13} />
+                       </button>
+                       <button type="button" onClick={() => closeTab(k)} title="Close tab"
+                         style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 4, display: "inline-flex" }}>
+                         <Icon name="close" size={11} />
+                       </button>
+                     </div>
+                   );
+                 })}
                </div>
              )}
              {leftTab === "markup" && (
@@ -8830,6 +9429,7 @@ export default function TakeoffCanvas() {
                  sheetLabel={(k) => tabLabel(k)} onClose={() => setLeftTab(null)}
                />
              )}
+             {leftTab === "layers" && !layersFloating && renderLayersSidebar()}
            </div>
          </div>
          )}
@@ -8839,6 +9439,8 @@ export default function TakeoffCanvas() {
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas}
           onContextMenu={(e) => {
             e.preventDefault();
+            const polyDrawing = poly.length > 0 && (tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone" || tool === "rect" || tool === "deduct-rect");
+            if (polyDrawing) return;
             const r = containerRef.current?.getBoundingClientRect();
             if (!r || status !== "ready") { setShapeCtxMenu(null); return; }
             const p = toImage(e.clientX, e.clientY);
@@ -8916,7 +9518,9 @@ export default function TakeoffCanvas() {
                     type: "geom", id: _dSel.id, editKind: "vertexInsert",
                     verts_norm: _vnIns, computed: recomputeShape({ ..._dSel, verts_norm: _vnIns }), prev: geomSnapshot(_dSel),
                   });
-                  setSelVert(_dBestI + 1); setSelHole(null); setHoverEdge(null);
+                  setSelVert(_dBestI + 1);
+                  setWallSegmentFocus(_dBestI);
+                  setSelHole(null); setHoverEdge(null);
                   return;
                 }
               }
@@ -8930,7 +9534,7 @@ export default function TakeoffCanvas() {
             if (symbolHover) { setSymbolFocus(symbolHover.id); return; }
             if (tool === "oneclick") { if (proposal?.regions.length) createProposal(); }
             else if (tool === "walltrace") { if (wallProposal?.regions.length) createWallProposal(); }
-            else if (tool === "area" || tool === "deduct" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
+            else if (tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
             else if (tool === "select") editMarkupAt(e);
           }}
           style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "#dbe3e6", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
@@ -9229,6 +9833,7 @@ export default function TakeoffCanvas() {
                       const aiSheet = isAiDetectFloorPlan(p.key);
                       // Cutouts always paint; AI floor masks follow reveal. Deducts on top.
                       const drawn = (!aiSheet ? pShapes : pShapes.filter((s) => aiDetectShapeRevealed(s)))
+                        .filter((s) => !hiddenShapeIds[s.id])
                         .slice()
                         .sort((a, b) => {
                           const ad = a.measure_role === "deduct" ? 1 : 0;
@@ -9239,7 +9844,7 @@ export default function TakeoffCanvas() {
                     })().map((s) => {
                       const cond = condById[s.condition_id];
                       const look = resolveShapeLook(s, cond) || cond;
-                      const sel = s.id === selectedId || selectedCutoutIds.has(s.id);
+                      const sel = selectedLayerGroupMemberIds.has(s.id) || selectedCutoutIds.has(s.id);
                       // Selection focus: selected keeps its color; others go grey.
                       // Nothing selected → every mask keeps its normal color.
                       const dim = !!(selectedId || selectedCutoutIds.size) && !sel;
@@ -9263,7 +9868,30 @@ export default function TakeoffCanvas() {
                         return <rect key={s.id} x={cx - r} y={cy - r} width={r * 2} height={r * 2} rx={2 / z} fill={col + (pending ? "55" : "cc")} stroke={sel ? "#1f3fc7" : (dim ? "#9aa0a6" : "#fff")} strokeWidth={((sel ? 3 : 1.5) * lw) / z} strokeDasharray={pending ? `${3 / z} ${2.5 / z}` : undefined} />;
                       }
                       if (s.measure_role === "surface_area") {
-                        return <polyline key={s.id} points={pts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={((sel ? 4.5 : 3.5) * lw) / z} strokeDasharray={pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`} strokeLinecap="round" strokeLinejoin="round" />;
+                        const dash = pending ? pDash : `${10 / z} ${3 / z} ${2 / z} ${3 / z}`;
+                        const isLoop = !!s.origin?.closed_loop;
+                        const segFocus = sel && s.id === selectedId ? wallSegmentFocus : null;
+                        const segCount = isLoop ? pts.length : pts.length - 1;
+                        if (segFocus != null && segCount > 1) {
+                          return (
+                            <g key={s.id}>
+                              {Array.from({ length: segCount }, (_, i) => {
+                                const a = pts[i];
+                                const b = isLoop && i === segCount - 1 ? pts[0] : pts[i + 1];
+                                const isActive = i === segFocus;
+                                return (
+                                  <line key={i} x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} fill="none"
+                                    stroke={isActive ? "#1f3fc7" : "#9aa0a6"}
+                                    strokeOpacity={isActive ? (pending ? 0.85 : 1) : 0.45}
+                                    strokeWidth={((isActive ? 4.5 : 3) * lw) / z}
+                                    strokeDasharray={dash} strokeLinecap="round" />
+                                );
+                              })}
+                            </g>
+                          );
+                        }
+                        const polyPts = isLoop && pts.length >= 3 ? [...pts, pts[0]] : pts;
+                        return <polyline key={s.id} points={polyPts.map((q) => q.join(",")).join(" ")} fill="none" stroke={sel ? "#1f3fc7" : col} strokeOpacity={pending ? 0.85 : undefined} strokeWidth={((sel ? 4.5 : 3.5) * lw) / z} strokeDasharray={dash} strokeLinecap="round" strokeLinejoin="round" />;
                       }
                       if (s.measure_role === "linear") {
                         // line_style governs linear outlines (surface_area keeps its dash-dot identity above)
@@ -9693,7 +10321,7 @@ export default function TakeoffCanvas() {
               {/* IN-PROGRESS work draws in the INSTRUMENT color — the house cobalt pencil
                   (deduct keeps its danger red). Committed shapes wear the condition's own
                   color; the draft never mimics anyone's takeoff look. Solid, no dashes. */}
-              <line ref={rubberRef} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={1.5 / tf.scale} strokeOpacity={0.85} strokeLinecap="round" style={{ display: "none" }} />
+              <line ref={rubberRef} stroke={tool === "deduct" || tool === "deduct-curve" ? "#b03a26" : "#1f3fc7"} strokeWidth={1.5 / tf.scale} strokeOpacity={0.85} strokeLinecap="round" style={{ display: "none" }} />
               {wallCutoutDraft?.a && (
                 <path d={starPath(wallCutoutDraft.a[0], wallCutoutDraft.a[1], 4.5 / tf.scale)} fill="#fff" stroke="#1f3fc7" strokeWidth={2 / tf.scale} />
               )}
@@ -9718,13 +10346,13 @@ export default function TakeoffCanvas() {
               <path ref={cloudRef} fill="rgba(37,99,235,.06)" stroke="#1f3fc7" strokeWidth={2 / tf.scale} strokeDasharray={`${5 / tf.scale} ${4 / tf.scale}`} style={{ display: "none" }} />
               <rect ref={highlightRef} fill="rgba(196,122,16,.18)" stroke="#c47a10" strokeWidth={2 / tf.scale} style={{ display: "none" }} />
               <path ref={hlPathRef} style={{ display: "none" }} />
-              {poly.length >= 2 && (tool === "linear" || tool === "curve" || tool === "surface" || tool === "wallarea"
-                ? <polyline points={(tool === "curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={(tool === "surface" || tool === "wallarea") ? (liveDrawLook?.color || activeColor) : "#1f3fc7"} strokeWidth={(((tool === "surface" || tool === "wallarea") ? 3.5 : 2.5) * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeDasharray={(tool === "surface" || tool === "wallarea") ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
+              {poly.length >= 2 && (tool === "linear" || tool === "curve" || tool === "deduct-curve" || tool === "surface" || tool === "wallarea"
+                ? <polyline points={(tool === "curve" || tool === "deduct-curve" ? flattenCurve(poly) : poly).map((p) => p.join(",")).join(" ")} fill="none" stroke={tool === "deduct-curve" ? "#b03a26" : ((tool === "surface" || tool === "wallarea") ? (liveDrawLook?.color || activeColor) : "#1f3fc7")} strokeWidth={(((tool === "surface" || tool === "wallarea") ? 3.5 : 2.5) * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeDasharray={(tool === "surface" || tool === "wallarea") ? `${10 / tf.scale} ${3 / tf.scale} ${2 / tf.scale} ${3 / tf.scale}` : undefined} strokeLinecap="round" strokeLinejoin="round" />
                 : <polygon points={poly.map((p) => p.join(",")).join(" ")} fill={poly.length >= 3 ? (tool === "deduct" ? "rgba(176,58,38,.22)" : tool === "zone" ? "rgba(31,63,199,.06)" : shapeFill(liveDrawLook)) : "none"} stroke={tool === "deduct" ? "#b03a26" : "#1f3fc7"} strokeWidth={(2 * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeDasharray={tool === "zone" ? `${7 / tf.scale} ${5 / tf.scale}` : undefined} />)}
               {/* bold the most recent segment so you see where you just clicked */}
               {poly.length >= 2 && (
                 <line x1={poly[poly.length - 2][0]} y1={poly[poly.length - 2][1]} x2={poly[poly.length - 1][0]} y2={poly[poly.length - 1][1]}
-                  stroke={tool === "deduct" ? "#b03a26" : ((tool === "surface" || tool === "wallarea") ? (liveDrawLook?.color || "#1f3fc7") : "#1f3fc7")} strokeWidth={(3.5 * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeLinecap="round" />
+                  stroke={tool === "deduct" || tool === "deduct-curve" ? "#b03a26" : ((tool === "surface" || tool === "wallarea") ? (liveDrawLook?.color || "#1f3fc7") : "#1f3fc7")} strokeWidth={(3.5 * clampWeight(liveDrawLook?.weight)) / tf.scale} strokeLinecap="round" />
               )}
               {poly.map((p, i) => {
                 const isLast = i === poly.length - 1;
@@ -9745,34 +10373,6 @@ export default function TakeoffCanvas() {
                 </>
               )}
               {tool === "check" && check.map((p, i) => <path key={"ck" + i} d={starPath(p[0], p[1], 3.5 / tf.scale)} fill="#1f3fc7" />)}
-              {/* scale-acceptance guide — an ephemeral calibrated ruler so a 2×-off
-                  scale is visually obvious against known elements (a door is ~3′) */}
-              {scaleGuide && panelKeySet.has(scaleGuide.key) && (() => {
-                const [gx, gy] = scaleGuide.at;
-                const z = tf.scale;
-                const unitPx = scaleGuide.px / (units === "metric" ? scaleGuide.feet * M_PER_FT : scaleGuide.feet); // one ft (or 1 m) in px
-                const step = unitPx * z >= 6 ? 1 : unitPx * z * 5 >= 6 ? 5 : 0;
-                const nUnits = units === "metric" ? Math.round(scaleGuide.feet * M_PER_FT) : scaleGuide.feet;
-                const ticks = step ? Array.from({ length: Math.floor(nUnits / step) + 1 }, (_, i) => i * step) : [0, nUnits];
-                // "at 1/8″ = 1′-0″" reads right for a scale string; a source word ("calibrated", "custom") reads better parenthesized
-                const scaleTxt = /[=:]/.test(scaleGuide.label) ? `at ${scaleGuide.label}` : `(${scaleGuide.label})`;
-                const lbl = units === "metric" ? `${nUnits} m ${scaleTxt}` : `${scaleGuide.feet}′ ${scaleTxt}`;
-                const cap = units === "metric" ? "a door is about 0.9 m — if this bar looks wildly off, the scale is wrong" : "a door opening is about 3′ — if this bar looks wildly off, the scale is wrong";
-                return (
-                  <g style={{ pointerEvents: "none" }}>
-                    <line x1={gx} y1={gy} x2={gx + scaleGuide.px} y2={gy} stroke="#fff" strokeWidth={7 / z} strokeLinecap="round" />
-                    <line x1={gx} y1={gy} x2={gx + scaleGuide.px} y2={gy} stroke="#1f3fc7" strokeWidth={3 / z} />
-                    {ticks.map((u) => (
-                      <line key={u} x1={gx + u * unitPx} y1={gy - (u % 5 === 0 ? 8 : 5) / z} x2={gx + u * unitPx} y2={gy}
-                        stroke="#1f3fc7" strokeWidth={(u % 5 === 0 ? 2 : 1.2) / z} />
-                    ))}
-                    <text x={gx + scaleGuide.px / 2} y={gy - 14 / z} fontSize={13 / z} fontWeight={700} fill="#1f3fc7"
-                      textAnchor="middle" stroke="#fff" strokeWidth={3.5 / z} paintOrder="stroke">{lbl}</text>
-                    <text x={gx + scaleGuide.px / 2} y={gy + 16 / z} fontSize={10.5 / z} fill="#5b544a"
-                      textAnchor="middle" stroke="#fff" strokeWidth={3 / z} paintOrder="stroke">{cap}</text>
-                  </g>
-                );
-              })()}
               {/* snap-to-vector indicator (star) */}
               <path ref={snapMarkRef} fill="#1f6b4a" stroke="#fff" strokeWidth={1 / tf.scale} style={{ display: "none" }} />
               {/* markup draft marker (first click of cloud/callout) */}
@@ -10023,6 +10623,37 @@ export default function TakeoffCanvas() {
                   setSelectedId(null);
                 }, true)
               )}
+            </div>
+          );
+        })()}
+
+        {/* persistent scale bar — bottom-right HUD; always visible while a sheet scale is set */}
+        {status === "ready" && unitsPerPx && focusPanel?.img?.w && (() => {
+          const uppBitmap = unitsPerPx / factorFor(focusPanel.key);
+          const z = tf.scale;
+          const CAND = units === "metric" ? [1, 2, 5, 10, 20, 50, 100].map((m) => m / M_PER_FT) : [2, 5, 10, 20, 50, 100, 200];
+          const feet = CAND.find((f) => (f / uppBitmap) * z >= 160) ?? CAND[CAND.length - 1];
+          const barPx = (feet / uppBitmap) * z;
+          const nUnits = units === "metric" ? Math.round(feet * M_PER_FT) : feet;
+          const unitPx = barPx / nUnits;
+          const scaleLbl = stdValue || scaleDet?.label || (scaleSources[focusPanel.key] === "calibrated" ? "calibrated" : "custom");
+          const scaleTxt = /[=:]/.test(scaleLbl) ? `at ${scaleLbl}` : `(${scaleLbl})`;
+          const lbl = units === "metric" ? `${nUnits} m ${scaleTxt}` : `${feet}′ ${scaleTxt}`;
+          const cap = units === "metric" ? "a door is about 0.9 m — if this bar looks wildly off, the scale is wrong" : "a door opening is about 3′ — if this bar looks wildly off, the scale is wrong";
+          const step = unitPx >= 6 ? 1 : unitPx * 5 >= 6 ? 5 : 0;
+          const ticks = step ? Array.from({ length: Math.floor(nUnits / step) + 1 }, (_, i) => i * step) : [0, nUnits];
+          return (
+            <div style={{ position: "absolute", right: 56, bottom: 14, zIndex: 5, pointerEvents: "none", textAlign: "right", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1f3fc7", textShadow: "0 0 3px #fff, 0 0 3px #fff, 1px 0 #fff, -1px 0 #fff" }}>{lbl}</div>
+              <svg width={Math.ceil(barPx)} height={20} style={{ display: "block", overflow: "visible" }}>
+                <line x1={0} y1={10} x2={barPx} y2={10} stroke="#fff" strokeWidth={7} strokeLinecap="round" />
+                <line x1={0} y1={10} x2={barPx} y2={10} stroke="#1f3fc7" strokeWidth={3} />
+                {ticks.map((u) => (
+                  <line key={u} x1={u * unitPx} y1={10 - (u % 5 === 0 ? 8 : 5)} x2={u * unitPx} y2={10}
+                    stroke="#1f3fc7" strokeWidth={u % 5 === 0 ? 2 : 1.2} />
+                ))}
+              </svg>
+              <div style={{ fontSize: 10.5, color: "#5b544a", textShadow: "0 0 3px #fff, 0 0 3px #fff" }}>{cap}</div>
             </div>
           );
         })()}

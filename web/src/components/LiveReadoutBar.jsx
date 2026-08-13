@@ -1,8 +1,133 @@
 // Live readout — condition totals, in-progress measure, wall openings (top toolbar).
-import React from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../brand/icons.jsx";
 import { M_PER_FT, areaVal, areaUnit, lenVal, lenUnit, calInputToFeet } from "../lib/units";
 import { openLen } from "../lib/geometry.js";
+import WallSegmentHeightsEditor from "./WallSegmentHeightsEditor.jsx";
+
+const doorScheduleTriggerStyle = {
+  width: "100%",
+  marginBottom: 6,
+  fontSize: 11,
+  padding: "3px 4px",
+  border: "1px solid var(--ink-faint)",
+  background: "var(--paper)",
+  textAlign: "left",
+  cursor: "pointer",
+  fontFamily: "inherit",
+  color: "var(--ink)",
+  display: "block",
+  boxSizing: "border-box",
+};
+
+/** Portaled menu — native <select> fails inside toolbar glass/backdrop on some laptops. */
+function DoorSchedulePicker({ options, onPick }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null);
+  const menuRef = useRef(null);
+  const [menuStyle, setMenuStyle] = useState(null);
+
+  const placeMenu = () => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    setMenuStyle({
+      position: "fixed",
+      left: r.left,
+      top: r.bottom + 2,
+      width: r.width,
+      maxHeight: Math.max(120, Math.min(280, window.innerHeight - r.bottom - 12)),
+      zIndex: 10000,
+      overflowY: "auto",
+      overscrollBehavior: "contain",
+      background: "var(--paper-bright)",
+      border: "1px solid var(--ink-faint)",
+      boxShadow: "var(--shadow-2)",
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    placeMenu();
+    const onReflow = () => placeMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => {
+      const t = e.target;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        aria-label="Prefill opening from door schedule"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        style={doorScheduleTriggerStyle}
+      >
+        Add from door schedule…
+      </button>
+      {open && menuStyle && createPortal(
+        <div ref={menuRef} data-door-schedule-menu role="listbox" style={menuStyle}>
+          {options.map((o) => (
+            <button
+              key={o.tag}
+              type="button"
+              role="option"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onPick(o);
+                setOpen(false);
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "6px 8px",
+                border: "none",
+                borderBottom: "1px solid var(--ink-faint)",
+                background: "transparent",
+                cursor: "pointer",
+                fontSize: 11,
+                fontFamily: "var(--f-mono)",
+                color: "var(--ink)",
+              }}
+            >
+              {o.tag}{o.size ? ` · ${o.size}` : ""}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 export default function LiveReadoutBar({
   tool,
@@ -40,6 +165,10 @@ export default function LiveReadoutBar({
   zoomScale,
   onSetShapeHeight,
   onClearShapeHeight,
+  wallSegmentRows = [],
+  onSetSegmentHeight,
+  onFlyToWallSegment,
+  activeWallSegment = null,
   onAddWallOpening,
   onStartWallCutout,
   onUpdateWallOpening,
@@ -52,8 +181,10 @@ export default function LiveReadoutBar({
 
   const showWallOpenings = selShape?.measure_role === "surface_area" || selShape?.measure_role === "wall_area";
 
+  const expandedWall = showWallOpenings && wallSegmentRows.length > 1;
+
   return (
-    <div className="live-readout-stack" style={{ position: "relative", overflow: "visible", alignSelf: "flex-start", minWidth: 220, maxWidth: 280, width: 268, fontVariantNumeric: "tabular-nums" }}>
+    <div className="live-readout-stack" style={{ position: "absolute", top: 0, left: 0, zIndex: showWallOpenings ? 200 : 25, overflow: "visible", width: expandedWall ? 320 : 268, minWidth: expandedWall ? 300 : 220, maxWidth: expandedWall ? 360 : 280, fontVariantNumeric: "tabular-nums" }}>
       <div
         className="toolbar-glass-pill live-readout-bar"
         style={{
@@ -146,7 +277,19 @@ export default function LiveReadoutBar({
             );
           })()}
           {showWallOpenings && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, marginBottom: 6, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, marginBottom: 6 }}>
+              {selShape?.measure_role === "surface_area" && wallSegmentRows.length > 1 ? (
+                <WallSegmentHeightsEditor
+                  compact
+                  rows={wallSegmentRows}
+                  units={units}
+                  condH={condH}
+                  activeIndex={activeWallSegment}
+                  onSetHeight={onSetSegmentHeight}
+                  onFlyToSegment={onFlyToWallSegment}
+                />
+              ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0 }} title="Height for THIS wall only. ↺ returns to the condition height.">
                 <Icon name="height" size={12} />
                 <span style={{ fontSize: 11, color: "var(--ink-muted)" }}>wall H</span>
@@ -157,7 +300,9 @@ export default function LiveReadoutBar({
                   <button type="button" onClick={onClearShapeHeight} title="Set this wall to the condition height" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0 }}>↺</button>
                 )}
               </div>
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+              </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", whiteSpace: "nowrap" }}>
                 <span style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4, color: "var(--ink-muted)" }}>Door openings</span>
                 <button
                   type="button"
@@ -211,32 +356,30 @@ export default function LiveReadoutBar({
             top: "100%",
             left: 0,
             right: 0,
-            zIndex: 50,
+            zIndex: 200,
             borderRadius: "0 0 14px 14px",
             padding: "8px 10px 10px",
             overflow: "visible",
             borderTop: "1px solid var(--divider-soft)",
             marginTop: -1,
+            backdropFilter: "none",
+            WebkitBackdropFilter: "none",
+            userSelect: "auto",
+            WebkitUserSelect: "auto",
+            isolation: "isolate",
           }}
         >
           {doorScheduleOptions.length > 0 && (
-            <select
-              aria-label="Prefill opening from door schedule"
-              defaultValue=""
-              onChange={(e) => {
-                const tag = e.target.value;
-                e.target.value = "";
-                if (!tag) return;
-                const opt = doorScheduleOptions.find((o) => o.tag === tag);
-                onAddWallOpening({ tag, kind: opt?.kind || "door", size: opt?.size || "", symbol_id: opt?.symbol_id || "", source: "schedule" });
-              }}
-              style={{ width: "100%", marginBottom: 6, fontSize: 11, padding: "3px 4px", border: "1px solid var(--ink-faint)", background: "var(--paper)" }}
-            >
-              <option value="">Add from door schedule…</option>
-              {doorScheduleOptions.map((o) => (
-                <option key={o.tag} value={o.tag}>{o.tag}{o.size ? ` · ${o.size}` : ""}</option>
-              ))}
-            </select>
+            <DoorSchedulePicker
+              options={doorScheduleOptions}
+              onPick={(opt) => onAddWallOpening({
+                tag: opt.tag,
+                kind: opt.kind || "door",
+                size: opt.size || "",
+                symbol_id: opt.symbol_id || "",
+                source: "schedule",
+              })}
+            />
           )}
           {(selShape.openings || []).length === 0 && (
             <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>No openings — wall face is full height × length.</div>

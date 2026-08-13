@@ -72,14 +72,8 @@ export function openingsDeductSfLinear(openings = [], lfFt = 0, wallHFt = 0) {
   const hWall = Math.max(0, Number(wallHFt) || 0);
   const defaultDoorWFt = 3;
   const defaultDoorHFt = 7;
-  const seenTags = new Set();
   const normalized = [];
   for (const o of openings || []) {
-    const tagU = String(o.tag || "").toUpperCase();
-    if (tagU) {
-      if (seenTags.has(tagU)) continue;
-      seenTags.add(tagU);
-    }
     let w = Math.max(0, Number(o.width_ft) || 0);
     let h = Math.max(0, Number(o.height_ft) || 0);
     if (lf > 0) {
@@ -119,14 +113,8 @@ export function openingsDeductSfFloorPerim(openings = [], perimLfFt = 0, wallHFt
   if (!(gross > 0) || !(lf > 0)) return 0;
   const defaultDoorWFt = 3;
   const defaultDoorHFt = 7;
-  const seenTags = new Set();
   let sf = 0;
   for (const o of openings || []) {
-    const tagU = String(o.tag || "").toUpperCase();
-    if (tagU) {
-      if (seenTags.has(tagU)) continue;
-      seenTags.add(tagU);
-    }
     let w = Math.max(0, Number(o.width_ft) || 0);
     let h = Math.max(0, Number(o.height_ft) || 0);
     w = Math.min(w, lf);

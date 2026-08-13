@@ -101,8 +101,54 @@ export function floorLabelFromSheetId(sheetId) {
   return "";
 }
 
+/** Split a concatenated finish description into category sections (schedule fallback). */
+function splitFinishDescription(text) {
+  const empty = { floor_finish: "", skirting: "", wall_finishes: "", ceiling: "" };
+  if (!text?.trim()) return empty;
+  const t = text.replace(/\s+/g, " ").trim();
+
+  const skWord = t.search(/\bSKIRTING\b/i);
+  const wallWord = t.search(/\bWALL\s+(?:EMULSION|PAINT|FINISH|TILE|CLADDING|VENEER|COVERING)/i);
+  const gypsumMatches = [...t.matchAll(/\b(\d+(?:\.\d+)?\s*MM\s+THICK\s+(?:WATER\s*PROOF\s*|REGULAR\s*)?GYPSUM\b)/gi)];
+  const lastGypsum = gypsumMatches.length ? gypsumMatches[gypsumMatches.length - 1].index : -1;
+
+  let skirting = "";
+  if (skWord >= 0) {
+    const before = t.slice(0, skWord);
+    const near = before.slice(Math.max(0, before.length - 90));
+    const mmAll = [...near.matchAll(/\b\d+\s*MM\b/gi)];
+    const start = mmAll.length ? before.length - near.length + mmAll[mmAll.length - 1].index : skWord;
+    const end = wallWord >= 0 ? wallWord : (lastGypsum >= 0 ? lastGypsum : t.length);
+    skirting = t.slice(start, end).trim();
+  }
+
+  let wall_finishes = "";
+  if (wallWord >= 0) {
+    const end = lastGypsum > wallWord ? lastGypsum : t.length;
+    wall_finishes = t.slice(wallWord, end).trim();
+  }
+
+  let ceiling = "";
+  const wp = gypsumMatches.find((g) => /WATER\s*PROOF/i.test(g[1]));
+  if (wp) ceiling = t.slice(wp.index).trim();
+  else if (lastGypsum >= 0 && wallWord >= 0 && lastGypsum > wallWord) ceiling = t.slice(lastGypsum).trim();
+
+  let floor_finish = skWord >= 0 ? t.slice(0, skWord).trim() : t;
+  floor_finish = floor_finish.replace(/\s+\d{1,2}\.ENT\.[^]*$/i, "").trim();
+  floor_finish = floor_finish.replace(/\s*\+\s*\d+(?:\.\d+)?\s*MM\s+THICK\s+REGULAR\s+GYPSUM\b.*$/i, "").trim();
+  floor_finish = floor_finish.replace(/\+\s*$/, "").trim();
+
+  return { floor_finish, skirting, wall_finishes, ceiling };
+}
+
+function descForFinishTag(kb, tag, room, sheetFloor) {
+  if (!tag?.trim() || !kb) return "";
+  const hit = lookupScheduleKbForRoom(kb, tag, room, sheetFloor) || lookupScheduleKb(kb, tag);
+  return (hit?.description || "").trim();
+}
+
 /** Finish schedule fields for a floor mask — room + sheet floor scoped. */
-export function resolveMaskFinishDetails(row, conditionDescription = "") {
+export function resolveMaskFinishDetails(row, conditionDescription = "", scheduleKb = null) {
   if (!row) return null;
   const tag = (row.finish_tag || "").trim().toUpperCase();
   const room = row.room || row.room_detected || "";
@@ -123,11 +169,36 @@ export function resolveMaskFinishDetails(row, conditionDescription = "") {
     || refs[0];
   const description = row.description || finishRef?.description || conditionDescription || "";
   if (!description && !finishRef && !tag) return null;
+
+  const kbEntry = scheduleKb ? lookupMaskFinish(scheduleKb, tag, room, sheetFloor) : null;
+  const skirtingTag = kbEntry?.skirting_tag || finishRef?.skirting_tag || "";
+  const wallTag = kbEntry?.wall_tag || finishRef?.wall_tag || "";
+  const ceilingTag = kbEntry?.ceiling_tag || finishRef?.ceiling_tag || "";
+
+  let floor_finish = (kbEntry?.description || description).trim();
+  let skirting = descForFinishTag(scheduleKb, skirtingTag, room, sheetFloor);
+  let wall_finishes = descForFinishTag(scheduleKb, wallTag, room, sheetFloor);
+  let ceiling = descForFinishTag(scheduleKb, ceilingTag, room, sheetFloor);
+
+  const needsSplit = description.length > 48
+    && (/\bSKIRTING\b/i.test(description) || /\bWALL\b/i.test(description) || /\bGYPSUM\b/i.test(description));
+  if (needsSplit && (!skirting || !wall_finishes || !ceiling || floor_finish === description)) {
+    const split = splitFinishDescription(description);
+    if (split.floor_finish) floor_finish = split.floor_finish;
+    if (!skirting && split.skirting) skirting = split.skirting;
+    if (!wall_finishes && split.wall_finishes) wall_finishes = split.wall_finishes;
+    if (!ceiling && split.ceiling) ceiling = split.ceiling;
+  }
+
   return {
     tag,
     room_name: row.room || row.room_detected || finishRef?.room_name || "",
     type: finishRef?.type || "Finish code",
     description,
+    floor_finish,
+    skirting,
+    wall_finishes,
+    ceiling,
     size: finishRef?.size || "",
     fire_rating: finishRef?.fire_rating || "",
     floors: finishRef?.floors || sheetFloor || "",
@@ -155,6 +226,9 @@ function refFromKb(entry, sourceLabel = "Schedule") {
     floors: entry.floors || "",
     type: entry.type || "",
     remarks: entry.remarks || "",
+    skirting_tag: entry.skirting_tag || "",
+    wall_tag: entry.wall_tag || "",
+    ceiling_tag: entry.ceiling_tag || "",
     source: entry.source_title || entry.source_sheet || sourceLabel,
     source_sheet: entry.source_sheet || "",
     source_title: entry.source_title || "",
@@ -678,7 +752,7 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
       ...displayRow,
       room: meta.room || r.room_detected || "",
       description: meta.description || autoDesc,
-    }, cond?.description || ""),
+    }, cond?.description || "", detectCtx?.scheduleKb),
     rate: meta.rate_material != null
       ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0) + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
       : (pricing.rate ?? null),

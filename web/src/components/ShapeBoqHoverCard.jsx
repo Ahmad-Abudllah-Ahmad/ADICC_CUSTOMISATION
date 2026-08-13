@@ -84,7 +84,10 @@ export default function ShapeBoqHoverCard({
     ? [
       ["Room name", finishDetails.room_name],
       ["Type", finishDetails.type],
-      ["Description", finishDetails.description],
+      ["Floor finish", finishDetails.floor_finish],
+      ["Skirting", finishDetails.skirting],
+      ["Wall finishes", finishDetails.wall_finishes],
+      ["Ceiling", finishDetails.ceiling],
       ["Size / opening", finishDetails.size],
       ["Fire rating", finishDetails.fire_rating],
       ["Floors", finishDetails.floors],

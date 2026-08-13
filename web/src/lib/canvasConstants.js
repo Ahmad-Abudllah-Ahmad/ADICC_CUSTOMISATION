@@ -57,6 +57,7 @@ export const MEASURE_TOOLS = [
 export const CUT_TOOLS = [
   { id: "deduct", icon: "deduct", label: "Deduct shape", shortcut: "D" },
   { id: "deduct-rect", icon: "deductRect", label: "Deduct rectangle", shortcut: "⇧D" },
+  { id: "deduct-curve", icon: "curve", label: "Deduct curved line", shortcut: "⇧Q" },
 ];
 export const MARKUP_TOOLS = [
   { id: "highlighter", icon: "highlighter", label: "Highlighter", shortcut: "H" },

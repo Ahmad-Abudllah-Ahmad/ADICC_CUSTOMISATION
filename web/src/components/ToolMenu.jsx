@@ -33,7 +33,8 @@ function renderPaletteItems(items, setOpen) {
         onClick={() => { if (!dis) { if (!it.stayOpen) setOpen(false); it.onSelect?.(); } }}
       >
         {it.icon && <Icon name={it.icon} size={15} />}
-        {it.label}
+        <span className="tool-menu-palette-label">{it.label}</span>
+        {it.shortcut && <span className="tool-key-badge tool-key-badge--menu">{it.shortcut}</span>}
       </button>
     );
   });
@@ -123,6 +124,40 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
     };
   }, [open, usePalettePosition]);
 
+  useEffect(() => {
+    if (!open || isPalette || paletteAnchor) return undefined;
+    const place = () => {
+      if (!panelRef.current || !rootRef.current) return;
+      const r = rootRef.current.getBoundingClientRect();
+      const panel = panelRef.current;
+      const menuW = (menuStyle && parseInt(menuStyle.minWidth, 10)) || MENU_W;
+      const left = flip ? r.right - menuW : r.left;
+      panel.style.position = "fixed";
+      panel.style.top = `${r.bottom + 4}px`;
+      panel.style.left = `${Math.max(8, Math.min(left, window.innerWidth - menuW - 8))}px`;
+      panel.style.right = "auto";
+      panel.style.zIndex = "100000";
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, isPalette, paletteAnchor, flip, menuStyle]);
+
+  const dropPanel = (
+    <div ref={panelRef} className="tool-menu-drop-panel" style={{
+      minWidth: MENU_W, padding: "4px 0",
+      ...menuStyle,
+      maxHeight: "min(60vh, 420px)",
+      overflowY: "auto",
+    }}>
+      {renderDefaultMenu()}
+    </div>
+  );
+
   const accentColor = accent === "danger" ? "var(--c-danger)" : "var(--cobalt)";
   const menuW = (menuStyle && parseInt(menuStyle.minWidth, 10)) || MENU_W;
   const toggle = () => {
@@ -192,17 +227,9 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
       {open && !isPalette && paletteAnchor && (typeof document !== "undefined"
         ? createPortal(anchoredPanel, document.body)
         : anchoredPanel)}
-      {open && !isPalette && !paletteAnchor && (
-        <div className="tool-menu-drop-panel" style={{
-          position: "absolute", top: "calc(100% + 4px)", [flip ? "right" : "left"]: 0, zIndex: 60,
-          minWidth: MENU_W, padding: "4px 0",
-          ...menuStyle,
-          maxHeight: "min(60vh, 420px)",
-          overflowY: "auto",
-        }}>
-          {renderDefaultMenu()}
-        </div>
-      )}
+      {open && !isPalette && !paletteAnchor && (typeof document !== "undefined"
+        ? createPortal(dropPanel, document.body)
+        : dropPanel)}
     </span>
   );
 }
