@@ -633,7 +633,7 @@ export default function DrawingsChatPanel({
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "light-dark(var(--cobalt), #ffffff)" }}>Drawings Q&A</div>
               <div style={{ fontSize: 11, color: "light-dark(var(--ink-muted), rgba(255,255,255,0.82))", marginTop: 2 }}>Ask about Volume 4 drawings, specs, and schedules</div>
             </div>
-            <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "light-dark(var(--ink-muted), var(--ink))", lineHeight: 1 }}>×</button>
+            <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "var(--ink-muted)", lineHeight: 1 }}>×</button>
           </header>
 
           <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>

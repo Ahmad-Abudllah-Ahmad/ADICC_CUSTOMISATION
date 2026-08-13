@@ -1,164 +1,148 @@
-// Bottom pill — open sheets slide out horizontally with own backdrop (portal).
-import React, { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import { Icon } from "../brand/icons.jsx";
+// Open sheets on the canvas — docked left-rail window.
+// Parent owns goToSheet / toggleInGroup / closeTab / gallery; this view only calls them.
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Columns2, Eye, EyeOff, FileStack, Plus, Search, X } from "lucide-react";
+
+const ICO = { size: 15, strokeWidth: 2 };
 
 export default function OpenSheetsPill({
   openTabs = [],
   sheetGroup = [],
   sheetKey,
+  focusKey,
   tabLabel,
   onGoToSheet,
   onToggleInGroup,
   onCloseTab,
+  onAdd,
+  onClose,
 }) {
-  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const findRef = useRef(null);
 
   useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    const onKey = (e) => {
+      if (e.key === "Escape") { onClose?.(); return; }
+      if (e.key !== "/") return;
+      const tg = e.target?.tagName;
+      if (tg === "INPUT" || tg === "SELECT" || tg === "TEXTAREA") return;
+      e.preventDefault();
+      findRef.current?.focus();
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  }, [onClose]);
 
-  useEffect(() => {
-    if (!openTabs.length) setOpen(false);
-  }, [openTabs.length]);
+  const filtering = q.trim().length > 0;
+  const shown = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return openTabs.map((k, i) => ({ k, i }));
+    return openTabs.map((k, i) => ({ k, i })).filter(({ k }) => {
+      const lbl = (tabLabel ? tabLabel(k) : k).toLowerCase();
+      return lbl.includes(s) || String(k).toLowerCase().includes(s);
+    });
+  }, [openTabs, q, tabLabel]);
 
-  if (!openTabs.length) return null;
+  const activeKey = (() => {
+    if (sheetGroup.length) {
+      if (focusKey && sheetGroup.includes(focusKey)) return focusKey;
+      if (sheetKey && sheetGroup.includes(sheetKey)) return sheetKey;
+      return sheetGroup[0];
+    }
+    if (sheetKey && openTabs.includes(sheetKey)) return sheetKey;
+    return openTabs[0] || "";
+  })();
 
-  const ui = (
-    <>
-      <div
-        style={{
-          position: "fixed",
-          left: 14,
-          bottom: 14,
-          zIndex: 41,
-          maxWidth: "calc(50vw - 90px)",
-          pointerEvents: "none",
-        }}
-      >
-        <div
-          className="sheets-pill-glass"
-          style={{
-            pointerEvents: "auto",
-            display: "flex",
-            alignItems: "stretch",
-            borderRadius: 999,
-            overflow: "hidden",
-            transition: "box-shadow 0.28s ease",
-          }}
-        >
-          <button
-            type="button"
-            className={`sheets-pill-glass-trigger${open ? " is-open" : ""}`}
-            onClick={() => setOpen((v) => !v)}
-            title={open ? "Hide open sheets" : "Show open sheets"}
-            aria-expanded={open}
-            style={{
-              flexShrink: 0,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "6px 10px",
-              border: "none",
-              borderRight: open ? "1px solid var(--ink-faint)" : "none",
-              cursor: "pointer",
-              fontFamily: "var(--f-mono)",
-              fontSize: 10,
-            }}
-          >
-            <Icon name="document" size={11} />
-            <span style={{ fontSize: 8.5, textTransform: "uppercase", letterSpacing: "0.1em", opacity: open ? 0.75 : 0.9 }}>Sheets</span>
-            <span style={{ fontWeight: 700, fontSize: 10 }}>{openTabs.length}</span>
-            <Icon name={open ? "chevronLeft" : "chevronRight"} size={9} />
+  const onEye = (e, k, visible, inGroup) => {
+    e.stopPropagation();
+    if (!visible) { onGoToSheet(k); return; }
+    if (inGroup && sheetGroup.length >= 2) onToggleInGroup(k);
+  };
+
+  return (
+    <div className="left-panel-glass open-sheets-panel" role="dialog" aria-label="Open sheets">
+      <div className="open-sheets-head">
+        <FileStack size={18} strokeWidth={2} />
+        <strong>Open set</strong>
+        <span className="open-sheets-head-n">{openTabs.length}</span>
+        <span style={{ flex: 1 }} />
+        {onAdd && (
+          <button type="button" className="open-sheets-add" onClick={onAdd} title="Add sheets from the gallery">
+            <Plus size={15} strokeWidth={2.25} />Add
           </button>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              overflow: "hidden",
-              maxWidth: open ? "min(calc(50vw - 120px), 520px)" : 0,
-              opacity: open ? 1 : 0,
-              transition: "max-width 0.36s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.22s ease",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                gap: 4,
-                alignItems: "center",
-                padding: "5px 8px 5px 6px",
-                overflowX: "auto",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {openTabs.map((k) => {
-                const inGroup = sheetGroup.includes(k);
-                const on = sheetGroup.length ? inGroup : k === sheetKey;
-                const lbl = tabLabel(k);
-                return (
-                  <span
-                    key={k}
-                    className={`sheets-pill-glass-tab${on ? " is-on" : ""}`}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 4,
-                      borderBottom: on ? "2px solid var(--cobalt)" : "1px solid var(--ink-faint)",
-                      padding: "2px 4px 2px 6px",
-                      maxWidth: 155,
-                      flexShrink: 0,
-                      borderRadius: 5,
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => { onGoToSheet(k); }}
-                      title={k}
-                      style={{
-                        border: "none",
-                        background: "none",
-                        cursor: "pointer",
-                        fontWeight: on ? 700 : 500,
-                        fontSize: 10,
-                        color: "var(--ink)",
-                        fontFamily: "var(--f-mono)",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        maxWidth: 105,
-                        padding: 0,
-                      }}
-                    >
-                      {lbl}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onToggleInGroup(k)}
-                      title={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
-                      style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-positive)", padding: 0, display: "inline-flex" }}
-                    >
-                      <Icon name="sideBySide" size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onCloseTab(k)}
-                      title="Close tab"
-                      style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 0, display: "inline-flex" }}
-                    >
-                      <Icon name="close" size={8} />
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+        )}
+        <button type="button" className="lp-tab-close" onClick={onClose} title="Close panel">
+          <X size={18} strokeWidth={2} />
+        </button>
       </div>
-    </>
-  );
 
-  return createPortal(ui, document.body);
+      <label className="open-sheets-find">
+        <Search size={16} strokeWidth={2} className="open-sheets-find-ico" aria-hidden="true" />
+        <input
+          ref={findRef}
+          name="open-sheets-search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Jump to a sheet"
+          aria-label="Filter open sheets"
+          autoComplete="off"
+        />
+        {filtering && <span className="open-sheets-find-n">{shown.length}/{openTabs.length}</span>}
+      </label>
+
+      <div className="left-panel-scroll open-sheets-list">
+        {shown.length === 0 ? (
+          <div className="open-sheets-empty">
+            {filtering ? `Nothing matches “${q.trim()}”.` : "No sheets open on the canvas."}
+          </div>
+        ) : shown.map(({ k, i }) => {
+          const inGroup = sheetGroup.includes(k);
+          const visible = sheetGroup.length ? inGroup : k === sheetKey;
+          const selected = k === activeKey;
+          const lbl = tabLabel ? tabLabel(k) : k;
+          const n = String(i + 1).padStart(2, "0");
+          const canHide = visible && inGroup && sheetGroup.length >= 2;
+          return (
+            <div
+              key={k}
+              className={`open-sheets-row${selected ? " is-on" : ""}${visible && !selected ? " is-up" : ""}`}
+              onClick={() => onGoToSheet(k)}
+              title={k}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onGoToSheet(k); } }}
+            >
+              <span className="open-sheets-idx" aria-hidden="true">{n}</span>
+              <span className="open-sheets-name">{lbl}</span>
+              {selected && <span className="open-sheets-now">Selected</span>}
+              <button
+                type="button"
+                className={`open-sheets-ico${visible ? " is-eye" : ""}`}
+                onClick={(e) => onEye(e, k, visible, inGroup)}
+                title={canHide ? "Hide from this view" : visible ? "On the canvas" : "Show this sheet"}
+              >
+                {visible ? <Eye {...ICO} /> : <EyeOff {...ICO} />}
+              </button>
+              <button
+                type="button"
+                className={`open-sheets-ico${inGroup ? " is-pair" : ""}`}
+                onClick={(e) => { e.stopPropagation(); onToggleInGroup(k); }}
+                title={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
+              >
+                <Columns2 {...ICO} />
+              </button>
+              <button
+                type="button"
+                className="open-sheets-ico is-x"
+                onClick={(e) => { e.stopPropagation(); onCloseTab(k); }}
+                title="Close tab"
+              >
+                <X {...ICO} size={16} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }

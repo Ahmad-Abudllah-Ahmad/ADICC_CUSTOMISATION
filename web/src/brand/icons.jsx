@@ -36,7 +36,7 @@ export const icons = {
   deduct: (s) => <I size={s}><path d="M12 4 L 20 10 L 17 19 L 7 19 L 4 10 Z" /><line x1="9" y1="13" x2="15" y2="13" /></I>,
   measure: (s) => <I size={s}><path d="M4 8 H 20" /><path d="M4 8 V 16 H 20 V 8" /><line x1="7" y1="8" x2="7" y2="11.5" /><line x1="10" y1="8" x2="10" y2="10.5" /><line x1="13" y1="8" x2="13" y2="11.5" /><line x1="16" y1="8" x2="16" y2="10.5" /><circle cx="20" cy="12" r="1.1" fill="currentColor" /></I>,
   cutOut: (s) => <I size={s}><path d="M12 4 L 20 10 L 17 19 L 7 19 L 4 10 Z" /><circle cx="12" cy="4" r="1" fill="currentColor" /><circle cx="20" cy="10" r="1" fill="currentColor" /><circle cx="17" cy="19" r="1" fill="currentColor" /><circle cx="7" cy="19" r="1" fill="currentColor" /><circle cx="4" cy="10" r="1" fill="currentColor" /><line x1="9" y1="13" x2="15" y2="13" strokeWidth="2" /></I>,
-  edit: (s) => <I size={s}><rect x="9" y="7" width="11" height="13" /><path d="M15 7 V 4 H 4 V 15 H 7" /></I>,
+  edit: (s) => <I size={s}><path d="M14.2 5.2 L 18.8 9.8 L 8.5 20 H 4 V 15.5 Z" /><path d="M12.6 6.8 L 17.2 11.4" /></I>,
   deductRect: (s) => <I size={s}><rect x="4" y="6" width="16" height="12" /><line x1="9" y1="12" x2="15" y2="12" /></I>,
   snap: (s) => (
     <svg width={s} height={s} viewBox="0 0 512 512" fill="currentColor" aria-hidden="true">
@@ -58,8 +58,13 @@ export const icons = {
   undo: (s) => <I size={s}><path d="M9 5 L 5 9 L 9 13" /><path d="M5 9 H 14.5 a 4.8 4.8 0 0 1 0 9.6 H 8" /></I>,
   check: (s) => <I size={s}><path d="M5 13 L 10 18 L 19 7" /></I>,
   sheets: (s) => <I size={s}><rect x="4" y="4" width="7" height="7" /><rect x="13" y="4" width="7" height="7" /><rect x="4" y="13" width="7" height="7" /><rect x="13" y="13" width="7" height="7" /></I>,
+  // stacked pages — open tabs on the canvas (distinct from the 4-up Files grid)
+  openSheets: (s) => <I size={s}><rect x="7" y="4" width="13" height="16" /><path d="M4 7 V 21 H 17" /></I>,
+  eye: (s) => <I size={s}><path d="M3 12 C 7 6.5, 17 6.5, 21 12 C 17 17.5, 7 17.5, 3 12 Z" /><circle cx="12" cy="12" r="2.3" /></I>,
+  eyeOff: (s) => <I size={s}><path d="M3 12 C 7 6.5, 17 6.5, 21 12 C 17 17.5, 7 17.5, 3 12 Z" /><circle cx="12" cy="12" r="2.3" /><line x1="5" y1="19" x2="19" y2="5" /></I>,
   sideBySide: (s) => <I size={s}><rect x="4" y="5" width="7" height="14" /><rect x="13" y="5" width="7" height="14" /></I>,
   close: (s) => <I size={s}><path d="M6 6 L 18 18 M18 6 L 6 18" /></I>,
+  trash: (s) => <I size={s}><path d="M5 7 H 19" /><path d="M9.5 7 V 4.5 H 14.5 V 7" /><path d="M7 7 V 19.5 H 17 V 7" /><line x1="10" y1="10.5" x2="10" y2="16.5" /><line x1="14" y1="10.5" x2="14" y2="16.5" /></I>,
   chevronDown: (s) => <I size={s}><path d="M6 9 L 12 15 L 18 9" /></I>,
   chevronLeft: (s) => <I size={s}><path d="M15 6 L 9 12 L 15 18" /></I>,
   chevronRight: (s) => <I size={s}><path d="M9 6 L 15 12 L 9 18" /></I>,
@@ -86,6 +91,9 @@ export const icons = {
   // mixer sliders — the toolbar render/fill settings menu
   sliders: (s) => <I size={s}><path d="M4 7 H 6.8 M11.2 7 H 20" /><path d="M4 17 H 12.8 M17.2 17 H 20" /><circle cx="9" cy="7" r="2.2" /><circle cx="15" cy="17" r="2.2" /></I>,
   info: (s) => <I size={s} stroke={1.6}><circle cx="12" cy="12" r="8.5" /><line x1="12" y1="11" x2="12" y2="16" /><circle cx="12" cy="8.1" r="0.95" fill="currentColor" /></I>,
+  // chrome theme — orthogonal to the canvas ☾ sheet invert
+  sun: (s) => <I size={s}><circle cx="12" cy="12" r="4" /><path d="M12 2.8 V 5.2 M12 18.8 V 21.2 M2.8 12 H 5.2 M18.8 12 H 21.2 M5.2 5.2 L 6.9 6.9 M17.1 17.1 L 18.8 18.8 M18.8 5.2 L 17.1 6.9 M6.9 17.1 L 5.2 18.8" /></I>,
+  moon: (s) => <I size={s}><path d="M16 3.8 A 8.4 8.4 0 1 0 20.2 15.2 A 6.5 6.5 0 0 1 16 3.8 Z" fill="currentColor" stroke="none" /></I>,
 };
 
 export function Icon({ name, size = 18 }) {

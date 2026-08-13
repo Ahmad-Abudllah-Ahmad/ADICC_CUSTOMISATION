@@ -717,7 +717,7 @@ function TakeoffsPanel({
                 <div className="takeoffs-panel-glass-group" onClick={() => setClosedGroups((s) => { const n = new Set(s); if (n.has(g.name)) n.delete(g.name); else n.add(g.name); return n; })}
                   title="Collapse / expand this tag family"
                   style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", borderTop: "1px solid var(--ink-faint)", cursor: "pointer", fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", userSelect: "none" }}>
-                  <span style={{ width: 10, color: "light-dark(var(--ink-muted), var(--ink))" }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
+                  <span style={{ width: 10, color: "var(--ink-muted)" }}>{closedGroups.has(g.name) ? "▸" : "▾"}</span>
                   <span style={{ fontWeight: 700, color: "var(--ink)" }}>{g.name}</span>
                   <span>· {g.items.length}</span>
                 </div>

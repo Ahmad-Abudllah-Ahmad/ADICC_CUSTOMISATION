@@ -154,7 +154,7 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
         style={{
           height: THUMB_HEIGHT,
           borderBottom: "1px solid var(--divider-soft)",
-          background: "#dbe3e6",
+          background: "var(--stage)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -173,7 +173,7 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
         style={{
           height: THUMB_HEIGHT,
           borderBottom: "1px solid var(--divider-soft)",
-          background: "#dbe3e6",
+          background: "var(--stage)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -194,7 +194,7 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
         height: THUMB_HEIGHT,
         overflow: "hidden",
         borderBottom: "1px solid var(--divider-soft)",
-        background: "#dbe3e6",
+        background: "var(--stage)",
       }}
       aria-label="Auto-scrolling plan sheet previews"
     >
@@ -242,7 +242,7 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
           position: "absolute",
           inset: 0,
           background:
-            "linear-gradient(90deg, #dbe3e6 0%, transparent 12%, transparent 88%, #dbe3e6 100%)",
+            "linear-gradient(90deg, var(--stage) 0%, transparent 12%, transparent 88%, var(--stage) 100%)",
         }}
       />
     </div>

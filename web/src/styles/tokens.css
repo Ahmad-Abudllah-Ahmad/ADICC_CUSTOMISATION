@@ -5,6 +5,8 @@
   --paper-cream: #f2f1ed;
   --paper-bright: #fafaf8;
   --paper-shadow: #e5e4df;
+  /* takeoff stage / toolbar band — follows data-theme, not OS color-scheme */
+  --stage: #dbe3e6;
 
   /* ink */
   --ink:        #1c2833;
@@ -87,6 +89,7 @@
     --paper-bright: #1a2332;
     --paper-cream:  #222d3f;
     --paper-shadow: #2c3a52;
+    --stage: #1a2332;
 
     --ink:        #ecf0f1;
     --ink-soft:   #bdc3c7;

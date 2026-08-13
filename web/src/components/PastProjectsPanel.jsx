@@ -406,7 +406,7 @@ export default function PastProjectsPanel({
                   borderRadius: "50%",
                   border: item.solid ? "none" : "1px solid var(--divider-soft)",
                   outline: "none",
-                  background: item.solid ? "var(--ink)" : "#ffffff",
+                  background: item.solid ? "var(--ink)" : "var(--surface-pop)",
                   color: item.solid ? "var(--paper-bright)" : "var(--ink)",
                   cursor: creating ? "default" : "pointer",
                   opacity: creating ? 0.6 : 1,

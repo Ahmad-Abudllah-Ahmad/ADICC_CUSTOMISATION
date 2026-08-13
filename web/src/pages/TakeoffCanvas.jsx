@@ -76,6 +76,8 @@ import RatesPanel from "../components/RatesPanel.jsx";
 import EstimatePanel from "../components/EstimatePanel.jsx";
 import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
+import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
+import { Contrast, FileStack, PanelLeft, PanelLeftClose, Scan, ZoomIn, ZoomOut } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
@@ -101,7 +103,7 @@ import { startCapture, captureSupported } from "../lib/voiceCapture";
 import { aiConfig, isAiConfigured } from "../lib/ai.js";
 import { useGoogleAuth } from "../lib/google/AuthContext.jsx";
 import { projectHomeFolderId } from "../lib/projectHome.js";
-import { getTheme, toggleTheme, onThemeChange } from "../lib/theme.js";
+import ThemeToggle from "../components/ThemeToggle.jsx";
 // Pure data constants (render/zoom budgets, snap tuning, tool descriptors,
 // flooring starter conditions) live in lib/canvasConstants.js; the pure
 // module-scope helpers (autoRenderScale, invertCanvasPixels, uid, clamp,
@@ -347,6 +349,8 @@ export default function TakeoffCanvas() {
   useEffect(() => { symbolSourceViewRef.current = symbolSourceView; }, [symbolSourceView]);
   const [openFolderPaths, setOpenFolderPaths] = useState({}); // folder path → true when expanded (default collapsed)
   const [filesSearch, setFilesSearch] = useState(""); // Files panel — name filter + highlight
+  const [pendingPdfClose, setPendingPdfClose] = useState(null); // filename waiting on confirm — closePdf itself is never changed
+  const [pendingMarkupDelete, setPendingMarkupDelete] = useState(null); // markup waiting on confirm — deleteMarkup itself is never changed
   const [lastGroup, setLastGroup] = useState([]);     // most recent side-by-side composition — "Regroup" restores it
   const [focusKey, setFocusKey] = useState("");         // panel of the last click — scale/calibrate target in group mode
   const [zoneCheck, setZoneCheck] = useState(null);   // ephemeral zone-check region {key, pts (norm)} — never persisted (buildPayload doesn't read it)
@@ -360,32 +364,38 @@ export default function TakeoffCanvas() {
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
   // Floating LEFT panel — one at a time: null | "files" | "sheets" | "markup" | "stamp" | "rfi" | "layers".
-  // Opens on rail button click only (not canvas / not hover); auto-closes on mouse leave. Fixed size, not resizable.
+  // One desk icon opens/closes it; tabs switch inside the strip. Hover-out must NOT dismiss.
   const [leftTab, setLeftTab] = useState(null);
   const [layersFloating, setLayersFloating] = useState(false); // Layers tab double-click → draggable/resizable window
   const lastLeftTabRef = useRef("files");
-  const leftHoverCloseRef = useRef(null);
-  const openLeftHover = useCallback((tab) => {
-    if (leftHoverCloseRef.current) { clearTimeout(leftHoverCloseRef.current); leftHoverCloseRef.current = null; }
-    const next = tab || lastLeftTabRef.current || "files";
-    lastLeftTabRef.current = next;
-    if (next === "layers" && layersFloating) setLayersFloating(false);
-    setLeftTab(next);
+  const [openSheetsPanel, setOpenSheetsPanel] = useState(false); // canvas tab switcher — not one of the Files/Markups/Stamps/RFI tabs
+  const toggleLeftDesk = useCallback(() => {
+    setOpenSheetsPanel(false);
+    setLeftTab((cur) => {
+      if (cur) return null;
+      const next = lastLeftTabRef.current || "files";
+      if (next === "layers" && layersFloating) setLayersFloating(false);
+      return next;
+    });
   }, [layersFloating]);
-  const cancelLeftHoverClose = useCallback(() => {
-    if (leftHoverCloseRef.current) { clearTimeout(leftHoverCloseRef.current); leftHoverCloseRef.current = null; }
+  useEffect(() => { if (leftTab) lastLeftTabRef.current = leftTab; }, [leftTab]);
+  const toggleOpenSheetsPanel = useCallback(() => {
+    setLeftTab(null);
+    setOpenSheetsPanel((v) => !v);
   }, []);
-  const scheduleLeftHoverClose = useCallback(() => {
-    if (leftHoverCloseRef.current) clearTimeout(leftHoverCloseRef.current);
-    leftHoverCloseRef.current = setTimeout(() => setLeftTab(null), 220);
+  const openGallery = useCallback(() => {
+    setLeftTab(null);
+    setOpenSheetsPanel(false);
+    setView("gallery");
   }, []);
-  useEffect(() => () => { if (leftHoverCloseRef.current) clearTimeout(leftHoverCloseRef.current); }, []);
   // Layers panel — session-only (never persisted): hide, group, pick for merge.
   const [hiddenShapeIds, setHiddenShapeIds] = useState({});
   const [layerPickIds, setLayerPickIds] = useState({});
   const [layerGroups, setLayerGroups] = useState({});
   const [shapeToLayerGroup, setShapeToLayerGroup] = useState({});
   const [layersSheetOpen, setLayersSheetOpen] = useState({});
+  const leftCanvasWork = leftTab === "markup" || leftTab === "stamp";
+  useEffect(() => { if (!openTabs.length) setOpenSheetsPanel(false); }, [openTabs.length]);
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
   const [panelEditId, setPanelEditId] = useState(null);       // markup id whose text is being edited inline in the markup panel (off-screen fallback for the ✎ button)
@@ -425,10 +435,6 @@ export default function TakeoffCanvas() {
   const [detectedScales, setDetectedScales] = useState({}); // { sheetKey: {upp,label,multi} } read off the plan text
   const [darkMode, setDarkMode] = useState(() => { try { return localStorage.getItem("opentakeoff_dark") === "1"; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem("opentakeoff_dark", darkMode ? "1" : "0"); } catch { /* private mode */ } }, [darkMode]);
-  // App chrome theme (light/dark tokens) — independent of the canvas ☾ invert
-  // above. lib/theme.js owns the DOM; this state just keeps the glyph current.
-  const [theme, setTheme] = useState(getTheme);
-  useEffect(() => onThemeChange(setTheme), []);
   // diff-only prefs (cf. reportColumns): only keys that differ from the
   // defaults persist, so a future default change reaches existing users
   useEffect(() => {
@@ -1369,6 +1375,14 @@ export default function TakeoffCanvas() {
     });
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
+  // UI-only gate in front of closePdf — does not change closePdf behavior.
+  const requestClosePdf = useCallback((name) => { setPendingPdfClose(name); }, []);
+  const confirmClosePdf = useCallback(() => {
+    const name = pendingPdfClose;
+    setPendingPdfClose(null);
+    if (name) closePdf(name);
+  }, [pendingPdfClose, closePdf]);
+  const cancelClosePdf = useCallback(() => { setPendingPdfClose(null); }, []);
   // Remove-from-project (cloud only): the DESTRUCTIVE variant — delete the Drive
   // file, then drop it from the working set.
   const removeFromProject = useCallback(async (name) => {
@@ -2606,7 +2620,7 @@ export default function TakeoffCanvas() {
       }
       const lower = e.key.toLowerCase();
       if (viewRef.current === "gallery") return;
-      if (lower === "g") { setView("gallery"); return; }
+      if (lower === "g") { setLeftTab(null); setView("gallery"); return; }
       if (e.key === "D" && e.shiftKey) { setTool("deduct-rect"); return; }
       if (e.key === "Q" && e.shiftKey) { setTool("deduct-curve"); return; }
       const map = { p: "pan", v: "select", a: "area", r: "rect", l: "linear", q: "curve", s: "surface", c: "count", d: "deduct", o: "oneclick", w: "walltrace", u: "wallarea", k: "check", h: "highlighter" };
@@ -8179,6 +8193,13 @@ export default function TakeoffCanvas() {
       <Icon name={iconName} size={15} />{count ? <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5 }}>{count}</span> : null}
     </button>
   );
+  const RAIL_ICO = { size: 15, strokeWidth: 1.5 };
+  const railBtn = (onClick, icon, label, isOn, extraClass = "") => (
+    <button type="button" className={`canvas-circle-btn${isOn ? " is-on" : ""}${extraClass ? ` ${extraClass}` : ""}`} onClick={onClick} title={label}
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "inherit", cursor: "pointer", flexShrink: 0, boxShadow: "none" }}>
+      {icon}
+    </button>
+  );
   const vRule = <span style={{ width: 1, alignSelf: "stretch", background: "var(--ink-faint)", margin: "0 3px" }} />;
 
   // The panel's condition-list VIEW (search / natural sort / grouping / the
@@ -8457,7 +8478,7 @@ export default function TakeoffCanvas() {
   if (sheetGroup.length) sheetMenuItems.push({ id: "ungroup", label: "Ungroup — back to one sheet", title: "Back to one sheet — you land on the sheet you were last working; every sheet keeps its takeoffs and markups", onSelect: ungroup });
   if (!sheetGroup.length && lastGroup.length >= 2) sheetMenuItems.push({ id: "regroup", label: `Regroup (${lastGroup.length})`, title: `Side-by-side again with the same ${lastGroup.length} sheets — each keeps its own scale, takeoffs and markups`, onSelect: regroup });
   if (sheetMenuItems.length) sheetMenuItems.push("divider");
-  sheetMenuItems.push({ id: "gallery", icon: "sheets", label: "Open gallery…", shortcut: "G", onSelect: () => setView("gallery") });
+  sheetMenuItems.push({ id: "gallery", icon: "sheets", label: "Open gallery…", shortcut: "G", onSelect: openGallery });
 
   // deck-2 scale chip — the four scale controls collapsed to one status face:
   // red dashed = unset ("you can't trace yet"), green = set, warning = the
@@ -8594,7 +8615,7 @@ export default function TakeoffCanvas() {
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
       {/* Unified Floating Toolbar */}
-      <div className="toolbar-glass-bar" style={{ position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "#dbe3e6", userSelect: "none" }}>
+      <div className="toolbar-glass-bar" style={{ position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "var(--stage)", userSelect: "none" }}>
         <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
@@ -8605,7 +8626,7 @@ export default function TakeoffCanvas() {
           <div className="toolbar-glass-pill" style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, borderRadius: 14, padding: "3px 12px", whiteSpace: "nowrap", width: 268, minWidth: 268, maxWidth: 268, boxSizing: "border-box" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
-                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>ESTIMATION & TAKEOFF</div>
+                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>ESTIMATION & TAKEOFF</div>
                 <div
                   className={estimateValuePulse ? "estimate-value-live is-pulse" : "estimate-value-live"}
                   style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--f-mono)", lineHeight: 1.1 }}
@@ -8613,7 +8634,7 @@ export default function TakeoffCanvas() {
                 >
                   {money(projectEstimateTotal || 0, projectCurrency)}
                 </div>
-                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>TAKE-OFF VALUE</div>
+                <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>TAKE-OFF VALUE</div>
               </div>
               <EstimateValueSpark series={estimateHistory} currency={projectCurrency} />
             </div>
@@ -8706,7 +8727,7 @@ export default function TakeoffCanvas() {
             
             {/* Mode */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>MODE</div>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>MODE</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <span className="mode-circle-wrap">
                   <button type="button" onClick={() => setTool("select")} title="Select (V)"
@@ -8731,7 +8752,7 @@ export default function TakeoffCanvas() {
 
             {/* Draw */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>DRAW</div>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>DRAW</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <ToolMenu variant="palette" compactFace title="Measure" active={measureActive} onOpenChange={onMenuDepth} face={<><Icon name={faceTool.icon} size={13} /><span className="tool-key-badge tool-key-badge--face">{faceTool.shortcut}</span><span style={{ marginLeft: 2, fontWeight: 600, fontSize: 11 }}>Measure</span></>} items={MEASURE_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))} />
                 <ToolMenu variant="palette" compactFace title="Cut Out — subtract voids/columns" active={cutActive} accent="danger" onOpenChange={onMenuDepth} face={<><Icon name="cutOut" size={13} /><span className="tool-key-badge tool-key-badge--face">{cutFaceTool.shortcut}</span><span style={{ marginLeft: 2, fontWeight: 600, fontSize: 11 }}>Cut Out</span></>} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))} />
@@ -8766,7 +8787,7 @@ export default function TakeoffCanvas() {
 
             {/* Aids */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>AIDS</div>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>AIDS</div>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 <span className="angle-dial-wrap">
                   <span className="mode-circle-wrap">
@@ -8781,7 +8802,7 @@ export default function TakeoffCanvas() {
                     <span className="mode-circle-hint" aria-hidden="true">Angle · ⇧</span>
                   </span>
                   <svg className="angle-dial-arc" width="14" height="28" viewBox="0 0 14 28" aria-hidden="true">
-                    <path d="M 2 26 A 12 12 0 0 1 2 2" fill="none" stroke="rgba(14, 26, 46, 0.28)" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M 2 26 A 12 12 0 0 1 2 2" fill="none" stroke="var(--ink-faint)" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
                 </span>
                 <span className="mode-circle-wrap">
@@ -8803,7 +8824,7 @@ export default function TakeoffCanvas() {
 
             {/* Condition & Label */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>CONDITION / LABEL</div>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>CONDITION / LABEL</div>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 {aCond ? (
                   <button type="button" onClick={() => setShowCondEdit(true)} title={`Edit appearance for ${aCond.finish_tag}`} className={`toolbar-glass-btn-cond${showCondEdit ? " is-on" : ""}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", border: "1px solid var(--ink-faint)", borderRadius: 16, color: "var(--ink)", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "var(--f-mono)", lineHeight: 1 }}>
@@ -8826,7 +8847,7 @@ export default function TakeoffCanvas() {
 
             {/* Scale */}
             <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "light-dark(var(--ink-soft), var(--ink))", textTransform: "uppercase" }}>SCALE</div>
+              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>SCALE</div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button type="button" onClick={() => setUnits((u) => (u === "metric" ? "imperial" : "metric"))} title="Toggle metric/imperial"
                   className={`angle-dial-btn${units === "metric" ? " is-on" : ""}`}
@@ -9048,15 +9069,14 @@ export default function TakeoffCanvas() {
 
       {/* canvas + issue desk */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
-       {/* Left icon rail + floating Files panel — sits in the canvas band (below
-           the toolbar), never overlaps the decks. Rail stays visible; click a rail
-           button to open the panel (canvas click / hover does not open it). */}
+       {/* Left icon rail + floating desk panel — canvas only (gallery/picker
+           sit at z-40; this rail is z-55 so it must not mount over the plan set). */}
+       {view === "canvas" && (
        <div
-         onMouseLeave={scheduleLeftHoverClose}
          onPointerDown={(e) => e.stopPropagation()}
          style={{
            position: "absolute",
-           left: 8,
+           left: 16,
            top: 10,
            bottom: 10,
            zIndex: 55,
@@ -9078,35 +9098,38 @@ export default function TakeoffCanvas() {
              display: "flex",
              flexDirection: "column",
              alignItems: "center",
-             gap: 3,
-             padding: "6px 4px",
-             background: "transparent",
-             border: "none",
-             borderRadius: 999,
-             boxShadow: "none",
            }}
          >
-           {panelBtn(() => openLeftHover("files"), "sheets", "Project files — plans in this takeoff (upload folder, zip, or PDFs)", leftTab === "files", sheets.length)}
-           {panelBtn(() => openLeftHover("layers"), "takeoffs", "Takeoff layers — hide, group, merge", leftTab === "layers" || layersFloating, layerPanelShapes.length)}
-           {panelBtn(() => openLeftHover("markup"), "markup", "Markups on these sheets (clouds, callouts, notes)", leftTab === "markup", markupCount)}
-           {panelBtn(() => openLeftHover("stamp"), "stamp", "Stamps — reusable annotations dropped click-to-place", leftTab === "stamp", stampLib.stamps.length)}
-           {panelBtn(() => openLeftHover("rfi"), "rfi", "RFI register — raise, track, and export Requests For Information", leftTab === "rfi", rfis.length)}
-           {[["+", 1.25], ["−", 0.8]].map(([lbl, f]) => (
-             <button key={lbl} className="canvas-circle-btn" onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, f); }}
-               style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 18, fontWeight: 700, flexShrink: 0 }}>{lbl}</button>
-           ))}
-           <button className="canvas-circle-btn" onClick={() => stage.w && fitToView(stage.w, stage.h)} title="Fit" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 12, flexShrink: 0 }}>fit</button>
-           <button className={`canvas-circle-btn${darkMode ? " is-sheet-dark" : ""}`} onClick={() => setDarkMode((d) => !d)} title={darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)"}
-             style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: `1px solid ${darkMode ? "var(--cobalt)" : "var(--ink-faint)"}`, cursor: "pointer", fontSize: 13, flexShrink: 0 }}>
-             {darkMode ? "☀" : "☾"}</button>
+           {railBtn(toggleLeftDesk, leftTab ? <PanelLeftClose {...RAIL_ICO} /> : <PanelLeft {...RAIL_ICO} />, "Files, markups, stamps, RFIs, layers", !!leftTab)}
+           {openTabs.length > 0 && railBtn(toggleOpenSheetsPanel, <FileStack {...RAIL_ICO} />, "Sheets open on the canvas — jump, pair, or close tabs", openSheetsPanel)}
+           <span className="canvas-rail-rule" aria-hidden="true" />
+           {railBtn(() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1.25); }, <ZoomIn {...RAIL_ICO} />, "Zoom in")}
+           {railBtn(() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 0.8); }, <ZoomOut {...RAIL_ICO} />, "Zoom out")}
+           {railBtn(() => stage.w && fitToView(stage.w, stage.h), <Scan {...RAIL_ICO} />, "Fit sheet to view")}
+           <span className="canvas-rail-rule" aria-hidden="true" />
+           {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
+           <ThemeToggle />
          </div>
+         {openSheetsPanel && openTabs.length > 0 && (
+           <OpenSheetsPill
+             openTabs={openTabs}
+             sheetGroup={sheetGroup}
+             sheetKey={sheetKey}
+             focusKey={focusKey}
+             tabLabel={tabLabel}
+             onGoToSheet={goToSheet}
+             onToggleInGroup={toggleInGroup}
+             onCloseTab={closeTab}
+             onAdd={openGallery}
+             onClose={() => setOpenSheetsPanel(false)}
+           />
+         )}
          {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
          {leftTab && (
          <div
            className="left-panel-glass"
            role="dialog"
            aria-label={leftTab === "layers" ? "Layers panel" : "Files panel"}
-           onMouseEnter={cancelLeftHoverClose}
            style={{
              pointerEvents: "auto",
              width: 360,
@@ -9121,39 +9144,41 @@ export default function TakeoffCanvas() {
            {/* tab strip */}
            <div className="left-panel-glass-tabs" style={{ display: "flex", alignItems: "stretch", color: "var(--accent-contrast)", flexShrink: 0 }}>
              {[{ id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "layers", label: "Layers", n: layerPanelShapes.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
-               <button key={t.id} onClick={() => { lastLeftTabRef.current = t.id; setLeftTab(t.id); }}
+               <button
+                 key={t.id}
+                 type="button"
+                 className={`lp-tab${leftTab === t.id ? " is-on" : ""}`}
+                 onClick={() => { lastLeftTabRef.current = t.id; if (t.id === "layers" && layersFloating) setLayersFloating(false); setLeftTab(t.id); }}
                  onDoubleClick={(e) => {
                    if (t.id !== "layers") return;
                    e.preventDefault();
                    e.stopPropagation();
-                   cancelLeftHoverClose();
                    setLayersFloating(true);
                    setLeftTab(null);
                  }}
                  title={t.id === "layers" ? `${t.label} — double-click to detach as floating window` : t.label}
-                 style={{ flex: 1, padding: "8px 2px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, lineHeight: 1.1, minHeight: 40 }}>
-                 <span style={{ whiteSpace: "nowrap" }}>{t.label} ·</span>
-                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, lineHeight: 1 }}>{t.n}</span>
+               >
+                 <span>{t.label}</span>
+                 {t.n ? <span className="lp-tab-count">{t.n}</span> : null}
                </button>
              ))}
-             <button onClick={() => setLeftTab(null)} title="Close panel" style={{ padding: "0 12px", border: "none", background: "transparent", color: "var(--accent-contrast)", fontSize: 16, cursor: "pointer" }}>×</button>
+             <button type="button" className="lp-tab-close" onClick={() => setLeftTab(null)} title="Close panel">
+               <Icon name="close" size={14} />
+             </button>
            </div>
            {/* body of the active tab */}
-           <div style={{ flex: 1, overflow: leftTab === "layers" ? "hidden" : "auto", minHeight: 0, display: leftTab === "layers" ? "flex" : "block", flexDirection: "column" }}>
+           <div className="left-panel-scroll" style={{ flex: 1, overflow: leftTab === "layers" ? "hidden" : "auto", minHeight: 0, display: leftTab === "layers" ? "flex" : "block", flexDirection: "column" }}>
              {leftTab === "files" && (
                <div>
-                 <div className="left-panel-glass-actions" style={{ display: "flex", gap: 6, padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
-                   <button type="button" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set"
-                     style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
+                 <div className="left-panel-glass-actions" style={{ display: "flex", gap: 8, padding: "12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
+                   <button type="button" className="lp-btn-primary" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set">
                      <Icon name="plus" size={13} />Add files
                    </button>
-                   <button type="button" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder"
-                     style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontWeight: 600, fontSize: 12 }}>
+                   <button type="button" className="lp-btn-ghost" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder">
                      <Icon name="sheets" size={13} />Folder
                    </button>
-                   <button type="button" onClick={() => setView("gallery")} title="Open the visual plan-set gallery"
-                     style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12 }}>
-                     Gallery
+                   <button type="button" className="lp-btn-ghost" onClick={openGallery} title="Open the visual plan-set gallery">
+                     <Icon name="sheets" size={13} />Gallery
                    </button>
                  </div>
                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--ink-faint)" }}>
@@ -9224,13 +9249,19 @@ export default function TakeoffCanvas() {
                      const on = active === s.name;
                      const open = openTabs.some((k) => parseSheetKey(k).file === s.name);
                      const match = q && fileMatches(s);
+                     const full = fileName(s);
+                     const dot = full.lastIndexOf(".");
+                     const base = dot > 0 ? full.slice(0, dot) : full;
+                     const ext = dot > 0 ? full.slice(dot + 1) : "";
                      return (
-                       <div key={s.name} className={`left-panel-glass-file-row${on ? " is-active" : ""}${match ? " is-match" : ""}`} style={{ display: "flex", alignItems: "center", gap: 6, padding: `7px 10px 7px ${12 + depth * 14}px`, borderBottom: "1px solid var(--ink-faint)", boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : "none" }}>
+                       <div key={s.name} className={`left-panel-glass-file-row${on ? " is-active" : ""}${match ? " is-match" : ""}`} style={{ "--file-indent": `${depth * 14}px`, boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : undefined }}>
                          <button type="button" onClick={() => { openSheets([s.name]); setLeftTab("files"); }}
-                           title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}
-                           style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
-                           <span style={{ fontSize: 12.5, fontWeight: on || match ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{highlightName(fileName(s))}</span>
-                           <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{open ? "open" : "in project"}{on ? " · viewing" : ""}</span>
+                           title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}>
+                           <span className="left-panel-glass-file-title">
+                             <span className="left-panel-glass-file-name">{highlightName(base)}</span>
+                             {ext ? <span className="left-panel-glass-file-ext">{ext}</span> : null}
+                           </span>
+                           <span className={`left-panel-glass-file-meta${on ? " is-viewing" : open ? " is-open" : ""}`}>{on ? "open · viewing" : open ? "open" : "in project"}</span>
                          </button>
                          <button type="button"
                            onClick={(e) => {
@@ -9243,9 +9274,8 @@ export default function TakeoffCanvas() {
                            style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-positive)", padding: 4, display: "inline-flex" }}>
                            <Icon name="sideBySide" size={13} />
                          </button>
-                         <button type="button" onClick={() => closePdf(s.name)} title={`Remove ${s.name} from this project`}
-                           style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 4, display: "inline-flex" }}>
-                           <Icon name="close" size={11} />
+                         <button type="button" className="left-panel-glass-file-remove" onClick={(e) => { e.stopPropagation(); requestClosePdf(s.name); }} title={`Remove ${s.name} from this project`}>
+                           <Icon name="trash" size={14} />
                          </button>
                        </div>
                      );
@@ -9268,8 +9298,8 @@ export default function TakeoffCanvas() {
                              <div key={childPath}>
                                <button type="button" className="left-panel-glass-folder-btn" onClick={() => toggle(childPath)}
                                  title={open ? `Collapse ${name}` : `Expand ${name}`}
-                                 style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: `8px 10px 8px ${12 + depth * 14}px`, border: "none", borderBottom: "1px solid var(--ink-faint)", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 12.5 }}>
-                                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, width: 12, color: "light-dark(var(--cobalt), var(--ink))" }}>{open ? "▾" : "▸"}</span>
+                                 style={{ display: "flex", alignItems: "center", gap: 10, padding: `10px 12px 10px ${12 + depth * 14}px`, border: "none", color: "var(--ink)", cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 12.5 }}>
+                                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, width: 12, color: "var(--cobalt)" }}>{open ? "▾" : "▸"}</span>
                                  <Icon name="sheets" size={13} />
                                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
                                  <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{nFiles}</span>
@@ -9341,24 +9371,25 @@ export default function TakeoffCanvas() {
                  {/* layer show/hide — hides the on-canvas markup layer AND its hit-testing
                      (can't select/delete/fly-to an invisible markup); orthogonal to the
                      marked-set export, which still includes markups. */}
-                 <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 10px", borderBottom: "1px solid var(--ink-faint)" }}>
+                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--ink-faint)" }}>
+                   <div style={{ flex: 1, fontSize: 12, color: "var(--ink-muted)", lineHeight: 1.45 }}>
+                     Pick <b>Cloud</b>, <b>Highlight</b>, <b>Callout</b>, or <b>Text</b> above, then click the plan to annotate it.
+                   </div>
                    <button
+                     type="button"
+                     className="lp-btn-ghost"
                      onClick={() => { const nv = !showMarkups; setShowMarkups(nv); if (!nv) setSelectedMarkupId(null); }}
-                     title={showMarkups ? "Hide the markup layer on the canvas" : "Show the markup layer on the canvas"}
-                     style={{ background: "transparent", border: "1px solid var(--ink-faint)", color: "var(--ink)", fontSize: 11, cursor: "pointer", padding: "2px 7px" }}>
+                     title={showMarkups ? "Hide the markup layer on the canvas" : "Show the markup layer on the canvas"}>
                      {showMarkups ? "Hide layer" : "Show layer"}
                    </button>
                  </div>
-                 <div style={{ padding: "8px 10px", color: "var(--ink-muted)" }}>
-                   Pick <b>☁ Cloud</b>, <b>▨ Highlight</b>, <b>💬 Callout</b>, or <b>T Text</b> above, then click the plan to annotate it.
-                 </div>
                  {markups.filter((m) => panelKeySet.has(m.sheet_id)).length === 0 && (
-                   <div style={{ padding: "4px 12px 14px", color: "var(--ink-muted)" }}>No markups {groupKeys.length > 1 ? "on these sheets" : "on this sheet"} yet.</div>
+                   <div style={{ padding: "14px 12px", color: "var(--ink-muted)", fontSize: 13 }}>No markups {groupKeys.length > 1 ? "on these sheets" : "on this sheet"} yet.</div>
                  )}
                  {markups.filter((m) => panelKeySet.has(m.sheet_id)).map((m) => (
-                   <div key={m.id} style={{ padding: "10px 12px", borderTop: "1px solid var(--ink-faint)" }}>
-                     <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                       <span style={{ fontSize: 10, fontWeight: 700, color: "var(--cobalt)", textTransform: "uppercase" }}>{m.type}</span>
+                   <div key={m.id} className="lp-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                       <span style={{ fontSize: 10, fontWeight: 700, color: "var(--cobalt)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{m.type}</span>
                        {/* inline edit — the panel's fallback for the canvas overlay, since a
                            markup here may be off-screen or on another sheet (no click point).
                            Enter/blur commit, Esc cancels; INPUT is guarded from the global keys. */}
@@ -9366,58 +9397,63 @@ export default function TakeoffCanvas() {
                          <input name="markup-text" autoComplete="off" autoFocus defaultValue={m.text || ""}
                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); updateMarkup(m.id, { text: e.currentTarget.value.trim() }); setPanelEditId(null); } else if (e.key === "Escape") { e.preventDefault(); e.currentTarget.value = m.text || ""; setPanelEditId(null); } }}
                            onBlur={(e) => { updateMarkup(m.id, { text: e.currentTarget.value.trim() }); setPanelEditId(null); }}
-                           style={{ flex: 1, minWidth: 0, fontSize: 12.5, padding: "1px 4px", border: "1px solid var(--cobalt)", borderRadius: 0, outline: "none" }} />
+                           className="lp-field" style={{ flex: 1, minWidth: 0, padding: "5px 8px" }} />
                        ) : (
-                         <span style={{ flex: 1, color: "var(--ink)" }}>{m.type === "svg" ? <em style={{ color: "var(--ink-muted)" }}>(vector symbol)</em> : (m.text || <em style={{ color: "var(--ink-muted)" }}>(no text)</em>)}</span>
+                         <span style={{ flex: 1, minWidth: 0, color: "var(--ink)", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.type === "svg" ? <em style={{ color: "var(--ink-muted)" }}>(vector symbol)</em> : (m.text || <em style={{ color: "var(--ink-muted)" }}>(no text)</em>)}</span>
                        )}
-                       {m.type !== "svg" && <button onClick={() => setPanelEditId((id) => (id === m.id ? null : m.id))} title="Edit text" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)" }}>✎</button>}
-                       <button onClick={() => deleteMarkup(m.id)} title="Delete markup" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-danger)" }}>🗑</button>
+                       {m.type !== "svg" && (
+                         <button type="button" className="lp-icon-btn" onClick={() => setPanelEditId((id) => (id === m.id ? null : m.id))} title="Edit text">
+                           <Icon name="edit" size={13} />
+                         </button>
+                       )}
+                       <button type="button" className="lp-icon-btn is-danger" onClick={() => setPendingMarkupDelete(m)} title="Delete markup">
+                         <Icon name="trash" size={13} />
+                       </button>
                      </div>
                      {/* appearance — per-markup color (reuse PALETTE) + line style; both
                          additive: unset color falls back to the cobalt(linked)/amber default,
                          unset style to solid. The RFI ⬢/number badge stays cobalt regardless. */}
-                     <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 7, flexWrap: "wrap" }}>
-                       <span style={{ fontSize: 10.5, color: "var(--ink-muted)", marginRight: 2 }}>Color</span>
-                       <button title="Auto (linkage color)" onClick={() => updateMarkup(m.id, { color: "" })} style={{ width: 26, height: 15, borderRadius: 4, background: "var(--paper-bright)", border: !m.color ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 8.5, lineHeight: "11px", color: "var(--ink-muted)" }}>auto</button>
-                       {PALETTE.map((c) => <button key={c} title={c} onClick={() => updateMarkup(m.id, { color: c })} style={{ width: 15, height: 15, borderRadius: 4, background: c, border: m.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
-                       <select name="markup-line-style" value={m.line_style || "solid"} onChange={(e) => updateMarkup(m.id, { line_style: e.target.value })} title="Line style" style={{ marginLeft: 4, fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
+                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                       <span className="lp-label" style={{ margin: 0 }}>Color</span>
+                       <button type="button" title="Auto (linkage color)" onClick={() => updateMarkup(m.id, { color: "" })} style={{ width: 28, height: 18, borderRadius: 4, background: "var(--paper-bright)", border: !m.color ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 8.5, lineHeight: "14px", color: "var(--ink-muted)" }}>auto</button>
+                       {PALETTE.map((c) => <button key={c} type="button" title={c} onClick={() => updateMarkup(m.id, { color: c })} style={{ width: 16, height: 16, borderRadius: 4, background: c, border: m.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
+                       <select name="markup-line-style" className="lp-field" value={m.line_style || "solid"} onChange={(e) => updateMarkup(m.id, { line_style: e.target.value })} title="Line style" style={{ width: "auto", padding: "4px 6px", fontSize: 11 }}>
                          {LINE_STYLE_IDS.map((id) => <option key={id} value={id}>{LINE_STYLES[id].label}</option>)}
                        </select>
                        {/* line weight — a multiplier over the element's base stroke width (default
                            ×1, clamped 0.5–3); additive, absent = ×1 so legacy markups are unchanged */}
-                       <span style={{ fontSize: 10.5, color: "var(--ink-muted)", marginLeft: 4 }}>Weight</span>
-                       <select name="markup-weight" value={String(snapWeight(m.weight))} onChange={(e) => updateMarkup(m.id, { weight: Number(e.target.value) })} title="Line weight (× base)" style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
+                       <span className="lp-label" style={{ margin: 0 }}>Weight</span>
+                       <select name="markup-weight" className="lp-field" value={String(snapWeight(m.weight))} onChange={(e) => updateMarkup(m.id, { weight: Number(e.target.value) })} title="Line weight (× base)" style={{ width: "auto", padding: "4px 6px", fontSize: 11 }}>
                          {WEIGHT_STEPS.map((wv) => <option key={wv} value={wv}>{wv}×</option>)}
                        </select>
                        {/* revision-delta △n — clouds only; blank clears it (no delta drawn) */}
                        {m.type === "cloud" && (
                          <>
-                           <span style={{ fontSize: 10.5, color: "var(--ink-muted)", marginLeft: 4 }} title="Revision-delta number (△) drawn at a cloud corner">Rev △</span>
-                           <input name="markup-rev" type="number" min="0" step="1" value={Number.isFinite(m.rev) ? m.rev : ""} placeholder="—"
+                           <span className="lp-label" style={{ margin: 0 }} title="Revision-delta number (△) drawn at a cloud corner">Rev △</span>
+                           <input name="markup-rev" className="lp-field" type="number" min="0" step="1" value={Number.isFinite(m.rev) ? m.rev : ""} placeholder="—"
                              onChange={(e) => { const raw = e.target.value; updateMarkup(m.id, { rev: raw === "" ? undefined : Math.max(0, Math.floor(Number(raw) || 0)) }); }}
                              title="Revision number for the △ delta (blank = none)"
-                             style={{ width: 40, fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }} />
+                             style={{ width: 48, padding: "4px 6px", fontSize: 11 }} />
                          </>
                        )}
                      </div>
                      {/* RFI controls — raise a fresh RFI, link an existing one, or unlink */}
                      {(() => {
                        const linked = m.rfi_id ? rfis.find((r) => r.id === m.rfi_id) : null;
-                       const ctrl = { padding: "2px 7px", border: "1px solid var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 11 };
                        return (
-                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 7, flexWrap: "wrap" }}>
+                         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                            {linked ? (
                              <>
-                               <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, fontWeight: 700, color: "var(--cobalt)" }}>⬢ {String(linked.number ?? "")}</span>
-                               <button onClick={() => { setLeftTab("rfi"); }} style={{ ...ctrl, color: "var(--cobalt)" }} title="Open the RFI register">Open</button>
-                               <button onClick={() => unlinkRfi(m)} style={{ ...ctrl, color: "var(--ink-muted)" }} title="Unlink this markup from its RFI">Unlink</button>
+                               <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, fontWeight: 700, color: "var(--cobalt)" }}><Icon name="rfi" size={11} /> {String(linked.number ?? "")}</span>
+                               <button type="button" className="lp-btn-ghost" onClick={() => { setLeftTab("rfi"); }} title="Open the RFI register" style={{ padding: "4px 8px", fontSize: 11 }}>Open</button>
+                               <button type="button" className="lp-btn-ghost" onClick={() => unlinkRfi(m)} title="Unlink this markup from its RFI" style={{ padding: "4px 8px", fontSize: 11 }}>Unlink</button>
                              </>
                            ) : (
                              <>
-                               <button onClick={() => raiseRfi(m)} style={{ ...ctrl, color: "var(--cobalt)", fontWeight: 600 }} title="Create a new RFI from this markup">Raise RFI</button>
+                               <button type="button" className="lp-btn" onClick={() => raiseRfi(m)} title="Create a new RFI from this markup" style={{ padding: "4px 8px", fontSize: 11, color: "var(--cobalt)" }}>Raise RFI</button>
                                {rfis.length > 0 && (
-                                 <select name="link-rfi" value="" onChange={(e) => { if (e.target.value) linkRfi(m, e.target.value); }}
-                                   title="Link this markup to an existing RFI" style={{ ...ctrl, background: "var(--paper-bright)", maxWidth: 150 }}>
+                                 <select name="link-rfi" className="lp-field" value="" onChange={(e) => { if (e.target.value) linkRfi(m, e.target.value); }}
+                                   title="Link this markup to an existing RFI" style={{ width: "auto", maxWidth: 150, padding: "4px 6px", fontSize: 11 }}>
                                    <option value="">Link existing…</option>
                                    {rfis.map((r) => <option key={r.id} value={r.id}>{r.number}{r.subject ? ` · ${r.subject}` : ""}</option>)}
                                  </select>
@@ -9453,7 +9489,13 @@ export default function TakeoffCanvas() {
          </div>
          )}
        </div>
+       )}
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        {(leftTab || openSheetsPanel) && (leftCanvasWork ? (
+          <div className="left-panel-stage-scrim is-pass" aria-hidden="true" />
+        ) : (
+          <button type="button" className="left-panel-stage-scrim" aria-label="Close panel" onClick={() => { setLeftTab(null); setOpenSheetsPanel(false); }} />
+        ))}
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas}
           onContextMenu={(e) => {
@@ -9556,7 +9598,7 @@ export default function TakeoffCanvas() {
             else if (tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
             else if (tool === "select") editMarkupAt(e);
           }}
-          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "#dbe3e6", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
+          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--stage)", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
               EFFECTIVE point (angle-locked / endpoint-snapped), the SPLINE STAR at
@@ -10772,7 +10814,7 @@ export default function TakeoffCanvas() {
         )}
 
         {/* panel rail — takeoffs toggle on the right edge (zoom-cluster style).
-            Files/Markups/Stamps/RFIs live on the left floating rail. */}
+            Files/Markups/Stamps/RFIs live on the left desk icon + in-panel tabs. */}
         <div style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 8 }}>
           {panelBtn(toggleTakeoffs, "takeoffs", "Takeoffs — conditions + running totals", takeoffsOpen, visibleShapes.length)}
         </div>
@@ -11091,6 +11133,28 @@ export default function TakeoffCanvas() {
         />
       )}
 
+      {pendingPdfClose && (
+        <ConfirmDeleteModal
+          title="Remove this file?"
+          body={`“${String(pendingPdfClose).split("/").pop()}” will leave this takeoff. Takeoffs on its sheets stay saved and come back if you add the file again.`}
+          confirmLabel="Remove file"
+          onConfirm={confirmClosePdf}
+          onCancel={cancelClosePdf}
+        />
+      )}
+
+      {pendingMarkupDelete && (
+        <ConfirmDeleteModal
+          title="Delete this markup?"
+          body={pendingMarkupDelete.text
+            ? `“${pendingMarkupDelete.text}” will be removed from the sheet.`
+            : `This ${pendingMarkupDelete.type || "markup"} will be removed from the sheet.`}
+          confirmLabel="Delete"
+          onConfirm={() => { deleteMarkup(pendingMarkupDelete.id); setPendingMarkupDelete(null); }}
+          onCancel={() => setPendingMarkupDelete(null)}
+        />
+      )}
+
       {overlapPrompt && (
         <div
           onClick={() => resolveOverlapPrompt("cancel")}
@@ -11189,15 +11253,6 @@ export default function TakeoffCanvas() {
           re-reads immediately). */}
       {showAiSettings && <AiSettings onClose={() => setShowAiSettings(false)} />}
 
-      <OpenSheetsPill
-        openTabs={openTabs}
-        sheetGroup={sheetGroup}
-        sheetKey={sheetKey}
-        tabLabel={tabLabel}
-        onGoToSheet={goToSheet}
-        onToggleInGroup={toggleInGroup}
-        onCloseTab={closeTab}
-      />
     </div>
   );
 }
