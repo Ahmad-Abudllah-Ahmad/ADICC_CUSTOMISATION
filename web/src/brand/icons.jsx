@@ -85,6 +85,7 @@ export const icons = {
   pin: (s) => <I size={s}><line x1="8" y1="3" x2="16" y2="3" /><path d="M10 3 V 8 L 7 11 H 17 L 14 8 V 3" /><line x1="12" y1="11" x2="12" y2="20" /></I>,
   // mixer sliders — the toolbar render/fill settings menu
   sliders: (s) => <I size={s}><path d="M4 7 H 6.8 M11.2 7 H 20" /><path d="M4 17 H 12.8 M17.2 17 H 20" /><circle cx="9" cy="7" r="2.2" /><circle cx="15" cy="17" r="2.2" /></I>,
+  info: (s) => <I size={s} stroke={1.6}><circle cx="12" cy="12" r="8.5" /><line x1="12" y1="11" x2="12" y2="16" /><circle cx="12" cy="8.1" r="0.95" fill="currentColor" /></I>,
 };
 
 export function Icon({ name, size = 18 }) {

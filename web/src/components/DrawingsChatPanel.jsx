@@ -78,20 +78,20 @@ function FormattedAnswer({ content }) {
       {blocks.map((b, i) => {
         if (b.type === "title") {
           return (
-            <div key={i} style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", lineHeight: 1.25 }}>
+            <div key={i} style={{ fontSize: 14, fontWeight: 800, color: "light-dark(var(--ink), #ffffff)", lineHeight: 1.25 }}>
               {b.text}
             </div>
           );
         }
         if (b.type === "section") {
           return (
-            <div key={i} style={{ fontSize: 12, fontWeight: 700, color: "var(--ink)", marginTop: i ? 2 : 0, letterSpacing: "0.02em", lineHeight: 1.3 }}>
+            <div key={i} style={{ fontSize: 12, fontWeight: 700, color: "light-dark(var(--ink), #f0f4ff)", marginTop: i ? 2 : 0, letterSpacing: "0.02em", lineHeight: 1.3 }}>
               {b.text}
             </div>
           );
         }
         return (
-          <div key={i} style={{ fontSize: 12.5, lineHeight: 1.4, color: "var(--ink)" }}>
+          <div key={i} style={{ fontSize: 12.5, lineHeight: 1.4, color: "light-dark(var(--ink), rgba(255,255,255,0.92))" }}>
             {b.text}
           </div>
         );
@@ -125,14 +125,14 @@ function GeneratingIndicator() {
               width: 5,
               height: 5,
               borderRadius: 999,
-              background: "var(--cobalt)",
+              background: "light-dark(var(--cobalt), #6eb5ff)",
               animation: "adiccChatDot 1s ease-in-out infinite",
               animationDelay: `${i * 0.16}s`,
             }}
           />
         ))}
       </div>
-      <div style={{ fontSize: 11, color: "light-dark(var(--ink-muted), var(--ink))", lineHeight: 1.2, whiteSpace: "nowrap" }}>Generating answer</div>
+      <div style={{ fontSize: 11, color: "light-dark(var(--ink-muted), rgba(255,255,255,0.88))", lineHeight: 1.2, whiteSpace: "nowrap" }}>Generating answer</div>
     </div>
   );
 }
@@ -589,12 +589,12 @@ export default function DrawingsChatPanel({
     <>
       <style>{`
         @keyframes adiccChatDot {
-          0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
-          40% { transform: translateY(-4px); opacity: 1; }
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.45; }
+          40% { transform: translateY(-5px); opacity: 1; }
         }
         @keyframes adiccChatCaret {
           0%, 49% { opacity: 1; }
-          50%, 100% { opacity: 0; }
+          50%, 100% { opacity: 0.15; }
         }
       `}</style>
       <FloatingWindow
@@ -630,8 +630,8 @@ export default function DrawingsChatPanel({
         >
           <header data-float-drag className="drawings-chat-glass-header" style={{ padding: "12px 14px", borderBottom: "1px solid var(--ink-faint)", display: "flex", alignItems: "center", gap: 8, cursor: "grab", userSelect: "none", flexShrink: 0 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--cobalt)" }}>Drawings Q&A</div>
-              <div style={{ fontSize: 11, color: "var(--ink-muted)", marginTop: 2 }}>Tap a citation to open the floating reference</div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "light-dark(var(--cobalt), #ffffff)" }}>Drawings Q&A</div>
+              <div style={{ fontSize: 11, color: "light-dark(var(--ink-muted), rgba(255,255,255,0.82))", marginTop: 2 }}>Ask about Volume 4 drawings, specs, and schedules</div>
             </div>
             <button type="button" onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, color: "light-dark(var(--ink-muted), var(--ink))", lineHeight: 1 }}>×</button>
           </header>
@@ -669,7 +669,7 @@ export default function DrawingsChatPanel({
                   boxSizing: "border-box",
                 }}
               >
-                <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--ink-muted)", marginBottom: message.role === "user" ? 1 : 3, lineHeight: 1 }}>
+                <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.08em", color: "light-dark(var(--ink-muted), rgba(255,255,255,0.65))", marginBottom: message.role === "user" ? 1 : 3, lineHeight: 1 }}>
                   {message.role === "user" ? "You" : "Assistant"}
                   {message.abstained ? "  abstained" : ""}
                 </div>
@@ -686,25 +686,6 @@ export default function DrawingsChatPanel({
                   )
                 ) : (
                   <div style={{ fontSize: 12.5, whiteSpace: "pre-wrap", lineHeight: 1.25, margin: 0 }}>{message.content.trim()}</div>
-                )}
-
-                {message.citations?.length > 0 && !message.animate && (
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", marginBottom: 4, lineHeight: 1 }}>
-                      References
-                    </div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                      {message.citations.slice(0, 2).map((citation, ci) => (
-                        <CitationChip
-                          key={citation.id || `${index}-${ci}`}
-                          citation={citation}
-                          index={ci}
-                          active={activeCitation?.id === citation.id}
-                          onSelect={setActiveCitation}
-                        />
-                      ))}
-                    </div>
-                  </div>
                 )}
               </div>
             ))}

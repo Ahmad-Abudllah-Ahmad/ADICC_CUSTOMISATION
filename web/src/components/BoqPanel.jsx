@@ -1,12 +1,17 @@
 // BoqPanel — Bill of Quantities sidebar: per-mask takeoff rows with auto-detected
 // room names, finish codes, and measured Floor / Wall / LF / EA / Qty quantities.
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../brand/icons.jsx";
+import ToolMenu from "./ToolMenu.jsx";
 import { conditionTotals, round2 } from "../lib/totals.js";
 import { areaUnit } from "../lib/units";
 import { csvEsc } from "../lib/csv.js";
-import { rowKey, buildShapeRows, primaryQty } from "../lib/boqDetect.js";
+import { rowKey, buildShapeRows, primaryQty, floorLabelFromSheetId } from "../lib/boqDetect.js";
 import { money } from "../lib/num.js";
+import { buildBoqPdf } from "../lib/boqPdf.js";
+import { downloadBytes } from "../lib/markedset.js";
+import { parseSheetKey, sheetExportName } from "../lib/sheetKey.ts";
 
 const num = (v, d = 2) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
 
@@ -31,11 +36,19 @@ function sheetFloorTotal(shapeRows) {
 /** sheetLevels key may be a folder path while shape rows use bare filenames. */
 function resolveFloorLevel(sheetId, sheetLevels, sheetLabel) {
   if (sheetLevels?.[sheetId]) return sheetLevels[sheetId];
+  const parsed = parseSheetKey(sheetId);
+  if (sheetLevels?.[parsed.file]) return sheetLevels[parsed.file];
   const base = String(sheetId || "").replace(/^.*[/\\]/, "").split("#")[0].toLowerCase();
   for (const [k, v] of Object.entries(sheetLevels || {})) {
     const kb = String(k).replace(/^.*[/\\]/, "").split("#")[0].toLowerCase();
     if (kb === base) return v;
   }
+  for (const [k, v] of Object.entries(sheetLevels || {})) {
+    const kt = parseSheetKey(k);
+    if (kt.file === parsed.file || kt.file.split("/").pop() === parsed.file.split("/").pop()) return v;
+  }
+  const fromFile = floorLabelFromSheetId(sheetId);
+  if (fromFile) return fromFile;
   const label = sheetLabel?.(sheetId) || sheetId;
   const m = String(label).match(/(\d+(?:st|nd|rd|th))(?:\s*(?:&|and)\s*(\d+(?:st|nd|rd|th)))?\s*floor/i);
   if (m) return m[2] ? `${m[1]} & ${m[2]} Floor` : `${m[1]} Floor`;
@@ -167,6 +180,13 @@ export default function BoqPanel({
   const bySheet = useMemo(() => groupBySheet(visibleRows), [visibleRows]);
   const condRows = useMemo(() => conditionTotals(conditions, shapes).filter((r) => r.shape_count > 0), [conditions, shapes]);
   const manualLines = useMemo(() => boqLines.filter((l) => l.manual), [boqLines]);
+  const [pdfPreview, setPdfPreview] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const pdfPreviewRef = useRef(null);
+
+  useEffect(() => () => {
+    if (pdfPreview?.url) URL.revokeObjectURL(pdfPreview.url);
+  }, [pdfPreview?.url]);
 
   const grand = useMemo(() => {
     let floor = 0, wall = 0, lf = 0, ea = 0;
@@ -290,7 +310,7 @@ export default function BoqPanel({
     const lines = [`# Bill of Quantities${projectName ? ` — ${projectName}` : ""}`, header.map(csvEsc).join(",")];
     for (const g of bySheet) {
       const floor = resolveFloorLevel(g.sheet_id, sheetLevels, sheetLabel);
-      const sheet = sheetLabel(g.sheet_id);
+      const sheet = sheetExportName(g.sheet_id);
       for (const r of g.shapeRows) {
         const key = rowKey(r.shape_id);
         const meta = lineForKey(boqLines, key) || {};
@@ -306,7 +326,7 @@ export default function BoqPanel({
       const qty = Number(m.qty_override) || 0;
       const rate = Number(m.rate) || 0;
       lines.push([
-        resolveFloorLevel(m.sheet_id, sheetLevels, sheetLabel), m.sheet_id ? sheetLabel(m.sheet_id) : "—",
+        resolveFloorLevel(m.sheet_id, sheetLevels, sheetLabel), m.sheet_id ? sheetExportName(m.sheet_id) : "—",
         m.room || "", "", m.description || "",
         "", "", "", "", qty, m.unit || "", rate, round2(qty * rate),
         m.description || "", qty, m.unit || "", round2(qty * rate), m.notes || "", "manual",
@@ -319,6 +339,116 @@ export default function BoqPanel({
     a.click();
     URL.revokeObjectURL(a.href);
   }, [bySheet, boqLines, manualLines, projectName, sheetLabel, sheetLevels, units, conditions, pricingCtx]);
+
+  const boqPdfPayload = useCallback(() => {
+    const sheets = bySheet.map((g) => {
+      const floor = resolveFloorLevel(g.sheet_id, sheetLevels, sheetLabel);
+      const sheet = sheetExportName(g.sheet_id);
+      const floorTotal = sheetFloorTotal(g.shapeRows);
+      const takeoffRows = g.shapeRows.map((r) => {
+        const key = rowKey(r.shape_id);
+        const meta = lineForKey(boqLines, key) || {};
+        const { qty, unit, rate, amount, description, notes } = resolveExportRow(r, meta, units, conditions, pricingCtx);
+        return {
+          room: meta.room || r.room_detected || "",
+          finish: r.finish_tag || "",
+          description,
+          floor_sf: r.floor_sf,
+          wall_sf: r.wall_sf,
+          lf: r.lf,
+          ea: r.ea,
+          qty,
+          unit,
+          rate,
+          amount,
+          notes,
+        };
+      });
+      const sheetManual = manualLines.filter((m) => m.sheet_id === g.sheet_id).map((m) => {
+        const qty = Number(m.qty_override) || 0;
+        const rate = Number(m.rate) || 0;
+        return {
+          room: m.room || "",
+          finish: "Manual",
+          floor_sf: null,
+          wall_sf: null,
+          lf: null,
+          ea: null,
+          qty,
+          unit: m.unit || "",
+          rate,
+          amount: round2(qty * rate),
+          notes: m.notes || m.description || "",
+        };
+      });
+      const roomSummary = roomSubtotals(g.shapeRows.map((r) => {
+        const key = rowKey(r.shape_id);
+        const meta = lineForKey(boqLines, key);
+        return { ...r, room_detected: meta?.room || r.room_detected };
+      }));
+      return {
+        title: floor ? `${floor} · ${sheet}` : sheet,
+        subtitle: `${num(floorTotal)} ${areaUnit(units)} masked · ${g.shapeRows.length} mask${g.shapeRows.length === 1 ? "" : "s"} · ${roomSummary.length} room${roomSummary.length === 1 ? "" : "s"}`,
+        floorTotal,
+        rows: [...takeoffRows, ...sheetManual],
+        roomSummary,
+      };
+    });
+    const unassignedManual = manualLines.filter((m) => !m.sheet_id).map((m) => {
+      const qty = Number(m.qty_override) || 0;
+      const rate = Number(m.rate) || 0;
+      return {
+        room: m.room || "",
+        finish: "Manual",
+        floor_sf: null,
+        wall_sf: null,
+        lf: null,
+        ea: null,
+        qty,
+        unit: m.unit || "",
+        rate,
+        amount: round2(qty * rate),
+        notes: m.notes || m.description || "",
+      };
+    });
+    return {
+      projectName,
+      units,
+      currency: projectSettings.currency || "AED",
+      sheets,
+      manualLines: unassignedManual,
+      grand,
+    };
+  }, [bySheet, boqLines, manualLines, projectName, sheetLabel, sheetLevels, units, conditions, pricingCtx, projectSettings.currency, grand]);
+
+  const openBoqPdfPreview = useCallback(async () => {
+    setPdfBusy(true);
+    try {
+      const { bytes, filename } = await buildBoqPdf(boqPdfPayload());
+      setPdfPreview((prev) => {
+        if (prev?.url) URL.revokeObjectURL(prev.url);
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+        return { url, filename, bytes };
+      });
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [boqPdfPayload]);
+
+  const closePdfPreview = () => {
+    setPdfPreview((prev) => {
+      if (prev?.url) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  };
+
+  const downloadPdfPreview = () => {
+    if (pdfPreview) downloadBytes(pdfPreview.filename, pdfPreview.bytes);
+  };
+
+  const printPdfPreview = () => {
+    pdfPreviewRef.current?.contentWindow?.print();
+  };
 
   if (!open) return null;
 
@@ -461,6 +591,7 @@ export default function BoqPanel({
   };
 
   return (
+    <>
     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "var(--paper-bright)", overflow: "hidden", minHeight: 0 }}>
       <div data-float-drag style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", background: "var(--cobalt)", color: "var(--accent-contrast)", cursor: "grab", userSelect: "none", flexShrink: 0 }}>
         <Icon name="document" size={16} />
@@ -489,10 +620,24 @@ export default function BoqPanel({
           )}
         </span>
         <div style={{ flex: 1 }} />
-        <button type="button" onClick={exportCsv} disabled={!bySheet.length && !manualLines.length}
-          style={{ padding: "5px 10px", border: "none", background: "var(--ink)", color: "var(--paper-bright)", cursor: "pointer", fontSize: 11.5, fontWeight: 700, opacity: bySheet.length || manualLines.length ? 1 : 0.5 }}>
-          Export CSV
-        </button>
+        <ToolMenu
+          title="Export bill of quantities"
+          disabled={!bySheet.length && !manualLines.length}
+          face="Export"
+          faceStyle={{
+            padding: "5px 10px",
+            border: "none",
+            background: "var(--ink)",
+            color: "var(--paper-bright)",
+            fontSize: 11.5,
+            fontWeight: 700,
+            borderRadius: 20,
+          }}
+          items={[
+            { id: "pdf", icon: "document", label: "PDF", title: "Preview BOQ as ADICC-branded PDF", onSelect: openBoqPdfPreview },
+            { id: "csv", icon: "document", label: "CSV", title: "Download BOQ spreadsheet", onSelect: exportCsv },
+          ]}
+        />
       </div>
 
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
@@ -611,5 +756,35 @@ export default function BoqPanel({
         </div>
       )}
     </div>
+    {(pdfPreview || pdfBusy) && typeof document !== "undefined" && createPortal(
+      <div style={{ position: "fixed", inset: 0, zIndex: 100000, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
+        {pdfPreview ? (
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 18px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)", flexShrink: 0, width: "100%", boxSizing: "border-box" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                <button type="button" className="btn-ghost" onClick={closePdfPreview}>Back to BOQ</button>
+                <span style={{ fontSize: 12, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pdfPreview.filename}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, marginLeft: "auto" }}>
+                <button type="button" className="btn-primary" onClick={downloadPdfPreview}><Icon name="document" size={13} /> Download PDF</button>
+                <button type="button" className="btn-ghost" onClick={printPdfPreview}>Print</button>
+              </div>
+            </div>
+            <iframe
+              ref={pdfPreviewRef}
+              src={pdfPreview.url}
+              title="BOQ PDF preview"
+              style={{ flex: 1, width: "100%", border: "none", minHeight: 0, background: "#525659" }}
+            />
+          </>
+        ) : (
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-muted)", fontSize: 13 }}>
+            Building PDF preview…
+          </div>
+        )}
+      </div>,
+      document.body,
+    )}
+  </>
   );
 }

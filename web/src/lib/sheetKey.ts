@@ -18,3 +18,10 @@ export function compareSheetKeys(ka: string, kb: string): number {
   const a = parseSheetKey(ka), b = parseSheetKey(kb);
   return a.file === b.file ? a.page - b.page : a.file.localeCompare(b.file);
 }
+
+/** Export label — PDF/CSV file name, not title-block sheet number (e.g. Y14). */
+export function sheetExportName(key: string): string {
+  const t = parseSheetKey(key);
+  const base = t.file.split("/").pop()!.replace(/\.pdf$/i, "");
+  return t.page > 1 ? `${base} · ${t.page}` : base;
+}

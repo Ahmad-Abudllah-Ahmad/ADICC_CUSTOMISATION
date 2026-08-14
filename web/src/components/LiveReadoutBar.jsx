@@ -362,6 +362,7 @@ export default function LiveReadoutBar({
             overflow: "visible",
             borderTop: "1px solid var(--divider-soft)",
             marginTop: -1,
+            background: "var(--paper-bright)",
             backdropFilter: "none",
             WebkitBackdropFilter: "none",
             userSelect: "auto",

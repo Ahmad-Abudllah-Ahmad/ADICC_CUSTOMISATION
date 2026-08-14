@@ -22,6 +22,8 @@ import { buildContribution, sendContribution, isContributeConfigured } from "../
 import { activeTheme, saveActiveThemeFile, clearActiveTheme } from "../lib/reportTheme.js";
 import { normalizeLogoToPng, loadProfiles, saveProfiles, activeProfile, updateActiveProfile, addProfile, setActiveProfile, removeProfile } from "../lib/identity.js";
 import { resolveBranding, loadBrandingSelection, saveBrandingSelection } from "../lib/branding.js";
+import { buildReportPdf } from "../lib/reportPdf.js";
+import { downloadBytes } from "../lib/markedset.js";
 import { projectIdFromUrl } from "../lib/store.js";
 
 const num = (v, d = 1) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
@@ -82,6 +84,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   // whether the Marked Set PDF carries the markups. Default on; ORTHOGONAL to the
   // canvas markup-layer hide — that never changes the export, only this does.
   const [includeMarkups, setIncludeMarkups] = useState(true);
+  const [pdfPreview, setPdfPreview] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfPrintAfter, setPdfPrintAfter] = useState(false);
+  const pdfPreviewRef = useRef(null);
   // bumped by the Project info modal on every company/branding save, so the
   // print masthead re-reads (a cheap localStorage parse + one meta-KV load)
   const [identityRev, setIdentityRev] = useState(0);
@@ -194,6 +200,10 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     document.body.classList.add("report-open");
     return () => document.body.classList.remove("report-open");
   }, []);
+
+  useEffect(() => () => {
+    if (pdfPreview?.url) URL.revokeObjectURL(pdfPreview.url);
+  }, [pdfPreview?.url]);
 
   // columns popover closes on any click outside it
   useEffect(() => {
@@ -308,6 +318,60 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     const bytes = await buildXlsx(sheets);
     downloadText(`${baseName}.xlsx`, bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   };
+  const reportPdfInput = () => ({
+    projectName,
+    clientInfo,
+    brand,
+    company,
+    rows,
+    grand: g,
+    bySheet,
+    matSummary,
+    markups,
+    rfis,
+    scaleInfo,
+    sheetLabel,
+    tableCols,
+    ctx,
+    groups,
+    grouped,
+    groupCol,
+    groupBy,
+    units,
+    brandName: brand.brandName,
+    disclaimer: DISCLAIMER,
+  });
+
+  const openReportPdfPreview = async (autoPrint = false) => {
+    setPdfBusy(true);
+    setPdfPrintAfter(autoPrint);
+    try {
+      const { bytes, filename } = await buildReportPdf(reportPdfInput());
+      setPdfPreview((prev) => {
+        if (prev?.url) URL.revokeObjectURL(prev.url);
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+        return { url, filename, bytes };
+      });
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
+  const closePdfPreview = () => {
+    setPdfPreview((prev) => {
+      if (prev?.url) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+    setPdfPrintAfter(false);
+  };
+
+  const downloadPdfPreview = () => {
+    if (pdfPreview) downloadBytes(pdfPreview.filename, pdfPreview.bytes);
+  };
+
+  const printPdfPreview = () => {
+    pdfPreviewRef.current?.contentWindow?.print();
+  };
   const exportShapesCsv = () => downloadText(`${baseName}_shapes.csv`, shapesToCsv(shapesDetail(conditions, shapes, sheetLabel), projectName, brand.brandName), "text/csv");
   const exportShapesJson = () => downloadText(`${baseName}_shapes.json`,
     JSON.stringify(shapesToJson(shapesDetail(conditions, shapes, sheetLabel), projectName), null, 2),
@@ -374,13 +438,15 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   );
 
   return (
-    <div className="report-panel" style={{ ...theme.vars, position: "absolute", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
-      <div className="report-toolbar" style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)" }}>
+    <div className="report-panel" style={{ ...theme.vars, position: "fixed", inset: 0, zIndex: 100000, display: "flex", flexDirection: "column", background: "var(--paper-cream)" }}>
+      <div className="report-toolbar" style={{ display: "flex", flexShrink: 0, alignItems: "center", justifyContent: "space-between", gap: 12, width: "100%", boxSizing: "border-box", overflowX: "auto", overflowY: "hidden", WebkitOverflowScrolling: "touch", borderBottom: "1px solid var(--ink)", background: "var(--paper-bright)", padding: "12px 18px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "nowrap", flexShrink: 0 }}>
         <Icon name="takeoffs" size={18} />
         <strong style={{ fontFamily: "var(--f-display)", fontSize: 16, color: "var(--ink)" }}>ADICC REPORTS</strong>
         <input name="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)} placeholder="Project name (optional)"
           className="field-input" style={{ width: 260, padding: "5px 9px", fontSize: 13 }} />
-        <div style={{ flex: 1 }} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "nowrap", flexShrink: 0, marginLeft: "auto" }}>
         <button className="btn-ghost" onClick={() => setShowInfo(true)}
           title="Your company identity and the client/job details for the print header and marked-set cover">Project info</button>
         {/* always rendered, even with zero custom columns — Sheet grouping
@@ -453,6 +519,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
             { id: "csv", icon: "document", label: "CSV", disabled: !rows.length, onSelect: exportCsv },
             { id: "xlsx", icon: "document", label: "Excel", disabled: !rows.length, title: "Excel workbook — Conditions / By sheet / Materials / Shapes", onSelect: exportXlsx },
             { id: "json", icon: "document", label: "JSON", disabled: !rows.length && !markups.length && !rfis.length, title: "JSON — works markups-only / RFI-only too", onSelect: exportJson },
+            { id: "pdf", icon: "document", label: "PDF", disabled: !rows.length && !markups.length && !rfis.length, title: "Preview takeoff report as PDF — logo, page breaks, full breakdown", onSelect: () => openReportPdfPreview(false) },
             { section: "Shapes" },
             { id: "shapes-csv", icon: "document", label: "Shapes CSV", disabled: !shapes.length, title: "Per-shape measured quantities — no multiplier, no waste", onSelect: exportShapesCsv },
             { id: "shapes-json", icon: "document", label: "Shapes JSON", disabled: !shapes.length, title: "Per-shape measured quantities — no multiplier, no waste", onSelect: exportShapesJson },
@@ -463,7 +530,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           disabled={!rows.length && !markups.length && !rfis.length /* both items are disabled exactly here: with no rows/rfis, the marked-set condition also collapses to true */}
           face={<span>Print</span>}
           items={[
-            { id: "print", label: "Print report", disabled: !rows.length && !markups.length && !rfis.length, title: "Print the on-screen report (browser print / save as PDF)", onSelect: () => window.print() },
+            { id: "print", label: "Print report", disabled: !rows.length && !markups.length && !rfis.length, title: "Preview and print the takeoff report PDF", onSelect: () => openReportPdfPreview(true) },
             ...(onMarkedSet ? [
               "divider",
               { section: "Marked set" },
@@ -484,8 +551,39 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
           style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 10px", border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--ink)", cursor: "pointer", fontSize: 12.5 }}>
           <Icon name="close" size={12} />Close
         </button>
+        </div>
       </div>
 
+      {pdfPreview ? (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: "var(--paper-cream)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 18px", borderBottom: "1px solid var(--ink-faint)", background: "var(--paper-bright)", flexShrink: 0, width: "100%", boxSizing: "border-box" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+              <button type="button" className="btn-ghost" onClick={closePdfPreview}>Back to report</button>
+              <span style={{ fontSize: 12, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pdfPreview.filename}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0, marginLeft: "auto" }}>
+              <button type="button" className="btn-primary" onClick={downloadPdfPreview}><Icon name="document" size={13} /> Download PDF</button>
+              <button type="button" className="btn-ghost" onClick={printPdfPreview}>Print</button>
+            </div>
+          </div>
+          <iframe
+            ref={pdfPreviewRef}
+            src={pdfPreview.url}
+            title="Report PDF preview"
+            style={{ flex: 1, width: "100%", border: "none", minHeight: 0, background: "#525659" }}
+            onLoad={() => {
+              if (pdfPrintAfter) {
+                pdfPreviewRef.current?.contentWindow?.print();
+                setPdfPrintAfter(false);
+              }
+            }}
+          />
+        </div>
+      ) : pdfBusy ? (
+        <div className="report-scroll" style={{ flex: 1, overflow: "auto", padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-muted)", fontSize: 13 }}>
+          Building PDF preview…
+        </div>
+      ) : (
       <div className="report-scroll" style={{ flex: 1, overflow: "auto", padding: "20px 24px" }}>
         {/* print pagination: the flow-table's thead repeats this one-line strip at
             the top of every printed page (screen hides it) — a fixed footer would
@@ -790,6 +888,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
         )}
         </td></tr></tbody></table>
       </div>
+      )}
 
       {showContribute && (
         <ContributeModal conditions={conditions} shapes={shapes} scaleInfo={scaleInfo} provenanceCounters={provenanceCounters} onClose={() => setShowContribute(false)} />

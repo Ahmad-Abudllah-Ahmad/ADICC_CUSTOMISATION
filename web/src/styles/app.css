@@ -420,13 +420,13 @@ textarea {
 }
 
 .toolbar-glass-btn-ghost-positive {
-  background: rgba(255, 255, 255, 0.58) !important;
-  backdrop-filter: blur(36px) saturate(195%);
-  -webkit-backdrop-filter: blur(36px) saturate(195%);
+  background: color-mix(in srgb, var(--c-positive) 84%, transparent) !important;
+  backdrop-filter: blur(36px) saturate(210%);
+  -webkit-backdrop-filter: blur(36px) saturate(210%);
   box-shadow:
-    0 3px 10px rgba(14, 26, 46, 0.1),
+    0 3px 12px color-mix(in srgb, var(--c-positive) 28%, transparent),
     0 1px 3px rgba(14, 26, 46, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .toolbar-glass-btn-cond {
@@ -440,12 +440,12 @@ textarea {
 }
 
 .toolbar-glass-btn-cond.is-on {
-  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  background: var(--cobalt) !important;
   color: var(--accent-contrast) !important;
-  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff) !important;
   box-shadow:
-    0 2px 10px color-mix(in srgb, var(--cobalt) 18%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 4px 16px color-mix(in srgb, var(--cobalt) 38%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .toolbar-glass-btn-empty {
@@ -469,8 +469,12 @@ textarea {
 }
 
 .toolbar-glass-select.is-active {
-  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
+  background: var(--cobalt) !important;
   color: var(--accent-contrast) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff) !important;
+  box-shadow:
+    0 4px 14px color-mix(in srgb, var(--cobalt) 34%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .toolbar-glass-popover {
@@ -503,21 +507,21 @@ textarea {
 
 .toolbar-glass-bar .mode-circle-btn.is-on,
 .toolbar-glass-bar .angle-dial-btn.is-on:not(.is-snap) {
-  background: color-mix(in srgb, var(--cobalt) 90%, transparent);
-  backdrop-filter: blur(36px) saturate(200%);
-  -webkit-backdrop-filter: blur(36px) saturate(200%);
-  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent);
+  background: var(--cobalt);
+  backdrop-filter: blur(36px) saturate(220%);
+  -webkit-backdrop-filter: blur(36px) saturate(220%);
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff);
   box-shadow:
-    0 4px 14px color-mix(in srgb, var(--cobalt) 18%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 4px 18px color-mix(in srgb, var(--cobalt) 40%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .toolbar-glass-bar .angle-dial-btn.is-snap.is-on {
-  background: color-mix(in srgb, var(--c-positive) 90%, transparent);
-  border-color: color-mix(in srgb, var(--c-positive) 68%, transparent);
+  background: var(--c-positive);
+  border-color: color-mix(in srgb, var(--c-positive) 78%, #ffffff);
   box-shadow:
-    0 4px 14px color-mix(in srgb, var(--c-positive) 16%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 4px 18px color-mix(in srgb, var(--c-positive) 36%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .toolbar-glass-bar .tool-menu-trigger:not(.is-active) {
@@ -535,12 +539,13 @@ textarea {
 }
 
 .toolbar-glass-bar .tool-menu-trigger.is-active:not(.is-accent-danger) {
-  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
-  backdrop-filter: blur(36px) saturate(200%);
-  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  background: var(--cobalt) !important;
+  backdrop-filter: blur(36px) saturate(220%);
+  -webkit-backdrop-filter: blur(36px) saturate(220%);
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff) !important;
   box-shadow:
-    0 2px 10px color-mix(in srgb, var(--cobalt) 16%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 4px 16px color-mix(in srgb, var(--cobalt) 38%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .toolbar-glass-bar .tool-menu-trigger.is-active.is-accent-danger {
@@ -554,13 +559,13 @@ textarea {
 }
 
 .toolbar-glass-bar .takeoff-sticky-trigger {
-  background: color-mix(in srgb, var(--cobalt) 92%, transparent);
-  backdrop-filter: blur(36px) saturate(200%);
-  -webkit-backdrop-filter: blur(36px) saturate(200%);
-  border-color: color-mix(in srgb, var(--cobalt) 70%, transparent);
+  background: var(--cobalt);
+  backdrop-filter: blur(36px) saturate(220%);
+  -webkit-backdrop-filter: blur(36px) saturate(220%);
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff);
   box-shadow:
-    0 2px 12px color-mix(in srgb, var(--cobalt) 16%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 4px 16px color-mix(in srgb, var(--cobalt) 38%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 /* ── sticky glass estimation dropdown (Takeoff Tool Palette) ─────────────── */
@@ -794,24 +799,24 @@ textarea {
 }
 
 .takeoff-sticky-opt:hover:not(:disabled):not(.is-active) {
-  background: rgba(255, 255, 255, 0.72);
-  border-color: color-mix(in srgb, var(--cobalt) 28%, rgba(255, 255, 255, 0.52));
+  background: color-mix(in srgb, var(--cobalt) 14%, rgba(255, 255, 255, 0.72));
+  border-color: color-mix(in srgb, var(--cobalt) 32%, rgba(255, 255, 255, 0.52));
 }
 
 .takeoff-sticky-opt.is-active {
-  background: color-mix(in srgb, var(--cobalt) 90%, transparent);
-  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent);
-  backdrop-filter: blur(36px) saturate(200%);
-  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  background: var(--cobalt);
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff);
+  backdrop-filter: blur(36px) saturate(220%);
+  -webkit-backdrop-filter: blur(36px) saturate(220%);
   box-shadow:
-    0 4px 16px color-mix(in srgb, var(--cobalt) 16%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    0 4px 18px color-mix(in srgb, var(--cobalt) 38%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
   color: var(--accent-contrast);
 }
 
 .takeoff-sticky-opt.is-active:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--cobalt) 90%, transparent) !important;
-  border-color: color-mix(in srgb, var(--cobalt) 68%, transparent) !important;
+  background: var(--cobalt) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 78%, #ffffff) !important;
   color: var(--accent-contrast) !important;
 }
 
@@ -820,17 +825,18 @@ textarea {
 }
 
 .takeoff-sticky-opt.is-report {
-  background: rgba(255, 255, 255, 0.62);
-  border-color: rgba(255, 255, 255, 0.62);
-  color: var(--ink);
+  background: color-mix(in srgb, var(--c-positive) 88%, transparent);
+  border-color: color-mix(in srgb, var(--c-positive) 72%, #ffffff);
+  color: var(--accent-contrast);
   box-shadow:
-    0 3px 10px rgba(14, 26, 46, 0.1),
-    0 1px 3px rgba(14, 26, 46, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    0 4px 14px color-mix(in srgb, var(--c-positive) 32%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .takeoff-sticky-opt.is-report:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--c-positive);
+  border-color: color-mix(in srgb, var(--c-positive) 80%, #ffffff);
+  color: var(--accent-contrast);
 }
 
 .takeoff-sticky-opt:disabled {
@@ -921,7 +927,8 @@ textarea {
 
 .tool-menu-anchored-panel button:hover:not(:disabled),
 .tool-menu-drop-panel button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.62) !important;
+  background: color-mix(in srgb, var(--cobalt) 16%, rgba(255, 255, 255, 0.72)) !important;
+  border-left-color: var(--cobalt) !important;
 }
 
 .tool-menu-palette-divider {
@@ -1701,17 +1708,60 @@ textarea {
 }
 
 :root[data-theme="dark"] .takeoff-sticky-opt:not(.is-active) {
-  background: rgba(255, 255, 255, 0.42);
-  border-color: rgba(255, 255, 255, 0.38);
+  background: color-mix(in srgb, var(--cobalt) 20%, rgba(255, 255, 255, 0.58));
+  border-color: color-mix(in srgb, var(--cobalt) 38%, rgba(255, 255, 255, 0.42));
   color: var(--glass-fg, #1c2833) !important;
+}
+
+:root[data-theme="dark"] .takeoff-sticky-opt:hover:not(:disabled):not(.is-active) {
+  background: color-mix(in srgb, var(--cobalt) 32%, rgba(255, 255, 255, 0.68)) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 48%, rgba(255, 255, 255, 0.52)) !important;
 }
 
 :root[data-theme="dark"] .toolbar-glass-bar .mode-circle-btn:not(.is-on),
 :root[data-theme="dark"] .toolbar-glass-bar .angle-dial-btn:not(.is-on),
 :root[data-theme="dark"] .toolbar-glass-bar .tool-menu-trigger:not(.is-active) {
-  background: rgba(255, 255, 255, 0.48) !important;
-  border-color: rgba(255, 255, 255, 0.38);
+  background: color-mix(in srgb, var(--cobalt) 18%, rgba(255, 255, 255, 0.58)) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 36%, rgba(255, 255, 255, 0.42)) !important;
   color: var(--glass-fg, #1c2833) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-bar .mode-circle-btn.is-on,
+:root[data-theme="dark"] .toolbar-glass-bar .angle-dial-btn.is-on:not(.is-snap),
+:root[data-theme="dark"] .toolbar-glass-bar .tool-menu-trigger.is-active:not(.is-accent-danger),
+:root[data-theme="dark"] .toolbar-glass-select.is-active,
+:root[data-theme="dark"] .toolbar-glass-btn-cond.is-on,
+:root[data-theme="dark"] .takeoff-sticky-opt.is-active {
+  background: var(--cobalt) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 82%, #ffffff) !important;
+  box-shadow:
+    0 4px 18px color-mix(in srgb, var(--cobalt) 48%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-bar .angle-dial-btn.is-snap.is-on {
+  background: var(--c-positive) !important;
+  border-color: color-mix(in srgb, var(--c-positive) 82%, #ffffff) !important;
+  box-shadow:
+    0 4px 18px color-mix(in srgb, var(--c-positive) 44%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-bar .takeoff-sticky-trigger {
+  background: var(--cobalt) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 82%, #ffffff) !important;
+  box-shadow:
+    0 4px 18px color-mix(in srgb, var(--cobalt) 46%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24) !important;
+}
+
+:root[data-theme="dark"] .toolbar-glass-btn-ghost-positive {
+  background: var(--c-positive) !important;
+  border-color: color-mix(in srgb, var(--c-positive) 82%, #ffffff) !important;
+  color: #0a2015 !important;
+  box-shadow:
+    0 4px 16px color-mix(in srgb, var(--c-positive) 42%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28) !important;
 }
 
 :root[data-theme="dark"] .toolbar-glass-popover {
@@ -1768,15 +1818,15 @@ textarea {
 }
 
 .drawings-chat-glass-send {
-  background: color-mix(in srgb, var(--cobalt) 92%, transparent) !important;
+  background: var(--cobalt) !important;
   color: var(--accent-contrast) !important;
-  border: 1px solid color-mix(in srgb, var(--cobalt) 70%, transparent) !important;
-  backdrop-filter: blur(36px) saturate(200%);
-  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  border: 1px solid color-mix(in srgb, var(--cobalt) 78%, #ffffff) !important;
+  backdrop-filter: blur(36px) saturate(220%);
+  -webkit-backdrop-filter: blur(36px) saturate(220%);
   box-shadow:
-    0 4px 14px color-mix(in srgb, var(--cobalt) 22%, transparent),
+    0 4px 18px color-mix(in srgb, var(--cobalt) 42%, transparent),
     0 2px 6px rgba(14, 26, 46, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .drawings-chat-glass-send:disabled {
@@ -1808,25 +1858,24 @@ textarea {
 }
 
 .drawings-chat-glass-msg--user {
-  background: color-mix(in srgb, var(--cobalt) 14%, rgba(255, 255, 255, 0.72)) !important;
-  backdrop-filter: blur(32px) saturate(190%);
-  -webkit-backdrop-filter: blur(32px) saturate(190%);
-  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: color-mix(in srgb, var(--cobalt) 28%, rgba(255, 255, 255, 0.78)) !important;
+  backdrop-filter: blur(32px) saturate(210%);
+  -webkit-backdrop-filter: blur(32px) saturate(210%);
+  border: 1px solid color-mix(in srgb, var(--cobalt) 42%, rgba(255, 255, 255, 0.52));
+  color: light-dark(var(--ink), #ffffff);
   box-shadow:
-    0 3px 10px rgba(14, 26, 46, 0.1),
-    0 1px 3px rgba(14, 26, 46, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    0 4px 14px color-mix(in srgb, var(--cobalt) 24%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .drawings-chat-glass-msg--assistant {
-  background: rgba(255, 255, 255, 0.68) !important;
-  backdrop-filter: blur(32px) saturate(190%);
-  -webkit-backdrop-filter: blur(32px) saturate(190%);
-  border: 1px solid rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: blur(32px) saturate(210%);
+  -webkit-backdrop-filter: blur(32px) saturate(210%);
+  border: 1px solid rgba(255, 255, 255, 0.58);
   box-shadow:
-    0 3px 10px rgba(14, 26, 46, 0.1),
-    0 1px 3px rgba(14, 26, 46, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    0 4px 14px rgba(14, 26, 46, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
 }
 
 .drawings-chat-glass-generating {
@@ -1936,7 +1985,7 @@ textarea {
 
 :root[data-theme="dark"] .drawings-chat-glass-header,
 :root[data-theme="dark"] .drawings-chat-glass-form {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 :root[data-theme="dark"] .drawings-chat-glass-input,
@@ -1944,11 +1993,31 @@ textarea {
 :root[data-theme="dark"] .drawings-chat-glass-msg--assistant,
 :root[data-theme="dark"] .drawings-chat-glass-generating,
 :root[data-theme="dark"] .drawings-chat-glass-citation:not(.is-active) {
-  background: rgba(255, 255, 255, 0.18) !important;
-  border-color: rgba(255, 255, 255, 0.32) !important;
+  background: color-mix(in srgb, var(--cobalt) 22%, rgba(255, 255, 255, 0.14)) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 38%, rgba(255, 255, 255, 0.32)) !important;
+  color: rgba(255, 255, 255, 0.94) !important;
   box-shadow:
-    0 3px 10px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 4px 14px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-msg--user {
+  background: color-mix(in srgb, var(--cobalt) 55%, rgba(26, 35, 50, 0.92)) !important;
+  border-color: color-mix(in srgb, #6eb5ff 55%, var(--cobalt)) !important;
+  color: #ffffff !important;
+  box-shadow:
+    0 4px 18px color-mix(in srgb, var(--cobalt) 48%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+:root[data-theme="dark"] .drawings-chat-glass-send,
+:root[data-theme="dark"] .drawings-chat-glass-pill-send,
+:root[data-theme="dark"] .drawings-chat-glass-trigger.canvas-circle-btn {
+  background: var(--cobalt) !important;
+  border-color: color-mix(in srgb, #6eb5ff 45%, var(--cobalt)) !important;
+  box-shadow:
+    0 6px 22px color-mix(in srgb, var(--cobalt) 52%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
 }
 
 :root[data-theme="dark"] .drawings-chat-glass-pill {
@@ -2069,6 +2138,8 @@ textarea {
 :root[data-theme="dark"] .toolbar-glass-btn-empty,
 :root[data-theme="dark"] .toolbar-glass-select:not(.is-active) {
   color: var(--glass-fg) !important;
+  background: color-mix(in srgb, var(--cobalt) 18%, rgba(255, 255, 255, 0.58)) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 34%, rgba(255, 255, 255, 0.42)) !important;
 }
 
 :root[data-theme="dark"] .toolbar-glass-bar .mode-circle-btn.is-on,
@@ -2077,12 +2148,26 @@ textarea {
 :root[data-theme="dark"] .toolbar-glass-select.is-active,
 :root[data-theme="dark"] .toolbar-glass-btn-cond.is-on {
   color: var(--accent-contrast) !important;
+  background: var(--cobalt) !important;
+  border-color: color-mix(in srgb, var(--cobalt) 82%, #ffffff) !important;
+  box-shadow:
+    0 4px 18px color-mix(in srgb, var(--cobalt) 48%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24) !important;
 }
 
 /* Dropdown / palette options on light glass */
 :root[data-theme="dark"] .takeoff-sticky-opt:not(.is-active):not(.is-danger),
 :root[data-theme="dark"] .takeoff-sticky-opt.is-report:not(.is-active) {
   color: var(--glass-fg) !important;
+}
+
+:root[data-theme="dark"] .takeoff-sticky-opt.is-report:not(.is-active) {
+  background: var(--c-positive) !important;
+  border-color: color-mix(in srgb, var(--c-positive) 82%, #ffffff) !important;
+  color: #0a2015 !important;
+  box-shadow:
+    0 4px 16px color-mix(in srgb, var(--c-positive) 40%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26) !important;
 }
 
 :root[data-theme="dark"] .takeoff-sticky-opt.is-active,
@@ -2112,9 +2197,15 @@ textarea {
   color: #4a5568 !important;
 }
 
+:root[data-theme="dark"] .tool-menu-anchored-panel button:hover:not(:disabled),
+:root[data-theme="dark"] .tool-menu-drop-panel button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cobalt) 24%, rgba(255, 255, 255, 0.78)) !important;
+}
+
 :root[data-theme="dark"] .tool-menu-drop-panel button[style*="paper-cream"] {
   background: var(--cobalt) !important;
   color: var(--accent-contrast, #fff) !important;
+  box-shadow: 0 3px 14px color-mix(in srgb, var(--cobalt) 38%, transparent) !important;
 }
 
 :root[data-theme="dark"] .tool-menu-drop-panel button[style*="paper-cream"] span {

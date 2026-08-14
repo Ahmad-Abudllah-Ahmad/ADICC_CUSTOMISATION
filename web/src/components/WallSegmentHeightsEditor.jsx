@@ -18,7 +18,16 @@ export default function WallSegmentHeightsEditor({
   const fl = (lf) => `${num(lenVal(lf, units), 2)} ${lenUnit(units)}`;
 
   const list = (
-    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 3 : 5 }}>
+    <div style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: compact ? 3 : 5,
+      ...(rows.length > 5 ? {
+        maxHeight: compact ? 168 : 200,
+        overflowY: "auto",
+        overflowX: "hidden",
+      } : {}),
+    }}>
       {rows.map((row) => {
         const isActive = activeIndex === row.index;
         return (

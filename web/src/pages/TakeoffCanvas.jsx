@@ -77,6 +77,7 @@ import EstimatePanel from "../components/EstimatePanel.jsx";
 import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
+import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
 import { segmentHeightsForShape, grossFaceFromSegments, wallSegmentRows, withSegmentHeights, concatSegmentHeightsForMerge, defaultWallHeightFt } from "../lib/wallSegmentHeights.js";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
@@ -8794,6 +8795,7 @@ export default function TakeoffCanvas() {
                   <ToolMenu circleTrigger paletteAnchor title="Render & fill settings" onOpenChange={onMenuDepth} face={<Icon name="sliders" size={14} />} menuStyle={{ minWidth: 396 }} items={[{ id: "hires", icon: "hiRes", label: "Hi-Res render", checked: hiResOn(focusPanel.key), stayOpen: true, onSelect: toggleHiRes }, "divider", { id: "fill", custom: fillRow }, { id: "wall", custom: wallSensRow }]} />
                   <span className="mode-circle-hint" aria-hidden="true">Render</span>
                 </span>
+                <TakeoffFeatureGuide />
               </div>
             </div>
 
@@ -9129,8 +9131,9 @@ export default function TakeoffCanvas() {
                    setLeftTab(null);
                  }}
                  title={t.id === "layers" ? `${t.label} — double-click to detach as floating window` : t.label}
-                 style={{ flex: 1, padding: "9px 4px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5 }}>
-                 {t.label}{t.n ? ` · ${t.n}` : ""}
+                 style={{ flex: 1, padding: "8px 2px", border: "none", borderBottom: leftTab === t.id ? "2px solid var(--accent-contrast)" : "2px solid transparent", background: leftTab === t.id ? "rgba(255,255,255,.18)" : "transparent", color: "var(--accent-contrast)", cursor: "pointer", fontWeight: leftTab === t.id ? 700 : 500, fontSize: 11.5, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, lineHeight: 1.1, minHeight: 40 }}>
+                 <span style={{ whiteSpace: "nowrap" }}>{t.label} ·</span>
+                 <span style={{ fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, lineHeight: 1 }}>{t.n}</span>
                </button>
              ))}
              <button onClick={() => setLeftTab(null)} title="Close panel" style={{ padding: "0 12px", border: "none", background: "transparent", color: "var(--accent-contrast)", fontSize: 16, cursor: "pointer" }}>×</button>
@@ -9298,7 +9301,16 @@ export default function TakeoffCanvas() {
                    <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
                      No sheets open. Open a file from the <b>Files</b> tab.
                    </div>
-                 ) : openTabs.map((k) => {
+                 ) : (
+                   <>
+                 <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 10px", borderBottom: "1px solid var(--ink-faint)" }}>
+                   <button type="button" onClick={() => { setOpenTabs([]); setActive(""); setPage(1); setSheetGroup([]); setPanelImgs({}); setStatus("ready"); setView("canvas"); }}
+                     title="Close all open sheets"
+                     style={{ background: "transparent", border: "1px solid var(--ink-faint)", color: "var(--ink)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "3px 10px", borderRadius: 999 }}>
+                     Close all
+                   </button>
+                 </div>
+                 {openTabs.map((k) => {
                    const inGroup = sheetGroup.includes(k);
                    const on = sheetGroup.length ? inGroup : k === sheetKey;
                    const lbl = tabLabel(k);
@@ -9320,6 +9332,8 @@ export default function TakeoffCanvas() {
                      </div>
                    );
                  })}
+                   </>
+                 )}
                </div>
              )}
              {leftTab === "markup" && (
