@@ -4,7 +4,7 @@
 import { winAnsiSafe } from "./markedset.js";
 import { areaUnit } from "./units";
 import { money } from "./num.js";
-import adiccLogoUrl from "../../../../adicc-platform/public/images/logos/adicc-logo.png?url";
+import adiccLogoUrl from "../../public/images/logos/adicc-logo.png?url";
 
 const PAGE_W = 612;
 const PAGE_H = 792;
