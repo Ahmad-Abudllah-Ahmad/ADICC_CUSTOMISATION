@@ -2,6 +2,11 @@
 
 All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 
+## Unreleased — canvas chrome: theme next to Pan
+
+### Changed
+- **UI light/dark lives next to Pan** in the center toolbar (sun/moon). The left-rail contrast button is still sheet invert only. Dark toolbar chips use ink-on-paper tokens instead of leftover light-glass frost.
+
 ## Unreleased — `sheet_context`: vector, raster, and text in one coordinate frame (RFC #29)
 
 ### Added

@@ -184,7 +184,7 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
   );
 
   const triggerClass = circleTrigger
-    ? `angle-dial-btn${open ? " is-on" : ""}`
+    ? `angle-dial-btn${open || active ? " is-on" : ""}${accent === "danger" && active ? " is-accent-danger" : ""}`
     : [
         "tool-menu-trigger",
         active ? "is-active" : "",

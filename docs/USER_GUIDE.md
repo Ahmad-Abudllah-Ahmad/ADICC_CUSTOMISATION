@@ -62,7 +62,7 @@ Press `G` (or click **Sheets** in the toolbar) for the visual gallery: one card 
 
 ### Tabs, groups, and Regroup
 
-Open sheets ride the left-rail **stacked-pages** icon (next to the desk icon): click it to open the tab switcher, search if the list is long, click a row to view it, **⊞** to put it side-by-side with the current sheet, **✕** to close the tab. The sheet chip's dropdown lists every page and file, and holds **Ungroup — back to one sheet** and **Regroup (N)** — one click to restore your last side-by-side composition after working sheets individually. Each sheet in a group keeps its own scale, takeoffs, and markups.
+Open sheets live in the **Sheets** tab (next to Files / Markups) — the stacked-pages button above chat opens the same tab. Count badges sit on the tab, not in the label. Search if the list is long, click a row to view it, **⊞** to put it side-by-side with the current sheet, **✕** to close the tab. The sheet chip's dropdown lists every page and file, and holds **Ungroup — back to one sheet** and **Regroup (N)** — one click to restore your last side-by-side composition after working sheets individually. Each sheet in a group keeps its own scale, takeoffs, and markups.
 
 ### Levels (multi-floor sets)
 
@@ -84,7 +84,7 @@ Past ~115% zoom the visible region re-renders straight from the PDF vectors at y
 
 ### Dark view
 
-The **contrast** button on the left rail inverts the sheet pixels themselves — a true negative print, white linework on black, not a CSS filter — with hatches retuned to stay legible. It is not the chrome light/dark toggle (sun/moon). The setting persists per browser, and exports follow it: a dark canvas produces a dark Marked Set PDF.
+The **contrast** button on the left rail inverts the sheet pixels themselves — a true negative print, white linework on black, not a CSS filter — with hatches retuned to stay legible. Chrome light/dark is the sun/moon control next to **Pan** in the center toolbar; it does not invert the sheet. The invert setting persists per browser, and exports follow it: a dark canvas produces a dark Marked Set PDF.
 
 ---
 
@@ -359,7 +359,7 @@ One more distinction: **Undo last shape** (Edit menu) and `⌫`-with-nothing-in-
 
 ## 9. Markups, stamps & RFIs
 
-The markup layer is communication, never quantity: clouds, callouts, notes, highlighter ink, and stamps live on a separate layer the totals never count. The left-rail **desk** icon opens one panel with four tabs — **Files**, **Markups**, **Stamps**, **RFIs**.
+The markup layer is communication, never quantity: clouds, callouts, notes, highlighter ink, and stamps live on a separate layer the totals never count. The left-rail **folder** icon opens one panel with four tabs — **Files**, **Markups**, **Stamps**, **RFIs**.
 
 ### The markup tools
 

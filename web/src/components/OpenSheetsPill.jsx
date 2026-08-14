@@ -1,4 +1,4 @@
-// Open sheets on the canvas — docked left-rail window.
+// Open sheets on the canvas — docked above the bottom-left sheets FAB.
 // Parent owns goToSheet / toggleInGroup / closeTab / gallery; this view only calls them.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Columns2, Eye, EyeOff, FileStack, Plus, Search, X } from "lucide-react";
@@ -16,13 +16,19 @@ export default function OpenSheetsPill({
   onCloseTab,
   onAdd,
   onClose,
+  embedded = false,
+  hideFind = false,
+  hideActions = false,
+  query,
 }) {
   const [q, setQ] = useState("");
   const findRef = useRef(null);
+  const filterText = query != null ? query : q;
 
   useEffect(() => {
+    if (hideFind) return undefined;
     const onKey = (e) => {
-      if (e.key === "Escape") { onClose?.(); return; }
+      if (e.key === "Escape" && !embedded) { onClose?.(); return; }
       if (e.key !== "/") return;
       const tg = e.target?.tagName;
       if (tg === "INPUT" || tg === "SELECT" || tg === "TEXTAREA") return;
@@ -31,17 +37,17 @@ export default function OpenSheetsPill({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, embedded, hideFind]);
 
-  const filtering = q.trim().length > 0;
+  const filtering = filterText.trim().length > 0;
   const shown = useMemo(() => {
-    const s = q.trim().toLowerCase();
+    const s = filterText.trim().toLowerCase();
     if (!s) return openTabs.map((k, i) => ({ k, i }));
     return openTabs.map((k, i) => ({ k, i })).filter(({ k }) => {
       const lbl = (tabLabel ? tabLabel(k) : k).toLowerCase();
       return lbl.includes(s) || String(k).toLowerCase().includes(s);
     });
-  }, [openTabs, q, tabLabel]);
+  }, [openTabs, filterText, tabLabel]);
 
   const activeKey = (() => {
     if (sheetGroup.length) {
@@ -59,41 +65,11 @@ export default function OpenSheetsPill({
     if (inGroup && sheetGroup.length >= 2) onToggleInGroup(k);
   };
 
-  return (
-    <div className="left-panel-glass open-sheets-panel" role="dialog" aria-label="Open sheets">
-      <div className="open-sheets-head">
-        <FileStack size={18} strokeWidth={2} />
-        <strong>Open set</strong>
-        <span className="open-sheets-head-n">{openTabs.length}</span>
-        <span style={{ flex: 1 }} />
-        {onAdd && (
-          <button type="button" className="open-sheets-add" onClick={onAdd} title="Add sheets from the gallery">
-            <Plus size={15} strokeWidth={2.25} />Add
-          </button>
-        )}
-        <button type="button" className="lp-tab-close" onClick={onClose} title="Close panel">
-          <X size={18} strokeWidth={2} />
-        </button>
-      </div>
-
-      <label className="open-sheets-find">
-        <Search size={16} strokeWidth={2} className="open-sheets-find-ico" aria-hidden="true" />
-        <input
-          ref={findRef}
-          name="open-sheets-search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Jump to a sheet"
-          aria-label="Filter open sheets"
-          autoComplete="off"
-        />
-        {filtering && <span className="open-sheets-find-n">{shown.length}/{openTabs.length}</span>}
-      </label>
-
+  const list = (
       <div className="left-panel-scroll open-sheets-list">
         {shown.length === 0 ? (
           <div className="open-sheets-empty">
-            {filtering ? `Nothing matches “${q.trim()}”.` : "No sheets open on the canvas."}
+            {filtering ? `Nothing matches “${filterText.trim()}”.` : "No sheets open on the canvas."}
           </div>
         ) : shown.map(({ k, i }) => {
           const inGroup = sheetGroup.includes(k);
@@ -143,6 +119,63 @@ export default function OpenSheetsPill({
           );
         })}
       </div>
+  );
+
+  const body = (
+    <>
+      {!hideFind && (
+        <label className="open-sheets-find">
+          <Search size={16} strokeWidth={2} className="open-sheets-find-ico" aria-hidden="true" />
+          <input
+            ref={findRef}
+            name="open-sheets-search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Jump to a sheet"
+            aria-label="Filter open sheets"
+            autoComplete="off"
+          />
+          {filtering && <span className="open-sheets-find-n">{shown.length}/{openTabs.length}</span>}
+        </label>
+      )}
+      {list}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="open-sheets-embedded">
+        {!hideActions && onAdd && (
+          <div className="left-panel-glass-actions">
+            <div className="lp-action-seg" role="group" aria-label="Sheet actions">
+              <button type="button" className="lp-btn-ghost" onClick={onAdd} title="Add sheets from the gallery">
+                Add from gallery
+              </button>
+            </div>
+          </div>
+        )}
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <div className="left-panel-glass open-sheets-panel" role="dialog" aria-label="Open sheets">
+      <div className="open-sheets-head">
+        <FileStack size={18} strokeWidth={2} />
+        <strong>Open set</strong>
+        <span className="open-sheets-head-n">{openTabs.length}</span>
+        <span style={{ flex: 1 }} />
+        {onAdd && (
+          <button type="button" className="open-sheets-add" onClick={onAdd} title="Add sheets from the gallery">
+            <Plus size={15} strokeWidth={2.25} />Add
+          </button>
+        )}
+        <button type="button" className="lp-tab-close" onClick={onClose} title="Close panel">
+          <X size={18} strokeWidth={2} />
+        </button>
+      </div>
+      {body}
     </div>
   );
 }

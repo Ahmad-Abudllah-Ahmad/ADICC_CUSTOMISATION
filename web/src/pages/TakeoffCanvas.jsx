@@ -77,7 +77,8 @@ import EstimatePanel from "../components/EstimatePanel.jsx";
 import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
-import { Contrast, FileStack, PanelLeft, PanelLeftClose, Scan, ZoomIn, ZoomOut } from "lucide-react";
+import AdiccLoadingLogo from "../components/AdiccLoadingLogo.jsx";
+import { Contrast, FileStack, Folder, FolderOpen, Map as MapIcon, Menu, Minus, Plus, Redo2, Scan, Search, Undo2, X } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
@@ -364,13 +365,11 @@ export default function TakeoffCanvas() {
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
   // Floating LEFT panel — one at a time: null | "files" | "sheets" | "markup" | "stamp" | "rfi" | "layers".
-  // One desk icon opens/closes it; tabs switch inside the strip. Hover-out must NOT dismiss.
+  // One folder icon opens/closes it; tabs switch inside the strip. Hover-out must NOT dismiss.
   const [leftTab, setLeftTab] = useState(null);
   const [layersFloating, setLayersFloating] = useState(false); // Layers tab double-click → draggable/resizable window
   const lastLeftTabRef = useRef("files");
-  const [openSheetsPanel, setOpenSheetsPanel] = useState(false); // canvas tab switcher — not one of the Files/Markups/Stamps/RFI tabs
   const toggleLeftDesk = useCallback(() => {
-    setOpenSheetsPanel(false);
     setLeftTab((cur) => {
       if (cur) return null;
       const next = lastLeftTabRef.current || "files";
@@ -379,13 +378,12 @@ export default function TakeoffCanvas() {
     });
   }, [layersFloating]);
   useEffect(() => { if (leftTab) lastLeftTabRef.current = leftTab; }, [leftTab]);
-  const toggleOpenSheetsPanel = useCallback(() => {
-    setLeftTab(null);
-    setOpenSheetsPanel((v) => !v);
+  const [sheetsSearch, setSheetsSearch] = useState("");
+  const toggleSheetsTab = useCallback(() => {
+    setLeftTab((cur) => (cur === "sheets" ? null : "sheets"));
   }, []);
   const openGallery = useCallback(() => {
     setLeftTab(null);
-    setOpenSheetsPanel(false);
     setView("gallery");
   }, []);
   // Layers panel — session-only (never persisted): hide, group, pick for merge.
@@ -395,7 +393,9 @@ export default function TakeoffCanvas() {
   const [shapeToLayerGroup, setShapeToLayerGroup] = useState({});
   const [layersSheetOpen, setLayersSheetOpen] = useState({});
   const leftCanvasWork = leftTab === "markup" || leftTab === "stamp";
-  useEffect(() => { if (!openTabs.length) setOpenSheetsPanel(false); }, [openTabs.length]);
+  useEffect(() => { if (!openTabs.length) setLeftTab((cur) => (cur === "sheets" ? "files" : cur)); }, [openTabs.length]);
+  const [minimapOpen, setMinimapOpen] = useState(false);   // bottom-left overview thumbnail with a draggable viewport box
+  const minimapCanvasRef = useRef(null);
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
   const [panelEditId, setPanelEditId] = useState(null);       // markup id whose text is being edited inline in the markup panel (off-screen fallback for the ✎ button)
@@ -819,19 +819,19 @@ export default function TakeoffCanvas() {
   const [drawingsChatPill, setDrawingsChatPill] = useState(false);   // bottom-center search pill
   const [drawingsChatDraft, setDrawingsChatDraft] = useState("");
   const [drawingsChatSeed, setDrawingsChatSeed] = useState("");      // question handed to side panel
-  const drawingsChatPillRef = useRef(null);
+  const drawingsChatInputRef = useRef(null);
+  const closeDrawingsChatPill = useCallback(() => {
+    setDrawingsChatPill(false);
+    setDrawingsChatDraft("");
+  }, []);
+  // Escape always dismisses the centered ask box (even with text — an explicit
+  // intent, unlike a stray outside click which we guard against below).
   useEffect(() => {
     if (!drawingsChatPill) return undefined;
-    const onPointerDown = (e) => {
-      const el = drawingsChatPillRef.current;
-      if (el && !el.contains(e.target)) {
-        setDrawingsChatPill(false);
-        setDrawingsChatDraft("");
-      }
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [drawingsChatPill]);
+    const onKey = (e) => { if (e.key === "Escape") closeDrawingsChatPill(); };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [drawingsChatPill, closeDrawingsChatPill]);
   const [showRates, setShowRates] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
   const [showFinishesSchedule, setShowFinishesSchedule] = useState(false);
@@ -1300,6 +1300,60 @@ export default function TakeoffCanvas() {
       try { localStorage.setItem("opentakeoff_hires", JSON.stringify(next)); } catch { /* private mode */ }
       return next;
     });
+  };
+
+  // ── minimap overview: draw every panel bitmap scaled into a small canvas and
+  // outline the current viewport. Redraws whenever the view (tf) or sheet moves.
+  const MINIMAP_MAX_W = 220, MINIMAP_MAX_H = 168;
+  useEffect(() => {
+    if (!minimapOpen) return;
+    const cv = minimapCanvasRef.current;
+    const cont = containerRef.current;
+    if (!cv || !cont || !stage.w || !stage.h) return;
+    const s = Math.min(MINIMAP_MAX_W / stage.w, MINIMAP_MAX_H / stage.h);
+    const dispW = Math.max(1, Math.round(stage.w * s));
+    const dispH = Math.max(1, Math.round(stage.h * s));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.style.width = `${dispW}px`;
+    cv.style.height = `${dispH}px`;
+    cv.width = Math.round(dispW * dpr);
+    cv.height = Math.round(dispH * dpr);
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, dispW, dispH);
+    ctx.fillStyle = darkMode ? "#0f151f" : "#ffffff";
+    ctx.fillRect(0, 0, dispW, dispH);
+    for (const p of panels) {
+      const src = panelCanvasRefs.current.get(p.key);
+      if (!src || !src.width || !src.height) continue;
+      try { ctx.drawImage(src, p.xOffset * s, 0, p.img.w * s, p.img.h * s); } catch { /* bitmap not ready */ }
+    }
+    const r = cont.getBoundingClientRect();
+    const t = tfRef.current;
+    const rx = Math.max(0, (-t.x / t.scale) * s);
+    const ry = Math.max(0, (-t.y / t.scale) * s);
+    const rw = Math.min(dispW, ((r.width - t.x) / t.scale) * s) - rx;
+    const rh = Math.min(dispH, ((r.height - t.y) / t.scale) * s) - ry;
+    if (rw > 0 && rh > 0) {
+      ctx.fillStyle = "rgba(31,63,199,0.12)";
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.strokeStyle = "#1f3fc7";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(rx + 0.75, ry + 0.75, Math.max(0, rw - 1.5), Math.max(0, rh - 1.5));
+    }
+  }, [minimapOpen, tf, stage.w, stage.h, panels, darkMode, status]);
+
+  const recenterFromMinimap = (e) => {
+    const cv = minimapCanvasRef.current, cont = containerRef.current;
+    if (!cv || !cont || !stage.w) return;
+    const rect = cv.getBoundingClientRect();
+    const s = cv.clientWidth / stage.w;
+    const stageX = (e.clientX - rect.left) / s;
+    const stageY = (e.clientY - rect.top) / s;
+    const r = cont.getBoundingClientRect();
+    const t = tfRef.current;
+    setTfNow({ scale: t.scale, x: r.width / 2 - stageX * t.scale, y: r.height / 2 - stageY * t.scale });
   };
 
   // ── transform: tfRef is source of truth; write straight to the DOM ─────────
@@ -2683,7 +2737,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { setWallCutoutFocus(null); if (wallCutoutFocusTimerRef.current) { clearTimeout(wallCutoutFocusTimerRef.current); wallCutoutFocusTimerRef.current = null; } if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (wallCutoutDraftRef.current) { e.preventDefault(); setWallCutoutDraft(null); if (rubberRef.current) rubberRef.current.style.display = "none"; setCommitMsg("Custom cutout cancelled."); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; } }
+      } else if (e.key === "Escape") { setWallCutoutFocus(null); if (wallCutoutFocusTimerRef.current) { clearTimeout(wallCutoutFocusTimerRef.current); wallCutoutFocusTimerRef.current = null; } if (overlapPrompt) { e.preventDefault(); resolveOverlapPrompt("cancel"); } else if (wallCutoutDraftRef.current) { e.preventDefault(); setWallCutoutDraft(null); if (rubberRef.current) rubberRef.current.style.display = "none"; setCommitMsg("Custom cutout cancelled."); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (ocSel) { setOcSel(null); } else if (selVert != null) { setSelVert(null); setSelHole(null); } else { setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; setTool((cur) => (cur !== "pan" && cur !== "select") ? "pan" : cur); } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -8177,27 +8231,28 @@ export default function TakeoffCanvas() {
     return aCond;
   })();
   const liveDrawLook = drawAppearance && aCond ? { ...aCond, ...drawAppearance } : aCond;
-  const measureActive = MEASURE_TOOLS.some((t) => t.id === tool);
-  const faceTool = MEASURE_TOOLS.find((t) => t.id === (measureActive ? tool : lastMeasureRef.current)) || MEASURE_TOOLS[0];
-  const cutActive = CUT_TOOLS.some((t) => t.id === tool);
-  const cutFaceTool = CUT_TOOLS.find((t) => t.id === (cutActive ? tool : lastCutRef.current)) || CUT_TOOLS[0];
-  const markupActive = MARKUP_IDS.includes(tool);
-  const markupFaceTool = MARKUP_TOOLS.find((t) => t.id === (markupActive ? tool : lastMarkupRef.current)) || MARKUP_TOOLS[0];
   const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
 
-  // panel-toggle for the right-edge rail — circular like the zoom cluster, count as a
-  // tiny mono line under the icon. Lives on the canvas, costs the toolbar zero rows.
-  const panelBtn = (onClick, iconName, label, isOn, count) => (
-    <button className={`canvas-circle-btn${isOn ? " is-on" : ""}`} onClick={onClick} title={label}
-      style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, width: 40, height: 40, minWidth: 40, minHeight: 40, padding: 0, borderRadius: 999, border: `1px solid ${isOn ? "var(--ink)" : "var(--ink-faint)"}`, background: isOn ? "var(--ink)" : "var(--paper-bright)", color: isOn ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", fontWeight: 600, lineHeight: 1, flexShrink: 0, boxShadow: isOn ? "none" : "0 1px 3px rgba(14, 26, 46, 0.12)" }}>
-      <Icon name={iconName} size={15} />{count ? <span style={{ fontFamily: "var(--f-mono)", fontSize: 9.5 }}>{count}</span> : null}
-    </button>
-  );
   const RAIL_ICO = { size: 15, strokeWidth: 1.5 };
   const railBtn = (onClick, icon, label, isOn, extraClass = "") => (
     <button type="button" className={`canvas-circle-btn${isOn ? " is-on" : ""}${extraClass ? ` ${extraClass}` : ""}`} onClick={onClick} title={label}
       style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "inherit", cursor: "pointer", flexShrink: 0, boxShadow: "none" }}>
       {icon}
+    </button>
+  );
+  // Measure tools relocated onto the vertical rail — same icons as the old
+  // top-toolbar palette, each with its single-key shortcut tucked bottom-right.
+  const measureRailBtn = (t) => (
+    <button
+      key={t.id}
+      type="button"
+      className={`canvas-circle-btn canvas-rail-tool${tool === t.id ? " is-on" : ""}`}
+      onClick={() => setTool(t.id)}
+      title={`${t.label} (${t.shortcut})`}
+      style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "inherit", cursor: "pointer", flexShrink: 0, boxShadow: "none" }}
+    >
+      <Icon name={t.icon} size={17} />
+      <span className="canvas-rail-kbd" aria-hidden="true">{t.shortcut}</span>
     </button>
   );
   const vRule = <span style={{ width: 1, alignSelf: "stretch", background: "var(--ink-faint)", margin: "0 3px" }} />;
@@ -8601,6 +8656,9 @@ export default function TakeoffCanvas() {
       onSeparateWallLine={() => selectedId != null && selVert != null && separateSurfaceRunAtVertex(selectedId, selVert)}
     />
   );
+  const canvasReady = view === "canvas" && status === "ready";
+  const sheetTools = status !== "loading" && status !== "rendering";
+  const workspaceBg = darkMode ? "#0b0e14" : "var(--surface-pop)";
 
   return (
     // .app-shell: the print stylesheet collapses this 100vh flex column while the report is open
@@ -8615,7 +8673,7 @@ export default function TakeoffCanvas() {
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
       {/* Unified Floating Toolbar */}
-      <div className="toolbar-glass-bar" style={{ position: "relative", display: "flex", alignItems: "flex-start", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "var(--stage)", userSelect: "none" }}>
+      <div className="toolbar-glass-bar" style={{ position: "relative", display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 10, padding: "4px 12px", width: "100%", zIndex: 10, background: "var(--surface-pop)", userSelect: "none" }}>
         <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
@@ -8640,6 +8698,7 @@ export default function TakeoffCanvas() {
             </div>
 
             {/* Auto-Takeoff + Takeoff Tool Palette — side by side on the bottom */}
+            {sheetTools && (
             <div className="takeoff-sticky-stack" style={{ width: "100%", minWidth: 0, maxWidth: "100%" }}>
               <button type="button" onClick={runAiDetection}
                 className="toolbar-glass-btn-ghost-positive"
@@ -8720,44 +8779,34 @@ export default function TakeoffCanvas() {
                 )}
               </span>
             </div>
+            )}
           </div>
 
-          {/* Pill 2 */}
-          <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "stretch", borderRadius: 14, padding: "3px 12px", gap: 10, whiteSpace: "nowrap" }}>
+          {/* Pill 2 — one uniform row of icon tools (no group headers, tooltips carry names) */}
+          {sheetTools && (
+          <>
+          <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "center", borderRadius: 14, padding: "4px 10px", gap: 8, whiteSpace: "nowrap" }}>
             
             {/* Mode */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>MODE</div>
-              <div style={{ display: "flex", gap: 4 }}>
-                <span className="mode-circle-wrap">
-                  <button type="button" onClick={() => setTool("select")} title="Select (V)"
-                    className={`mode-circle-btn${tool === "select" ? " is-on" : ""}`}>
-                    <Icon name="select" size={14} />
-                    <span className="tool-key-badge tool-key-badge--circle">V</span>
-                  </button>
-                  <span className="mode-circle-hint" aria-hidden="true">Select · V</span>
-                </span>
-                <span className="mode-circle-wrap">
-                  <button type="button" onClick={() => setTool("pan")} title="Pan (P) — or hold right-click / Space mid-measure"
-                    className={`mode-circle-btn${tool === "pan" ? " is-on" : ""}`}>
-                    <Icon name="pan" size={14} />
-                    <span className="tool-key-badge tool-key-badge--circle">P</span>
-                  </button>
-                  <span className="mode-circle-hint" aria-hidden="true">Pan · P</span>
-                </span>
-              </div>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <button type="button" onClick={() => setTool("select")} title="Select · V"
+                className={`mode-circle-btn${tool === "select" ? " is-on" : ""}`}>
+                <Icon name="select" size={15} />
+              </button>
+              <button type="button" onClick={() => setTool("pan")} title="Pan · P — or hold right-click / Space mid-measure"
+                className={`mode-circle-btn${tool === "pan" ? " is-on" : ""}`}>
+                <Icon name="pan" size={15} />
+              </button>
+              <ThemeToggle className="mode-circle-btn" />
             </div>
 
-            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
 
             {/* Draw */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>DRAW</div>
-              <div style={{ display: "flex", gap: 4 }}>
-                <ToolMenu variant="palette" compactFace title="Measure" active={measureActive} onOpenChange={onMenuDepth} face={<><Icon name={faceTool.icon} size={13} /><span className="tool-key-badge tool-key-badge--face">{faceTool.shortcut}</span><span style={{ marginLeft: 2, fontWeight: 600, fontSize: 11 }}>Measure</span></>} items={MEASURE_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))} />
-                <ToolMenu variant="palette" compactFace title="Cut Out — subtract voids/columns" active={cutActive} accent="danger" onOpenChange={onMenuDepth} face={<><Icon name="cutOut" size={13} /><span className="tool-key-badge tool-key-badge--face">{cutFaceTool.shortcut}</span><span style={{ marginLeft: 2, fontWeight: 600, fontSize: 11 }}>Cut Out</span></>} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))} />
-                <span style={{ position: "relative" }}>
-                  <ToolMenu variant="palette" compactFace title="Markup — annotations, not measurements" active={markupActive} onOpenChange={onMenuDepth} face={<><Icon name="markup" size={13} />{markupFaceTool.shortcut && <span className="tool-key-badge tool-key-badge--face">{markupFaceTool.shortcut}</span>}<span style={{ marginLeft: markupFaceTool.shortcut ? 2 : 3, fontWeight: 600, fontSize: 11 }}>Markup</span></>} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <ToolMenu variant="palette" circleTrigger title="Cut Out — subtract voids/columns" active={tool === "deduct"} accent="danger" onOpenChange={onMenuDepth} face={<Icon name="cutOut" size={15} />} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, tint: "var(--c-danger)", onSelect: () => setTool(t.id) }))} />
+                <span style={{ position: "relative", display: "inline-flex" }}>
+                  <ToolMenu variant="palette" circleTrigger title="Markup — annotations, not measurements" active={MARKUP_IDS.includes(tool)} onOpenChange={onMenuDepth} face={<Icon name="markup" size={15} />} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
                   {tool === "highlighter" && (
                     <div className="toolbar-glass-popover" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, borderRadius: 0, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
                       <div style={{ display: "flex", gap: 6 }} title="Ink">
@@ -8779,28 +8828,22 @@ export default function TakeoffCanvas() {
                     </div>
                   )}
                 </span>
-                <ToolMenu variant="palette" compactFace title="Edit takeoffs" onOpenChange={onMenuDepth} face={<><Icon name="edit" size={13} /><span style={{ marginLeft: 3, fontWeight: 600, fontSize: 11 }}>Edit</span></>} items={[{ id: "copy", icon: "copy", label: "Copy", shortcut: "⌘C", disabled: !selectedId, onSelect: copySelected }, { id: "paste", icon: "paste", label: "Paste", shortcut: "⌘V", disabled: !clipRef.current.length, onSelect: () => pasteClipboard() }, { id: "dup", icon: "duplicate", label: "Duplicate", shortcut: "⌘D", disabled: !selectedId, onSelect: duplicateSelected }, "divider", { id: "flipH", label: "Flip Horizontal", disabled: !selectedId, onSelect: () => flipSelected("h") }, { id: "flipV", label: "Flip Vertical", disabled: !selectedId, onSelect: () => flipSelected("v") }, "divider", { id: "finish", icon: "check", label: `Finish shape${poly.length ? ` (${poly.length} pts)` : ""}`, shortcut: "↵", disabled: !finishOk, onSelect: finishShape }, { id: "undopt", icon: "undo", label: "Undo last point", shortcut: "⌘Z", disabled: !poly.length, onSelect: () => setPoly((q) => q.slice(0, -1)) }, { id: "undoshape", icon: "undo", label: "Undo last shape", disabled: !visibleShapes.length, onSelect: undoLast }, { id: "redo", label: "Redo", shortcut: "⇧⌘Z", onSelect: redoShapeCommand }, "divider", { id: "del", icon: "close", label: "Delete selected", shortcut: "⌫", disabled: !selectedId, tint: "var(--c-danger)", onSelect: deleteSelected }]} />
-              </div>
+                <ToolMenu variant="palette" circleTrigger title="Edit takeoffs" onOpenChange={onMenuDepth} face={<Icon name="edit" size={15} />} items={[{ id: "copy", icon: "copy", label: "Copy", shortcut: "⌘C", disabled: !selectedId, onSelect: copySelected }, { id: "paste", icon: "paste", label: "Paste", shortcut: "⌘V", disabled: !clipRef.current.length, onSelect: () => pasteClipboard() }, { id: "dup", icon: "duplicate", label: "Duplicate", shortcut: "⌘D", disabled: !selectedId, onSelect: duplicateSelected }, "divider", { id: "flipH", label: "Flip Horizontal", disabled: !selectedId, onSelect: () => flipSelected("h") }, { id: "flipV", label: "Flip Vertical", disabled: !selectedId, onSelect: () => flipSelected("v") }, "divider", { id: "finish", icon: "check", label: `Finish shape${poly.length ? ` (${poly.length} pts)` : ""}`, shortcut: "↵", disabled: !finishOk, onSelect: finishShape }, { id: "undopt", icon: "undo", label: "Undo last point", shortcut: "⌘Z", disabled: !poly.length, onSelect: () => setPoly((q) => q.slice(0, -1)) }, { id: "undoshape", icon: "undo", label: "Undo last shape", disabled: !visibleShapes.length, onSelect: undoLast }, { id: "redo", label: "Redo", shortcut: "⇧⌘Z", onSelect: redoShapeCommand }, "divider", { id: "del", icon: "close", label: "Delete selected", shortcut: "⌫", disabled: !selectedId, tint: "var(--c-danger)", onSelect: deleteSelected }]} />
             </div>
 
-            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
 
             {/* Aids */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>AIDS</div>
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 <span className="angle-dial-wrap">
-                  <span className="mode-circle-wrap">
-                    <button
-                      type="button"
-                      className={`angle-dial-btn${angleOn ? " is-on" : ""}`}
-                      onClick={() => setAngleOn((v) => !v)}
-                      title="45°/90° angle guides"
-                    >
-                      45°
-                    </button>
-                    <span className="mode-circle-hint" aria-hidden="true">Angle · ⇧</span>
-                  </span>
+                  <button
+                    type="button"
+                    className={`angle-dial-btn${angleOn ? " is-on" : ""}`}
+                    onClick={() => setAngleOn((v) => !v)}
+                    title="Angle guides · ⇧ (45°/90°)"
+                  >
+                    45°
+                  </button>
                   <svg className="angle-dial-arc" width="14" height="28" viewBox="0 0 14 28" aria-hidden="true">
                     <path d="M 2 26 A 12 12 0 0 1 2 2" fill="none" stroke="var(--ink-faint)" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
@@ -8817,15 +8860,12 @@ export default function TakeoffCanvas() {
                   <span className="mode-circle-hint" aria-hidden="true">Render</span>
                 </span>
                 <TakeoffFeatureGuide />
-              </div>
             </div>
 
-            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
 
             {/* Condition & Label */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>CONDITION / LABEL</div>
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 {aCond ? (
                   <button type="button" onClick={() => setShowCondEdit(true)} title={`Edit appearance for ${aCond.finish_tag}`} className={`toolbar-glass-btn-cond${showCondEdit ? " is-on" : ""}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", border: "1px solid var(--ink-faint)", borderRadius: 16, color: "var(--ink)", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "var(--f-mono)", lineHeight: 1 }}>
                     <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, marginTop: 1 }}><HatchSwatch type={aCond.hatch || "solid"} line={aCond.color} fill={aCond.fill} /></span>
@@ -8840,22 +8880,18 @@ export default function TakeoffCanvas() {
                     {shapeLabels.map((v) => <option key={v} value={v}>{v}</option>)}
                   </select>
                 )}
-              </div>
             </div>
 
-            <div className="toolbar-glass-divider" style={{ width: 1, margin: "4px 0" }} />
+            <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
 
             {/* Scale */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, justifyContent: "center" }}>
-              <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--ink-soft)", textTransform: "uppercase" }}>SCALE</div>
-              <div style={{ display: "flex", gap: 4 }}>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 <button type="button" onClick={() => setUnits((u) => (u === "metric" ? "imperial" : "metric"))} title="Toggle metric/imperial"
                   className={`angle-dial-btn${units === "metric" ? " is-on" : ""}`}
                   style={{ fontFamily: "var(--f-mono)", fontSize: 10.5 }}>
                   {units === "metric" ? "m" : "ft"}
                 </button>
                 <ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} faceStyle={{ borderRadius: 16, fontFamily: "var(--f-mono)", fontSize: 11, fontWeight: 600, ...scaleFaceStyle }} face={scaleFace} menuStyle={{ minWidth: 250 }} items={scaleItems} />
-              </div>
             </div>
             
           </div>
@@ -8908,7 +8944,8 @@ export default function TakeoffCanvas() {
               onRemoveWallOpening={removeWallOpening}
               onFlyToWallOpening={flyToWallOpening}
             />
-          </div>
+          </>
+          )}
         </div>
       </div>
 
@@ -9071,14 +9108,14 @@ export default function TakeoffCanvas() {
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
        {/* Left icon rail + floating desk panel — canvas only (gallery/picker
            sit at z-40; this rail is z-55 so it must not mount over the plan set). */}
-       {view === "canvas" && (
+       {canvasReady && (
        <div
          onPointerDown={(e) => e.stopPropagation()}
          style={{
            position: "absolute",
            left: 16,
            top: 10,
-           bottom: 10,
+           bottom: 14,
            zIndex: 55,
            display: "flex",
            flexDirection: "row",
@@ -9087,44 +9124,46 @@ export default function TakeoffCanvas() {
            pointerEvents: "none",
          }}
        >
-         {/* slim vertical icon rail — always visible */}
+         {/* icon rail + sheets FAB + chat — one bottom-left column, left edges aligned */}
          <div
-           className="canvas-glass-cluster"
+           className="canvas-left-stack"
            onPointerDown={(e) => { e.stopPropagation(); if (e.button === 0 && !spaceRef.current) e.stopPropagation(); }}
            onDoubleClick={(e) => e.stopPropagation()}
-           style={{
-             pointerEvents: "auto",
-             alignSelf: "center",
-             display: "flex",
-             flexDirection: "column",
-             alignItems: "center",
-           }}
          >
-           {railBtn(toggleLeftDesk, leftTab ? <PanelLeftClose {...RAIL_ICO} /> : <PanelLeft {...RAIL_ICO} />, "Files, markups, stamps, RFIs, layers", !!leftTab)}
-           {openTabs.length > 0 && railBtn(toggleOpenSheetsPanel, <FileStack {...RAIL_ICO} />, "Sheets open on the canvas — jump, pair, or close tabs", openSheetsPanel)}
-           <span className="canvas-rail-rule" aria-hidden="true" />
-           {railBtn(() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1.25); }, <ZoomIn {...RAIL_ICO} />, "Zoom in")}
-           {railBtn(() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 0.8); }, <ZoomOut {...RAIL_ICO} />, "Zoom out")}
-           {railBtn(() => stage.w && fitToView(stage.w, stage.h), <Scan {...RAIL_ICO} />, "Fit sheet to view")}
-           <span className="canvas-rail-rule" aria-hidden="true" />
-           {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
-           <ThemeToggle />
-         </div>
-         {openSheetsPanel && openTabs.length > 0 && (
-           <OpenSheetsPill
-             openTabs={openTabs}
-             sheetGroup={sheetGroup}
-             sheetKey={sheetKey}
-             focusKey={focusKey}
-             tabLabel={tabLabel}
-             onGoToSheet={goToSheet}
-             onToggleInGroup={toggleInGroup}
-             onCloseTab={closeTab}
-             onAdd={openGallery}
-             onClose={() => setOpenSheetsPanel(false)}
-           />
-         )}
-         {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
+           <div className="canvas-glass-cluster">
+             {railBtn(toggleLeftDesk, leftTab ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, markups, stamps, RFIs, layers", !!leftTab)}
+             <span className="canvas-rail-rule" aria-hidden="true" />
+             {MEASURE_TOOLS.map((t) => measureRailBtn(t))}
+             <span className="canvas-rail-rule" aria-hidden="true" />
+             {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
+           </div>
+           {!showDrawingsChat && !drawingsChatPill && openTabs.length > 0 && (
+             <button
+               type="button"
+              className={`canvas-sheets-fab canvas-circle-btn${leftTab === "sheets" ? " is-on" : ""}`}
+              title="Sheets open on the canvas — jump, pair, or close tabs"
+              onClick={toggleSheetsTab}
+            >
+               <FileStack size={22} strokeWidth={1.7} aria-hidden="true" />
+             </button>
+           )}
+           {!showDrawingsChat && !drawingsChatPill && (
+             <button
+               type="button"
+               className="drawings-chat-glass-trigger canvas-circle-btn"
+               title="Ask the Volume 4 drawings corpus"
+               onClick={() => setDrawingsChatPill(true)}
+             >
+               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                 <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H10l-3.8 3.2c-.7.6-1.7.1-1.7-.8V16H6.5A2.5 2.5 0 0 1 4 13.5v-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+                 <circle cx="9" cy="10" r="1" fill="currentColor"/>
+                 <circle cx="12" cy="10" r="1" fill="currentColor"/>
+                 <circle cx="15" cy="10" r="1" fill="currentColor"/>
+               </svg>
+             </button>
+          )}
+        </div>
+        {/* Floating LEFT panel — Files/Markups/Stamps/RFIs/Layers; fixed size, not resizable */}
          {leftTab && (
          <div
            className="left-panel-glass"
@@ -9170,35 +9209,45 @@ export default function TakeoffCanvas() {
            <div className="left-panel-scroll" style={{ flex: 1, overflow: leftTab === "layers" ? "hidden" : "auto", minHeight: 0, display: leftTab === "layers" ? "flex" : "block", flexDirection: "column" }}>
              {leftTab === "files" && (
                <div>
-                 <div className="left-panel-glass-actions" style={{ display: "flex", gap: 8, padding: "12px", borderBottom: "1px solid var(--ink-faint)", flexWrap: "wrap" }}>
-                   <button type="button" className="lp-btn-primary" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set">
-                     <Icon name="plus" size={13} />Add files
-                   </button>
-                   <button type="button" className="lp-btn-ghost" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder">
-                     <Icon name="sheets" size={13} />Folder
-                   </button>
-                   <button type="button" className="lp-btn-ghost" onClick={openGallery} title="Open the visual plan-set gallery">
-                     <Icon name="sheets" size={13} />Gallery
-                   </button>
+                 <div className="left-panel-glass-actions">
+                   <div className="lp-action-row" role="group" aria-label="File actions">
+                     <button type="button" className="lp-btn-primary" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set">
+                       Add files
+                     </button>
+                     <button type="button" className="lp-btn-ghost" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder">
+                       Folder
+                     </button>
+                     <button type="button" className="lp-btn-ghost" onClick={openGallery} title="Open the visual plan-set gallery">
+                       Gallery
+                     </button>
+                   </div>
                  </div>
-                 <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--ink-faint)" }}>
-                  <div style={{ position: "relative" }}>
-                    <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "var(--ink-muted)", pointerEvents: "none", display: "inline-flex" }}>
-                      <Icon name="search" size={14} />
-                    </span>
-                    <input
-                      name="files-search"
-                      value={filesSearch}
-                      onChange={(e) => setFilesSearch(e.target.value)}
-                      placeholder="Search files…"
-                      aria-label="Search files by name"
-                      style={{
-                        width: "100%", boxSizing: "border-box", padding: "9px 12px 9px 36px",
-                        border: "1px solid var(--divider-soft)", fontSize: 13, color: "var(--ink)", borderRadius: 10,
-                      }}
-                    />
-                  </div>
-                </div>
+                 <div className="lp-find-wrap">
+                   <label className={`lp-find${filesSearch ? " is-filled" : ""}`}>
+                     <span className="lp-find-ico" aria-hidden="true">
+                       <Search size={15} strokeWidth={2.25} />
+                     </span>
+                     <input
+                       name="files-search"
+                       value={filesSearch}
+                       onChange={(e) => setFilesSearch(e.target.value)}
+                       placeholder="Search files…"
+                       aria-label="Search files by name"
+                       autoComplete="off"
+                     />
+                     {filesSearch ? (
+                       <button
+                         type="button"
+                         className="lp-find-clear"
+                         title="Clear"
+                         aria-label="Clear search"
+                         onClick={() => setFilesSearch("")}
+                       >
+                         <X size={13} strokeWidth={2.4} />
+                       </button>
+                     ) : null}
+                   </label>
+                 </div>
                  {sheets.length === 0 ? (
                    <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
                      No project files yet. Use <b>Add files</b> or <b>Folder</b> to upload the whole plan set.
@@ -9327,43 +9376,47 @@ export default function TakeoffCanvas() {
              )}
              {leftTab === "sheets" && (
                <div>
-                 {openTabs.length === 0 ? (
-                   <div style={{ padding: "16px 12px", color: "var(--ink-muted)", fontSize: 13 }}>
-                     No sheets open. Open a file from the <b>Files</b> tab.
-                   </div>
-                 ) : (
-                   <>
-                 <div style={{ display: "flex", justifyContent: "flex-end", padding: "6px 10px", borderBottom: "1px solid var(--ink-faint)" }}>
-                   <button type="button" onClick={() => { setOpenTabs([]); setActive(""); setPage(1); setSheetGroup([]); setPanelImgs({}); setStatus("ready"); setView("canvas"); }}
-                     title="Close all open sheets"
-                     style={{ background: "transparent", border: "1px solid var(--ink-faint)", color: "var(--ink)", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: "3px 10px", borderRadius: 999 }}>
-                     Close all
-                   </button>
+                 <div className="lp-find-wrap" style={{ paddingTop: 10 }}>
+                   <label className={`lp-find${sheetsSearch ? " is-filled" : ""}`}>
+                     <span className="lp-find-ico" aria-hidden="true">
+                       <Search size={15} strokeWidth={2.25} />
+                     </span>
+                     <input
+                       name="open-sheets-search"
+                       value={sheetsSearch}
+                       onChange={(e) => setSheetsSearch(e.target.value)}
+                       placeholder="Jump to a sheet…"
+                       aria-label="Filter open sheets"
+                       autoComplete="off"
+                     />
+                     {sheetsSearch ? (
+                       <button
+                         type="button"
+                         className="lp-find-clear"
+                         title="Clear"
+                         aria-label="Clear search"
+                         onClick={() => setSheetsSearch("")}
+                       >
+                         <X size={13} strokeWidth={2.4} />
+                       </button>
+                     ) : null}
+                   </label>
                  </div>
-                 {openTabs.map((k) => {
-                   const inGroup = sheetGroup.includes(k);
-                   const on = sheetGroup.length ? inGroup : k === sheetKey;
-                   const lbl = tabLabel(k);
-                   return (
-                     <div key={k} className={`left-panel-glass-file-row${on ? " is-active" : ""}`} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)" }}>
-                       <button type="button" onClick={() => goToSheet(k)} title={k}
-                         style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2, border: "none", background: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>
-                         <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 500, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "100%" }}>{lbl}</span>
-                         <span style={{ fontSize: 10.5, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{inGroup ? "side-by-side" : on ? "viewing" : "open"}</span>
-                       </button>
-                       <button type="button" onClick={() => toggleInGroup(k)} title={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
-                         style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-positive)", padding: 4, display: "inline-flex" }}>
-                         <Icon name="sideBySide" size={13} />
-                       </button>
-                       <button type="button" onClick={() => closeTab(k)} title="Close tab"
-                         style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: 4, display: "inline-flex" }}>
-                         <Icon name="close" size={11} />
-                       </button>
-                     </div>
-                   );
-                 })}
-                   </>
-                 )}
+                 <OpenSheetsPill
+                   embedded
+                   hideFind
+                   hideActions
+                   query={sheetsSearch}
+                   openTabs={openTabs}
+                   sheetGroup={sheetGroup}
+                   sheetKey={sheetKey}
+                   focusKey={focusKey}
+                   tabLabel={tabLabel}
+                   onGoToSheet={goToSheet}
+                   onToggleInGroup={toggleInGroup}
+                   onCloseTab={closeTab}
+                   onClose={() => setLeftTab(null)}
+                 />
                </div>
              )}
              {leftTab === "markup" && (
@@ -9491,11 +9544,69 @@ export default function TakeoffCanvas() {
        </div>
        )}
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {(leftTab || openSheetsPanel) && (leftCanvasWork ? (
+        {canvasReady && leftTab && (leftCanvasWork ? (
           <div className="left-panel-stage-scrim is-pass" aria-hidden="true" />
         ) : (
-          <button type="button" className="left-panel-stage-scrim" aria-label="Close panel" onClick={() => { setLeftTab(null); setOpenSheetsPanel(false); }} />
+          <button type="button" className="left-panel-stage-scrim" aria-label="Close panel" onClick={() => setLeftTab(null)} />
         ))}
+        {/* Bottom-right canvas controls: undo/redo pill + zoom pill. Lives in the
+            canvas column (not the outer row) so the Takeoffs dock never covers it. */}
+        {canvasReady && (
+          <div
+            style={{ position: "absolute", right: 16, bottom: 14, zIndex: 55, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, pointerEvents: "none" }}
+          >
+            {minimapOpen && (
+              <div className="canvas-minimap" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                <canvas ref={minimapCanvasRef} className="canvas-minimap-cv" onClick={recenterFromMinimap} title="Overview — click to recenter the view" />
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "none" }}>
+              <div
+                className="canvas-zoom-bar"
+                onPointerDown={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                <button type="button" className="canvas-zoom-btn" title="Undo (⌘Z)"
+                  disabled={!undoStackRef.current.length}
+                  onClick={undoShapeCommand}>
+                  <Undo2 size={15} strokeWidth={1.8} />
+                </button>
+                <button type="button" className="canvas-zoom-btn" title="Redo (⇧⌘Z)"
+                  disabled={!redoStackRef.current.length}
+                  onClick={redoShapeCommand}>
+                  <Redo2 size={15} strokeWidth={1.8} />
+                </button>
+              </div>
+              <div
+                className="canvas-zoom-bar"
+                onPointerDown={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                <button type="button" className="canvas-zoom-btn" title="Zoom out"
+                  onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 0.8); }}>
+                  <Minus size={16} strokeWidth={2} />
+                </button>
+                <button type="button" className="canvas-zoom-pct" title="Reset to 100%"
+                  onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1 / (tfRef.current.scale || 1)); }}>
+                  {Math.round((tf.scale || 1) * 100)}%
+                </button>
+                <button type="button" className="canvas-zoom-btn" title="Zoom in"
+                  onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1.25); }}>
+                  <Plus size={16} strokeWidth={2} />
+                </button>
+                <span className="canvas-zoom-sep" aria-hidden="true" />
+                <button type="button" className="canvas-zoom-btn" title="Fit sheet to view"
+                  onClick={() => stage.w && fitToView(stage.w, stage.h)}>
+                  <Scan size={15} strokeWidth={1.6} />
+                </button>
+                <button type="button" className={`canvas-zoom-btn${minimapOpen ? " is-on" : ""}`} title="Minimap — sheet overview; click it to jump"
+                  onClick={() => setMinimapOpen((v) => !v)}>
+                  <MapIcon size={15} strokeWidth={1.6} />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div ref={containerRef} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp} onPointerLeave={leaveCanvas}
           onContextMenu={(e) => {
@@ -9598,7 +9709,9 @@ export default function TakeoffCanvas() {
             else if (tool === "area" || tool === "deduct" || tool === "deduct-curve" || tool === "wallarea" || tool === "linear" || tool === "curve" || tool === "surface" || tool === "zone") finishShape();
             else if (tool === "select") editMarkupAt(e);
           }}
-          style={{ position: "absolute", inset: 0, background: darkMode ? "#0b0e14" : "var(--stage)", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}>
+          style={{ position: "absolute", inset: 0, ...(darkMode ? { background: workspaceBg } : {}), cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}
+          className={darkMode ? "canvas-workspace is-sheet-invert" : "canvas-workspace"}
+          data-canvas-status={status}>
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
               EFFECTIVE point (angle-locked / endpoint-snapped), the SPLINE STAR at
@@ -9848,10 +9961,10 @@ export default function TakeoffCanvas() {
               placeholder="Type, Enter to place · Esc cancels"
               style={{ position: "absolute", left: editor.left, top: editor.top, zIndex: 9, minWidth: 160, padding: "3px 6px", font: "13px var(--f-body, sans-serif)", color: "var(--ink)", background: "var(--paper-bright)", border: "1px solid var(--cobalt)", boxShadow: "0 2px 10px rgba(0,0,0,.18)", borderRadius: 0, cursor: "text", outline: "none" }} />
           )}
-          <div ref={stageRef} style={{ position: "absolute", transformOrigin: "0 0", width: stage.w || undefined, height: stage.h || undefined }}>
+          <div ref={stageRef} style={{ position: "absolute", transformOrigin: "0 0", width: stage.w || undefined, height: stage.h || undefined, opacity: status === "ready" ? 1 : 0, pointerEvents: status === "ready" ? "auto" : "none" }}>
             {panels.map((p) => (
               <canvas key={p.key} ref={(el) => { if (el) panelCanvasRefs.current.set(p.key, el); else panelCanvasRefs.current.delete(p.key); }}
-                style={{ position: "absolute", left: p.xOffset, top: 0, boxShadow: "0 2px 20px rgba(0,0,0,.18)" }} />
+                style={{ position: "absolute", left: p.xOffset, top: 0, boxShadow: status === "ready" ? "0 2px 20px rgba(0,0,0,.18)" : "none" }} />
             ))}
             {/* high-res detail overlay — a crop of the visible region re-rendered at the current zoom (see the detail-view effect) */}
             <canvas ref={detailCanvasRef} style={{ position: "absolute", left: 0, top: 0, display: "none", pointerEvents: "none" }} />
@@ -10442,11 +10555,58 @@ export default function TakeoffCanvas() {
           </div>
 
           {status !== "ready" && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-muted)", fontSize: 15 }}>
-              {status === "loading" && "Loading sheets…"}
-              {status === "rendering" && "Rendering sheet…"}
-              {status === "empty" && "No PDFs yet — click “Open PDF” or drag a plan onto the canvas."}
-              {status === "error" && <span style={{ color: "var(--c-danger)" }}>Error: {err}</span>}
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, pointerEvents: "none" }}>
+              {(status === "loading" || status === "rendering") ? (
+                <div className="canvas-loading-mark" aria-busy="true" aria-label={status === "loading" ? "Loading sheets" : "Rendering sheet"}>
+                  <div className="canvas-loading-spin">
+                    <span className="canvas-loading-glow" aria-hidden="true" />
+                    <svg className="canvas-loading-magic" viewBox="0 0 220 120" aria-hidden="true">
+                      <defs>
+                        <linearGradient id="adicc-ai-shimmer" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#1f3fc7" stopOpacity="0" />
+                          <stop offset="50%" stopColor="#1f3fc7" stopOpacity="0.85" />
+                          <stop offset="100%" stopColor="#1f3fc7" stopOpacity="0" />
+                        </linearGradient>
+                      </defs>
+                      {/* faint neural threads behind the wordmark */}
+                      <g className="canvas-loading-net" fill="none" stroke="#1f3fc7" strokeWidth="0.9">
+                        <path d="M28 38 C 58 18, 92 22, 110 52" />
+                        <path d="M36 86 C 70 102, 118 96, 148 62" />
+                        <path d="M188 32 C 168 48, 156 70, 172 92" />
+                      </g>
+                      <g fill="#1f3fc7">
+                        <circle className="canvas-loading-node n1" cx="28" cy="38" r="2.2" />
+                        <circle className="canvas-loading-node n2" cx="110" cy="52" r="1.8" />
+                        <circle className="canvas-loading-node n3" cx="36" cy="86" r="1.7" />
+                        <circle className="canvas-loading-node n4" cx="148" cy="62" r="2" />
+                        <circle className="canvas-loading-node n5" cx="188" cy="32" r="1.6" />
+                        <circle className="canvas-loading-node n6" cx="172" cy="92" r="2.1" />
+                      </g>
+                      {/* sparkles clustered on the CC — the AI bit of ADICC */}
+                      <g className="canvas-loading-spark s1" fill="#1f3fc7">
+                        <path d="M186 28 L188.2 33.2 L193.6 35.4 L188.2 37.6 L186 42.8 L183.8 37.6 L178.4 35.4 L183.8 33.2 Z" />
+                      </g>
+                      <g className="canvas-loading-spark s2" fill="#1f3fc7">
+                        <path d="M164 18 L165.3 21.4 L168.8 22.7 L165.3 24 L164 27.4 L162.7 24 L159.2 22.7 L162.7 21.4 Z" />
+                      </g>
+                      <g className="canvas-loading-spark s3" fill="#1f3fc7">
+                        <path d="M198 68 L199.1 70.8 L202 72 L199.1 73.2 L198 76 L196.9 73.2 L194 72 L196.9 70.8 Z" />
+                      </g>
+                      <g className="canvas-loading-spark s4" fill="#1f3fc7">
+                        <path d="M22 58 L23.2 61.2 L26.6 62.4 L23.2 63.6 L22 66.8 L20.8 63.6 L17.4 62.4 L20.8 61.2 Z" />
+                      </g>
+                      <rect className="canvas-loading-sweep" x="0" y="28" width="46" height="64" fill="url(#adicc-ai-shimmer)" />
+                    </svg>
+                    <AdiccLoadingLogo />
+                  </div>
+                  <div className="canvas-loading-caption">{status === "loading" ? "AI is reading the sheet" : "AI is rendering the sheet"}</div>
+                </div>
+              ) : (
+                <div style={{ color: "var(--ink-muted)", fontSize: 15, textAlign: "center" }}>
+                  {status === "empty" && "No PDFs yet — click “Open PDF” or drag a plan onto the canvas."}
+                  {status === "error" && <span style={{ color: "var(--c-danger)" }}>Error: {err}</span>}
+                </div>
+              )}
             </div>
           )}
 
@@ -10813,120 +10973,115 @@ export default function TakeoffCanvas() {
           </div>
         )}
 
-        {/* panel rail — takeoffs toggle on the right edge (zoom-cluster style).
-            Files/Markups/Stamps/RFIs live on the left desk icon + in-panel tabs. */}
-        <div style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", display: "flex", flexDirection: "column", gap: 6, zIndex: 8 }}>
-          {panelBtn(toggleTakeoffs, "takeoffs", "Takeoffs — conditions + running totals", takeoffsOpen, visibleShapes.length)}
-        </div>
+        {/* Takeoffs hamburger — top-right; opens the right drawer. Hidden while
+            the drawer is open (the panel's × closes it). */}
+        {canvasReady && !takeoffsOpen && (
+          <button
+            type="button"
+            className="canvas-hamburger-btn"
+            title="Takeoffs — conditions + running totals"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={toggleTakeoffs}
+          >
+            <Menu size={18} strokeWidth={1.8} />
+          </button>
+        )}
 
-        {/* Drawings Q&A — bottom-center chatbot; expands to search pill, then docks as side panel */}
-        {!showDrawingsChat && (
+        {/* Drawings Q&A — centered ask box. Trigger lives in the left stack. */}
+
+        {/* Centered, expanding ask box — outside click dismisses only when empty,
+            so an accidental tap never wipes a half-typed question. */}
+        {canvasReady && !showDrawingsChat && drawingsChatPill && (
           <div
-            ref={drawingsChatPillRef}
-            style={{
-              position: "absolute",
-              left: "50%",
-              bottom: 22,
-              transform: "translateX(-50%)",
-              zIndex: 9,
-              display: "flex",
-              alignItems: "center",
-              pointerEvents: "auto",
+            className="drawings-chat-center-scrim"
+            onPointerDown={(e) => {
+              if (e.target === e.currentTarget && !drawingsChatDraft.trim()) closeDrawingsChatPill();
             }}
           >
-            {!drawingsChatPill ? (
-              <button
-                type="button"
-                className="drawings-chat-glass-trigger canvas-circle-btn"
-                title="Ask the Volume 4 drawings corpus"
-                onClick={() => setDrawingsChatPill(true)}
-                style={{
-                  width: 48,
-                  height: 48,
-                  borderRadius: "50%",
-                  cursor: "pointer",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: 0,
-                }}
-              >
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <form
+              className="drawings-chat-glass-pill drawings-chat-center-box"
+              onPointerDown={(e) => e.stopPropagation()}
+              onSubmit={(e) => {
+                e.preventDefault();
+                const q = drawingsChatDraft.trim();
+                if (!q) return;
+                setDrawingsChatSeed(q);
+                setDrawingsChatDraft("");
+                setDrawingsChatPill(false);
+                setShowDrawingsChat(true);
+              }}
+            >
+              <span className="drawings-chat-center-lead" aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
                   <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H10l-3.8 3.2c-.7.6-1.7.1-1.7-.8V16H6.5A2.5 2.5 0 0 1 4 13.5v-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
                   <circle cx="9" cy="10" r="1" fill="currentColor"/>
                   <circle cx="12" cy="10" r="1" fill="currentColor"/>
                   <circle cx="15" cy="10" r="1" fill="currentColor"/>
                 </svg>
-              </button>
-            ) : (
-              <form
-                className="drawings-chat-glass-pill"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const q = drawingsChatDraft.trim();
-                  if (!q) return;
-                  setDrawingsChatSeed(q);
-                  setDrawingsChatDraft("");
-                  setDrawingsChatPill(false);
-                  setShowDrawingsChat(true);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  width: "min(440px, calc(100vw - 80px))",
-                  padding: "6px 6px 6px 14px",
-                  borderRadius: 999,
-                }}
-              >
-                <input
-                  className="drawings-chat-glass-pill-input"
-                  autoFocus
-                  value={drawingsChatDraft}
-                  onChange={(e) => setDrawingsChatDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      setDrawingsChatPill(false);
-                      setDrawingsChatDraft("");
-                    }
-                  }}
-                  placeholder="Ask about Volume 4 drawings…"
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    border: "none",
-                    outline: "none",
-                    background: "transparent",
-                    fontSize: 13,
-                    fontFamily: "inherit",
-                    color: "var(--ink)",
-                    padding: "8px 0",
-                  }}
-                />
+              </span>
+              <input
+                ref={drawingsChatInputRef}
+                className="drawings-chat-glass-pill-input drawings-chat-center-input"
+                autoFocus
+                value={drawingsChatDraft}
+                onChange={(e) => setDrawingsChatDraft(e.target.value)}
+                placeholder="Ask about Volume 4 drawings…"
+              />
+              {drawingsChatDraft && (
                 <button
-                  type="submit"
-                  className="drawings-chat-glass-pill-send canvas-circle-btn"
-                  title="Send"
-                  disabled={!drawingsChatDraft.trim()}
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: "50%",
-                    cursor: drawingsChatDraft.trim() ? "pointer" : "default",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                    padding: 0,
+                  type="button"
+                  className="drawings-chat-center-clear"
+                  title="Clear"
+                  aria-label="Clear question"
+                  onClick={() => {
+                    setDrawingsChatDraft("");
+                    drawingsChatInputRef.current?.focus();
                   }}
                 >
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M4.5 11.2 19.2 4.4c.7-.3 1.4.4 1.1 1.1L13.5 20.2c-.3.7-1.3.6-1.5-.2l-1.6-6.1-6.1-1.6c-.8-.2-.9-1.2-.2-1.5Z" fill="currentColor"/>
-                  </svg>
+                  <X size={16} strokeWidth={2} />
                 </button>
-              </form>
-            )}
+              )}
+              <button
+                type="submit"
+                className="drawings-chat-glass-pill-send canvas-circle-btn drawings-chat-center-send"
+                title="Send"
+                disabled={!drawingsChatDraft.trim()}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M4.5 11.2 19.2 4.4c.7-.3 1.4.4 1.1 1.1L13.5 20.2c-.3.7-1.3.6-1.5-.2l-1.6-6.1-6.1-1.6c-.8-.2-.9-1.2-.2-1.5Z" fill="currentColor"/>
+                </svg>
+              </button>
+            </form>
           </div>
+        )}
+
+        {canvasReady && takeoffsOpen && (
+          <button type="button" className="takeoffs-drawer-scrim" aria-label="Close takeoffs" onClick={toggleTakeoffs} />
+        )}
+        {canvasReady && (
+        <div className="takeoffs-drawer-slot">
+          <TakeoffsPanel
+            open={takeoffsOpen}
+            width={panelW}
+            multiSheet={groupKeys.length > 1}
+            units={units}
+            conditions={conditions}
+            activeCond={activeCond}
+            visRowById={visRowById}
+            conditionColumns={conditionColumns}
+            shapeLabels={shapeLabels}
+            templates={templates}
+            palette={palette}
+            matLib={matLib}
+            matLibById={matLibById}
+            linkedCountById={linkedCountById}
+            panelPrefs={panelPrefs}
+            reassigning={tool === "select" && !!selectedId}
+            epoch={panelEpoch}
+            clearSelectionRef={panelSelectionRef}
+            {...panelHandlers}
+          />
+        </div>
         )}
 
        </div>
@@ -10956,7 +11111,7 @@ export default function TakeoffCanvas() {
           />
         )}
 
-        {showDrawingsChat && (
+        {canvasReady && showDrawingsChat && (
           <DrawingsChatPanel
             onClose={() => { setShowDrawingsChat(false); setDrawingsChatSeed(""); }}
             onOpenInWorkspace={openCitationInWorkspace}
@@ -11059,35 +11214,6 @@ export default function TakeoffCanvas() {
           </FloatingWindow>
         )}
 
-        {/* Takeoffs panel — DOCKED in the row (reflows the canvas, not an
-            overlay): every condition with its running totals, plus the Library,
-            Materials, and Columns tabs. Extracted to components/TakeoffsPanel.jsx and
-            ALWAYS mounted (it renders null while collapsed) so its view state —
-            tab, filter, multi-select — survives a collapse/expand round-trip
-            exactly as it did as canvas state. Collapse/expand keeps the current
-            transform — the stage is anchored top-left, so a re-fit would be a
-            jarring jump. */}
-        <TakeoffsPanel
-          open={takeoffsOpen}
-          width={panelW}
-          multiSheet={groupKeys.length > 1}
-          units={units}
-          conditions={conditions}
-          activeCond={activeCond}
-          visRowById={visRowById}
-          conditionColumns={conditionColumns}
-          shapeLabels={shapeLabels}
-          templates={templates}
-          palette={palette}
-          matLib={matLib}
-          matLibById={matLibById}
-          linkedCountById={linkedCountById}
-          panelPrefs={panelPrefs}
-          reassigning={tool === "select" && !!selectedId}
-          epoch={panelEpoch}
-          clearSelectionRef={panelSelectionRef}
-          {...panelHandlers}
-        />
       </div>
 
       {/* Unified plan navigator — one surface for the plan-set gallery AND the

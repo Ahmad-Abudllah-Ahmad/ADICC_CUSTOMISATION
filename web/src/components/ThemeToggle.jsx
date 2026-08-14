@@ -4,19 +4,21 @@ import React, { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { getTheme, toggleTheme, onThemeChange } from "../lib/theme.js";
 
-export default function ThemeToggle() {
+export default function ThemeToggle({ className }) {
   const [theme, setTheme] = useState(getTheme);
   useEffect(() => onThemeChange(setTheme), []);
   const dark = theme === "dark";
+  const cls = className || "canvas-circle-btn";
+  const inToolbar = cls.includes("mode-circle-btn");
   return (
     <button
       type="button"
-      className={`canvas-circle-btn${dark ? " is-chrome-dark" : ""}`}
+      className={`${cls}${dark && !inToolbar ? " is-chrome-dark" : ""}`}
       onClick={() => toggleTheme()}
       title={dark ? "Switch to light mode" : "Switch to dark mode"}
       aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
       aria-pressed={dark}
-      style={{
+      style={inToolbar ? undefined : {
         display: "inline-flex",
         alignItems: "center",
         justifyContent: "center",
