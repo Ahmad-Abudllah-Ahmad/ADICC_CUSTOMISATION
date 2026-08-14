@@ -150,82 +150,34 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
 
   if (failed && !thumbs.length) {
     return (
-      <div
-        style={{
-          height: THUMB_HEIGHT,
-          borderBottom: "1px solid var(--divider-soft)",
-          background: "var(--stage)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--ink-muted)",
-          fontSize: 12,
-        }}
-      >
-        {sheetCount > 0 ? "Sheet previews unavailable" : "No plan sheets yet"}
+      <div className="home-project-preview" aria-hidden="true">
+        <div className="home-project-preview-msg">
+          {sheetCount > 0 ? "Sheet previews unavailable" : "No plan sheets yet"}
+        </div>
       </div>
     );
   }
 
   if (!thumbs.length) {
     return (
-      <div
-        style={{
-          height: THUMB_HEIGHT,
-          borderBottom: "1px solid var(--divider-soft)",
-          background: "var(--stage)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--ink-muted)",
-          fontSize: 12,
-        }}
-      >
-        Loading sheet previews…
+      <div className="home-project-preview" aria-busy="true">
+        <div className="home-project-preview-msg">Reading sheets…</div>
       </div>
     );
   }
 
   return (
     <div
+      className="home-project-preview"
       onClick={(e) => e.stopPropagation()}
-      style={{
-        position: "relative",
-        height: THUMB_HEIGHT,
-        overflow: "hidden",
-        borderBottom: "1px solid var(--divider-soft)",
-        background: "var(--stage)",
-      }}
       aria-label="Auto-scrolling plan sheet previews"
     >
-      <div
-        ref={trackRef}
-        style={{
-          display: "flex",
-          gap: 8,
-          height: "100%",
-          width: "max-content",
-          padding: "6px 8px",
-          boxSizing: "border-box",
-          willChange: "transform",
-        }}
-      >
+      <div ref={trackRef} className="home-project-preview-track">
         {loop.map((t, i) => (
           <div
             key={`${t.key}-${i}`}
+            className="home-project-preview-sheet"
             title={t.label}
-            style={{
-              flex: "0 0 auto",
-              width: THUMB_WIDTH,
-              height: THUMB_HEIGHT - 12,
-              border: "1px solid var(--ink-faint)",
-              borderRadius: 6,
-              background: "var(--paper-bright)",
-              overflow: "hidden",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
           >
             <img
               src={t.url}
@@ -236,15 +188,7 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
           </div>
         ))}
       </div>
-      <div
-        style={{
-          pointerEvents: "none",
-          position: "absolute",
-          inset: 0,
-          background:
-            "linear-gradient(90deg, var(--stage) 0%, transparent 12%, transparent 88%, var(--stage) 100%)",
-        }}
-      />
+      <div className="home-project-preview-fade" />
     </div>
   );
 }

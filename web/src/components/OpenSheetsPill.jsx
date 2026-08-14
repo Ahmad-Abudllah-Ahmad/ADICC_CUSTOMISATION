@@ -95,7 +95,8 @@ export default function OpenSheetsPill({
                 type="button"
                 className={`open-sheets-ico${visible ? " is-eye" : ""}`}
                 onClick={(e) => onEye(e, k, visible, inGroup)}
-                title={canHide ? "Hide from this view" : visible ? "On the canvas" : "Show this sheet"}
+                data-tip={canHide ? "Hide from this view" : visible ? "On the canvas" : "Show this sheet"}
+                aria-label={canHide ? "Hide from this view" : visible ? "On the canvas" : "Show this sheet"}
               >
                 {visible ? <Eye {...ICO} /> : <EyeOff {...ICO} />}
               </button>
@@ -103,7 +104,8 @@ export default function OpenSheetsPill({
                 type="button"
                 className={`open-sheets-ico${inGroup ? " is-pair" : ""}`}
                 onClick={(e) => { e.stopPropagation(); onToggleInGroup(k); }}
-                title={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
+                data-tip={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
+                aria-label={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
               >
                 <Columns2 {...ICO} />
               </button>
@@ -111,7 +113,8 @@ export default function OpenSheetsPill({
                 type="button"
                 className="open-sheets-ico is-x"
                 onClick={(e) => { e.stopPropagation(); onCloseTab(k); }}
-                title="Close tab"
+                data-tip="Close tab"
+                aria-label="Close tab"
               >
                 <X {...ICO} size={16} />
               </button>
@@ -171,7 +174,7 @@ export default function OpenSheetsPill({
             <Plus size={15} strokeWidth={2.25} />Add
           </button>
         )}
-        <button type="button" className="lp-tab-close" onClick={onClose} title="Close panel">
+        <button type="button" className="lp-tab-close" onClick={onClose} data-tip="Close panel" aria-label="Close panel">
           <X size={18} strokeWidth={2} />
         </button>
       </div>

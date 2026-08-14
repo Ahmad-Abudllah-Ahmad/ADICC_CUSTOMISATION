@@ -55,16 +55,16 @@ export const MEASURE_TOOLS = [
   { id: "count", icon: "count", label: "Count", shortcut: "C" },
 ];
 export const CUT_TOOLS = [
-  { id: "deduct", icon: "deduct", label: "Deduct shape", shortcut: "D" },
-  { id: "deduct-rect", icon: "deductRect", label: "Deduct rectangle", shortcut: "⇧D" },
-  { id: "deduct-curve", icon: "curve", label: "Deduct curved line", shortcut: "⇧Q" },
+  { id: "deduct", icon: "deduct", label: "Deduct shape", short: "Shape", shortcut: "D" },
+  { id: "deduct-rect", icon: "deductRect", label: "Deduct rectangle", short: "Rect", shortcut: "⇧D" },
+  { id: "deduct-curve", icon: "curve", label: "Deduct curved line", short: "Curve", shortcut: "⇧Q" },
 ];
 export const MARKUP_TOOLS = [
-  { id: "highlighter", icon: "highlighter", label: "Highlighter", shortcut: "H" },
-  { id: "cloud", icon: "cloud", label: "Revision cloud" },
-  { id: "callout", icon: "callout", label: "Callout" },
-  { id: "text", icon: "textNote", label: "Text note" },
-  { id: "highlight", icon: "highlight", label: "Highlight box" },
+  { id: "highlighter", icon: "highlighter", label: "Highlighter", short: "Highlight", shortcut: "H" },
+  { id: "cloud", icon: "cloud", label: "Revision cloud", short: "Cloud" },
+  { id: "callout", icon: "callout", label: "Callout", short: "Callout" },
+  { id: "text", icon: "textNote", label: "Text note", short: "Note" },
+  { id: "highlight", icon: "highlight", label: "Highlight box", short: "Box" },
 ];
 export const MARKUP_IDS = MARKUP_TOOLS.map((t) => t.id);
 // highlighter inks — literal hex (SVG attrs; CSS vars don't resolve there).

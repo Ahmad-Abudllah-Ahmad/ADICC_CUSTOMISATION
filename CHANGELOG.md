@@ -5,7 +5,20 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 ## Unreleased — canvas chrome: theme next to Pan
 
 ### Changed
+- **Illustrator-style Layers panel** on the left rail (2nd from top). Dummy nested takeoff rows for now: eye/lock, type colour, group/ungroup, drag-and-drop, multi-select, property hover labels, and themed context menus. Live shape wiring is next.
 - **UI light/dark lives next to Pan** in the center toolbar (sun/moon). The left-rail contrast button is still sheet invert only. Dark toolbar chips use ink-on-paper tokens instead of leftover light-glass frost.
+- **Scale bar sits bottom-center** on the sheet, so it no longer collides with the zoom/undo cluster. The classic cobalt ruler stays; end brackets and a center fiducial mark the length. Halo follows the **sheet paper**: white on the plan, dark when invert (negative print) is on — UI dark and invert are separate.
+- **`Esc` returns to Select**, not Pan — the normal pointer comes back after One-Click (`O`) and the other letter tools, and the cobalt hairlines / star hide immediately instead of freezing on the last click.
+- **Sheet loading matches home:** toolbar stays hidden until the sheet is ready; the canvas uses the ADICC wordmark plus a quiet “Reading / Rendering the sheet” line.
+- **Dark chrome uses dark surfaces and light ink.** The leftover `--glass-fg` navy token (invisible type on dark panels) now follows `--ink`; Files/Sheets inputs, folder rows, and tool menus no longer sit on frosted white. Sheet invert is still sheet-only.
+- **Left-panel tabs scroll sideways** when Files / Sheets / Layers / Markups / Stamps / RFIs don't fit — drag or wheel, a thin cobalt-matched bar, and fade edges so the overflow is visible. Close stays pinned.
+- **Takeoffs drawer matches the rest of the chrome.** The top-right hamburger keeps a solid surface on hover in both themes. STRIP / A→Z / grp, filter fields, row pills, and the appearance editor sit on dark surfaces with light ink in UI dark.
+- **Takeoffs drawer type is darker.** Field labels (Waste, Line, Fill, Style…) use ink instead of muted gray; inactive tabs, A→Z / grp, and row metrics sit on `--ink` / `--ink-soft` so they read in light and dark.
+- **Tool flyouts and the Edit-CPT window sit tighter.** Cut Out / Markup / Edit open as a single rail (icon + 8px caption, corner key like the left tool strip). Flyout chrome uses `--ink-faint` so light mode has an edge against white, and dark mode does not get a white ring. The appearance window hugs its content; Takeoffs tabs are short labels (full name in the tooltip) and the resize edge has a three-dot grip.
+- **Home project cards sit on drafting paper.** Sheet preview well uses a faint cobalt grid; Rename/Delete are quiet ink actions instead of glass pills; hover lifts the card.
+- **Toolbar is tools only.** Auto-Takeoff and Takeoff Tool Palette sit in the center tools pill. Takeoff value (with crop-mark focus) appears top-left only once the total is above zero; the live readout appears top-right only while a measure is live. Halo text follows the sheet paper in light, UI dark, and invert. Toolbar icons share one 30px row. Canvas chrome uses instant hover labels (no delayed browser tooltip): below the toolbar, right of the left rail / Sheets / Chat, above zoom/undo, left of the Takeoffs hamburger. Auto-Takeoff stays a readable green ghost in both themes.
+- **Stacked-pages control stays above chat** on the bottom-left stack whenever the canvas chrome is up — not only after sheet tabs have been restored — so jump / pair / close is always one tap away.
+- **Destructive Takeoffs actions use the in-app confirm** (same dialog as removing a file or markup) instead of the browser's gray popup — delete condition / column / template / material, bulk delete, replace template, and push-linked updates. Esc cancels; Enter confirms. Closing the drawer still needs no confirm.
 
 ## Unreleased — `sheet_context`: vector, raster, and text in one coordinate frame (RFC #29)
 

@@ -239,11 +239,11 @@ export default function LayersSidebar({
             Separate
           </button>
         )}
-        <button type="button" onClick={() => onToggleHide(s.id)} title={hidden ? "Show layer" : "Hide layer"}
+        <button type="button" onClick={() => onToggleHide(s.id)} data-tip={hidden ? "Show layer" : "Hide layer"} aria-label={hidden ? "Show layer" : "Hide layer"}
           style={{ border: "none", background: "none", cursor: "pointer", color: "var(--ink-muted)", padding: "2px 4px", fontSize: 10, fontWeight: 600 }}>
           {hidden ? "Show" : "Hide"}
         </button>
-        <button type="button" onClick={() => onDelete(s.id)} title="Delete layer"
+        <button type="button" onClick={() => onDelete(s.id)} data-tip="Delete layer" aria-label="Delete layer"
           style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-danger)", padding: 2, display: "inline-flex" }}>
           <Icon name="close" size={11} />
         </button>
@@ -292,7 +292,8 @@ export default function LayersSidebar({
           type="button"
           className="left-panel-glass-folder-btn"
           onClick={() => onToggleSheetOpen(sheetKey)}
-          title={open ? "Collapse layers" : "Expand layers"}
+          data-tip={open ? "Collapse layers" : "Expand layers"}
+          aria-label={open ? "Collapse layers" : "Expand layers"}
           style={{
             width: "100%",
             display: "flex",

@@ -16,31 +16,37 @@ import { Icon } from "../brand/icons.jsx";
 
 const MENU_W = 232;
 
-function renderPaletteItems(items, setOpen) {
+function renderPaletteItems(items, setOpen, tiles) {
   return items.map((it, i) => {
     if (it === "divider") return <div key={`d-${i}`} className="tool-menu-palette-divider" aria-hidden="true" />;
     if (it.section || it.note || it.custom) return null;
     const dis = !!it.disabled;
     const danger = !!(it.danger || it.tint === "var(--c-danger)");
+    const useTile = tiles || !!it.short;
     return (
       <button
         key={it.id || i}
         type="button"
         role="menuitem"
         disabled={dis}
+        aria-label={it.label || it.title || ""}
         title={it.title || it.label || ""}
-        className={`takeoff-sticky-opt${it.active ? " is-active" : ""}${danger ? " is-danger" : ""}`}
+        className={`takeoff-sticky-opt${it.active ? " is-active" : ""}${danger ? " is-danger" : ""}${useTile ? " is-tile canvas-rail-tool" : ""}`}
         onClick={() => { if (!dis) { if (!it.stayOpen) setOpen(false); it.onSelect?.(); } }}
       >
-        {it.icon && <Icon name={it.icon} size={15} />}
-        <span className="tool-menu-palette-label">{it.label}</span>
-        {it.shortcut && <span className="tool-key-badge tool-key-badge--menu">{it.shortcut}</span>}
+        {it.icon && <Icon name={it.icon} size={useTile ? 16 : 15} />}
+        <span className="tool-menu-palette-label">{it.short || it.label}</span>
+        {it.shortcut && (
+          useTile
+            ? <span className="canvas-rail-kbd">{it.shortcut}</span>
+            : <span className="tool-key-badge tool-key-badge--menu">{it.shortcut}</span>
+        )}
       </button>
     );
   });
 }
 
-export default function ToolMenu({ face, active = false, accent = "cobalt", title = "", items, onOpenChange, faceStyle, menuStyle, disabled = false, variant = "default", circleTrigger = false, paletteAnchor = false, compactFace = false }) {
+export default function ToolMenu({ face, active = false, accent = "cobalt", title = "", items, onOpenChange, faceStyle, menuStyle, disabled = false, variant = "default", circleTrigger = false, paletteAnchor = false, compactFace = false, tiles = false }) {
   const [open, setOpen] = useState(false);
   const [flip, setFlip] = useState(false);
   const rootRef = useRef(null);
@@ -49,12 +55,12 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
   const usePalettePosition = isPalette || paletteAnchor;
 
   const renderDefaultMenu = () => items.map((it, i) => {
-    if (it === "divider") return <div key={i} style={{ height: 1, background: "var(--ink-faint)", margin: "4px 0" }} />;
+    if (it === "divider") return <div key={i} className="tool-menu-divider" />;
     if (it.section) return (
-      <div key={i} style={{ padding: "6px 12px 3px", fontFamily: "var(--f-mono)", fontSize: 9, letterSpacing: "0.14em", textTransform: "uppercase", color: "var(--ink-muted)" }}>{it.section}</div>
+      <div key={i} className="tool-menu-section">{it.section}</div>
     );
     if (it.note) return (
-      <div key={i} style={{ padding: "6px 12px 8px", fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.4 }}>{it.note}</div>
+      <div key={i} className="tool-menu-note">{it.note}</div>
     );
     if (it.custom) return <div key={it.id || i}>{it.custom}</div>;
     const dis = !!it.disabled;
@@ -62,20 +68,19 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
     const fg = it.danger ? "var(--c-danger)" : "var(--ink)";
     return (
       <button key={it.id || i} type="button" disabled={dis} title={it.title || ""}
+        className={`tool-menu-item${it.active ? " is-active" : ""}${it.danger ? " is-danger" : ""}`}
         onClick={() => { if (!dis) { if (!it.stayOpen) setOpen(false); it.onSelect?.(); } }}
         style={{
-          display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "8px 12px",
-          border: "none", textAlign: "left", cursor: dis ? "default" : "pointer",
+          cursor: dis ? "default" : "pointer",
           background: it.active ? "var(--paper-cream)" : "transparent",
-          borderLeft: it.active ? "2px solid var(--cobalt)" : "2px solid transparent",
           opacity: dis ? 0.38 : 1, color: fg,
         }}
         onMouseEnter={(e) => { if (!dis && !it.active) e.currentTarget.style.background = "var(--paper-shadow)"; if (!dis) it.onHover?.(true); }}
         onMouseLeave={(e) => { e.currentTarget.style.background = it.active ? "var(--paper-cream)" : "transparent"; if (!dis) it.onHover?.(false); }}>
-        {checkable && <span style={{ display: "inline-flex", width: 15, justifyContent: "center", color: "var(--c-positive)", visibility: it.checked ? "visible" : "hidden" }}><Icon name="check" size={14} /></span>}
-        {it.icon && <span style={{ display: "inline-flex", width: 17, justifyContent: "center", color: it.tint || fg }}><Icon name={it.icon} size={16} /></span>}
-        <span style={{ flex: 1, fontFamily: "var(--f-body)", fontSize: 13, fontWeight: it.active ? 600 : 400 }}>{it.label}</span>
-        {it.shortcut && <span style={{ fontFamily: "var(--f-mono)", fontSize: 10, color: "var(--ink-muted)" }}>{it.shortcut}</span>}
+        {checkable && <span className="tool-menu-item-check" style={{ color: "var(--c-positive)", visibility: it.checked ? "visible" : "hidden" }}><Icon name="check" size={14} /></span>}
+        {it.icon && <span className="tool-menu-item-icon" style={{ color: it.tint || fg }}><Icon name={it.icon} size={16} /></span>}
+        <span className="tool-menu-item-label">{it.label}</span>
+        {it.shortcut && <span className="tool-menu-item-shortcut">{it.shortcut}</span>}
       </button>
     );
   });
@@ -149,7 +154,7 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
 
   const dropPanel = (
     <div ref={panelRef} className="tool-menu-drop-panel" style={{
-      minWidth: MENU_W, padding: "4px 0",
+      minWidth: MENU_W, padding: "6px 4px",
       ...menuStyle,
       maxHeight: "min(60vh, 420px)",
       overflowY: "auto",
@@ -171,20 +176,14 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
 
   const anchoredPanel = (
     <div ref={panelRef} className="tool-menu-palette-shell">
-      <svg className="takeoff-sticky-panel-curve takeoff-sticky-panel-curve--left" viewBox="0 0 22 34" aria-hidden="true">
-        <path d="M 3 0 C 3 11, 17 22, 20 34" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeLinecap="round" />
-      </svg>
       <div className="tool-menu-anchored-panel" role="menu" style={{ minWidth: MENU_W, ...menuStyle }}>
         {renderDefaultMenu()}
       </div>
-      <svg className="takeoff-sticky-panel-curve takeoff-sticky-panel-curve--right" viewBox="0 0 22 34" aria-hidden="true">
-        <path d="M 19 0 C 19 11, 5 22, 2 34" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeLinecap="round" />
-      </svg>
     </div>
   );
 
   const triggerClass = circleTrigger
-    ? `angle-dial-btn${open || active ? " is-on" : ""}${accent === "danger" && active ? " is-accent-danger" : ""}`
+    ? `angle-dial-btn tool-menu-circle${open || active ? " is-on" : ""}${accent === "danger" ? " is-accent-danger" : ""}`
     : [
         "tool-menu-trigger",
         active ? "is-active" : "",
@@ -194,7 +193,7 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
 
   return (
     <span ref={rootRef} style={{ position: "relative", display: "inline-flex" }}>
-      <button type="button" onClick={toggle} title={title} disabled={disabled}
+      <button type="button" onClick={toggle} data-tip={!open && title ? title : undefined} aria-label={title || undefined} aria-expanded={open} aria-haspopup="menu" disabled={disabled}
         className={triggerClass}
         style={circleTrigger ? { opacity: disabled ? 0.38 : 1, cursor: disabled ? "default" : "pointer", ...faceStyle } : {
           display: "inline-flex", alignItems: "center", gap: compactFace ? 3 : 7, padding: compactFace ? "4px 7px" : "6px 10px", cursor: disabled ? "default" : "pointer",
@@ -211,17 +210,11 @@ export default function ToolMenu({ face, active = false, accent = "cobalt", titl
       </button>
       {open && isPalette && (
         <div ref={panelRef} className="tool-menu-palette-shell">
-          <svg className="takeoff-sticky-panel-curve takeoff-sticky-panel-curve--left" viewBox="0 0 22 34" aria-hidden="true">
-            <path d="M 3 0 C 3 11, 17 22, 20 34" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <div className="takeoff-sticky-panel tool-menu-palette-panel" role="menu">
-            <div className="tool-menu-palette-inner">
-              {renderPaletteItems(items, setOpen)}
+          <div className={`takeoff-sticky-panel tool-menu-palette-panel${tiles ? " tool-menu-palette-panel--rail" : ""}`} role="menu">
+            <div className={`tool-menu-palette-inner${tiles ? " is-rail" : ""}`}>
+              {renderPaletteItems(items, setOpen, tiles)}
             </div>
           </div>
-          <svg className="takeoff-sticky-panel-curve takeoff-sticky-panel-curve--right" viewBox="0 0 22 34" aria-hidden="true">
-            <path d="M 19 0 C 19 11, 5 22, 2 34" fill="none" stroke="rgba(255,255,255,0.22)" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
         </div>
       )}
       {open && !isPalette && paletteAnchor && (typeof document !== "undefined"

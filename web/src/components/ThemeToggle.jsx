@@ -15,7 +15,8 @@ export default function ThemeToggle({ className }) {
       type="button"
       className={`${cls}${dark && !inToolbar ? " is-chrome-dark" : ""}`}
       onClick={() => toggleTheme()}
-      title={dark ? "Switch to light mode" : "Switch to dark mode"}
+      data-tip={inToolbar ? (dark ? "Light mode" : "Dark mode") : undefined}
+      title={inToolbar ? undefined : (dark ? "Switch to light mode" : "Switch to dark mode")}
       aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
       aria-pressed={dark}
       style={inToolbar ? undefined : {

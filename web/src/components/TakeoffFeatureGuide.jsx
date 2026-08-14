@@ -115,19 +115,17 @@ export default function TakeoffFeatureGuide() {
 
   return (
     <>
-      <span className="mode-circle-wrap">
-        <button
+      <button
           ref={btnRef}
           type="button"
           className={`angle-dial-btn${open ? " is-on" : ""}`}
           onClick={() => setOpen((v) => !v)}
-          title="ADICC Takeoff feature guide"
+          data-tip={open ? undefined : "Feature guide"}
+          aria-label="ADICC Takeoff feature guide"
           aria-expanded={open}
         >
           <Icon name="info" size={14} />
         </button>
-        <span className="mode-circle-hint" aria-hidden="true">Guide</span>
-      </span>
       {open && panelStyle && createPortal(
         <div ref={panelRef} className="toolbar-glass-popover takeoff-feature-guide" style={{ ...panelStyle, borderRadius: 12, padding: "12px 14px 14px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-2)" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8 }}>

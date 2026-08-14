@@ -79,20 +79,6 @@ const openBtn = {
   flexShrink: 0,
 };
 
-const badge = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 5,
-  padding: "4px 9px",
-  borderRadius: 999,
-  border: "1px solid var(--divider-soft)",
-  background: "var(--paper-cream)",
-  color: "var(--ink-muted)",
-  fontSize: 11.5,
-  fontWeight: 500,
-  lineHeight: 1.2,
-};
-
 function fmtWhen(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -504,31 +490,14 @@ export default function PastProjectsPanel({
                   role="button"
                   tabIndex={0}
                   aria-label={`Open project ${p.name}`}
+                  className={`home-project-card${highlighted || active ? " is-on" : ""}${busy ? " is-busy" : ""}`}
                   onClick={() => !active && !renaming && !busy && openProject(p)}
                   onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !active && !renaming && !busy) { e.preventDefault(); openProject(p); } }}
-                  style={{
-                    border: `1px solid ${highlighted || active ? "var(--cobalt)" : "var(--divider-soft)"}`,
-                    background: "var(--surface-pop)",
-                    borderRadius: 12,
-                    overflow: "hidden",
-                    cursor: active || renaming || busy ? "default" : "pointer",
-                    opacity: busy ? 0.65 : 1,
-                    boxShadow: highlighted
-                      ? "0 0 0 2px rgba(31, 63, 199, 0.18), 0 14px 36px rgba(14, 26, 46, 0.16), 0 4px 10px rgba(14, 26, 46, 0.10)"
-                      : "0 12px 32px rgba(14, 26, 46, 0.14), 0 3px 8px rgba(14, 26, 46, 0.08)",
-                    display: "flex",
-                    flexDirection: "column",
-                    textAlign: "left",
-                    fontFamily: "var(--f-body)",
-                    width: "100%",
-                    minWidth: 0,
-                    height: "100%",
-                    transition: "border-color 180ms ease, box-shadow 180ms ease, background 180ms ease",
-                  }}
+                  style={{ cursor: active || renaming || busy ? "default" : "pointer" }}
                 >
                   <ProjectPdfSlider projectId={p.id} sheetCount={p.sheetCount} />
 
-                  <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12, flex: 1, minWidth: 0 }}>
+                  <div className="home-project-card-body">
                     <div style={{ minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
                         <span style={{ color: "var(--ink-muted)", flexShrink: 0, display: "inline-flex" }}>
@@ -549,41 +518,38 @@ export default function PastProjectsPanel({
                             style={{ flex: 1, minWidth: 0, padding: "4px 8px", border: "1px solid var(--ink-faint)", fontSize: 14, fontFamily: "var(--f-body)", borderRadius: 6 }}
                           />
                         ) : (
-                          <strong style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.name}>
+                          <strong className="home-project-card-name" title={p.name}>
                             {p.name}
                           </strong>
                         )}
                       </div>
-                      <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "var(--ink-muted)", paddingLeft: 22 }}>
+                      <div className="home-project-card-org">
                         <span style={{ display: "inline-flex", flexShrink: 0 }}><Icon name="pin" size={12} /></span>
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>ADICC</span>
                       </div>
                     </div>
 
                     {active && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        <span style={{ ...badge, color: "var(--ink-soft)", borderColor: "var(--ink-faint)" }}>Current</span>
-                      </div>
+                      <span className="home-project-card-now">Current</span>
                     )}
 
-                    <div style={{
-                      marginTop: "auto", display: "flex", alignItems: "center", justifyContent: "space-between",
-                      gap: 10, paddingTop: 10, borderTop: "1px solid var(--divider-soft)",
-                    }}>
+                    <div className="home-project-card-foot">
                       {!active && !renaming ? (
-                        <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap" }} onClick={(e) => e.stopPropagation()}>
-                          <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} title="Rename"
-                            className="home-glass-btn"
-                            style={{ ...openBtn, padding: "5px 8px", borderRadius: 8 }}>Rename</button>
-                          <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} title="Delete"
-                            className="home-glass-btn"
-                            style={{ ...openBtn, color: "var(--ink-muted)", padding: "5px 8px", borderRadius: 8 }}>Delete</button>
+                        <div style={{ display: "flex", gap: 12, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                          <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} className="home-project-card-act">
+                            <Icon name="edit" size={12} />
+                            Rename
+                          </button>
+                          <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} className="home-project-card-act is-danger">
+                            <Icon name="trash" size={12} />
+                            Delete
+                          </button>
                         </div>
                       ) : (
                         <span />
                       )}
                       {when && (
-                        <div style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--ink-muted)", flexShrink: 0 }}>
+                        <div className="home-project-card-when">
                           <Icon name="revisions" size={12} />
                           {when}
                         </div>

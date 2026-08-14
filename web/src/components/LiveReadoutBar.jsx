@@ -1,4 +1,5 @@
-// Live readout — condition totals, in-progress measure, wall openings (top toolbar).
+// Live readout — condition totals, in-progress measure, wall openings.
+// Default: glass pill in the toolbar. overlay: floating canvas text (scale-HUD language).
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "../brand/icons.jsx";
@@ -130,6 +131,7 @@ function DoorSchedulePicker({ options, onPick }) {
 }
 
 export default function LiveReadoutBar({
+  overlay = false,
   tool,
   aCond,
   activeCond,
@@ -183,11 +185,29 @@ export default function LiveReadoutBar({
 
   const expandedWall = showWallOpenings && wallSegmentRows.length > 1;
 
+  const hasLive = !!(
+    (tool === "oneclick" && proposal?.regions.length)
+    || (tool === "walltrace" && wallProposal?.regions.length)
+    || ((tool === "surface" || tool === "wallarea") && poly.length >= 2 && liveUpp)
+    || (tool === "zone" && poly.length >= 1)
+    || (liveArea != null && poly.length >= 3)
+    || (tool !== "oneclick" && proposal?.regions.length > 0)
+    || (tool !== "walltrace" && wallProposal?.regions.length > 0)
+    || showWallOpenings
+    || floorBeforeDeduction > 0 || floorAfterDeduction !== 0
+    || wallBeforeDeduction > 0 || wallAfterDeduction > 0
+  );
+
+  if (overlay && !hasLive) return null;
+
   return (
-    <div className="live-readout-stack" style={{ position: "absolute", top: 0, left: 0, zIndex: showWallOpenings ? 200 : 25, overflow: "visible", width: expandedWall ? 320 : 268, minWidth: expandedWall ? 300 : 220, maxWidth: expandedWall ? 360 : 280, fontVariantNumeric: "tabular-nums" }}>
+    <div
+      className={`live-readout-stack${overlay ? " live-readout-stack--overlay" : ""}${overlay && hasLive ? " has-focus" : ""}${expandedWall ? " is-wide" : ""}`}
+      style={overlay ? undefined : { position: "absolute", top: 0, left: 0, zIndex: showWallOpenings ? 200 : 25, overflow: "visible", width: expandedWall ? 320 : 268, minWidth: expandedWall ? 300 : 220, maxWidth: expandedWall ? 360 : 280, fontVariantNumeric: "tabular-nums" }}
+    >
       <div
-        className="toolbar-glass-pill live-readout-bar"
-        style={{
+        className={overlay ? "live-readout-bar live-readout-bar--overlay" : "toolbar-glass-pill live-readout-bar"}
+        style={overlay ? undefined : {
           display: "flex",
           flexDirection: "column",
           borderRadius: showWallOpenings ? "14px 14px 0 0" : 14,
@@ -277,7 +297,7 @@ export default function LiveReadoutBar({
             );
           })()}
           {showWallOpenings && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, marginBottom: 6 }}>
+            <div className="live-readout-interactive" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, marginBottom: 6 }}>
               {selShape?.measure_role === "surface_area" && wallSegmentRows.length > 1 ? (
                 <WallSegmentHeightsEditor
                   compact
@@ -350,7 +370,7 @@ export default function LiveReadoutBar({
       </div>
       {showWallOpenings && (
         <div
-          className="toolbar-glass-pill live-readout-wall-openings"
+          className={`live-readout-interactive live-readout-wall-openings${overlay ? "" : " toolbar-glass-pill"}`}
           style={{
             position: "absolute",
             top: "100%",

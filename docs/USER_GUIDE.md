@@ -29,7 +29,7 @@ This manual takes you from a blank browser tab to a finished, exported takeoff, 
 
 The fastest way to learn the canvas is to run one takeoff end to end on the bundled plan.
 
-1. **Load the sample.** On the opening screen, click **Load sample plan** — a real medical-center floor finish plan. (Your own plans: drag a PDF anywhere onto the page.)
+1. **Load the sample.** On the opening screen, click **Load sample plan** — a real medical-center floor finish plan. (Your own plans: drag a PDF anywhere onto the page.) While the sheet is reading, the canvas stays empty except for the same ADICC wordmark as the home screen — toolbar and takeoff value wait until the sheet is ready. Once the sheet is up, the takeoff value sits as text on the sheet (top-left), next to a session trend line — hover a point for the value and delta.
 2. **Accept the scale.** Open the **Set scale…** chip in the toolbar. The plan's drawn scale note has already been read off the sheet — click **Plan says 1/4″ = 1′-0″ — use it**. A calibrated ruler bar flashes on the sheet for a few seconds so you can eyeball that it's right (a door opening is about 3′).
 3. **Pick a condition.** A fresh workspace ships with a starter set of flooring conditions — CPT-1, LVT-1, CT-1, and friends. Press `1` to arm the first (the number keys answer in list order until you pin your own palette), or open the **☰ Takeoffs** rail button and click one.
 4. **One-Click the rooms.** Press `O`, then click inside a room. The room traces itself, wall to wall, as a dashed proposal. Click the next room, and the next. Press `⏎` to create them all.
@@ -49,7 +49,7 @@ Drag onto the canvas (or click the **Open your plans** target on the empty scree
 - **Images** — scans, screenshots, photos of a sheet. They're wrapped into PDF pages in your browser.
 - **`.zip` plan sets** — the whole download off a bid platform. Unzipped in the browser; every PDF inside opens. (Hostile-archive guards cap entry counts, sizes, and nesting, so a malformed zip fails cleanly instead of ballooning the tab.)
 
-Nothing uploads anywhere. The file is read locally, rendered locally, and stored locally.
+Nothing uploads anywhere. The file is read locally, rendered locally, and stored locally. On the ADICC home screen, saved projects sit as cards with a sheet-preview well — click one to reopen it; Rename and Delete are text on the card.
 
 ### The sheet gallery (`G`)
 
@@ -84,7 +84,7 @@ Past ~115% zoom the visible region re-renders straight from the PDF vectors at y
 
 ### Dark view
 
-The **contrast** button on the left rail inverts the sheet pixels themselves — a true negative print, white linework on black, not a CSS filter — with hatches retuned to stay legible. Chrome light/dark is the sun/moon control next to **Pan** in the center toolbar; it does not invert the sheet. The invert setting persists per browser, and exports follow it: a dark canvas produces a dark Marked Set PDF.
+The **contrast** button on the left rail inverts the sheet pixels themselves — a true negative print, white linework on black, not a CSS filter — with hatches retuned to stay legible. Chrome light/dark is the sun/moon control next to **Pan** in the center toolbar; it does not invert the sheet. Hover any canvas chrome icon for its name and shortcut — the label appears immediately (under the toolbar, to the right of the left rail, above zoom/undo, to the left of the Takeoffs hamburger). The invert setting persists per browser, and exports follow it: a dark canvas produces a dark Marked Set PDF.
 
 ---
 
@@ -152,7 +152,7 @@ A **condition** is one finish — `LVT-1`, `CPT-2`, `RB-1` — and it's what eve
 - **H** (height, ft) — the default for **new** wall traces (Surface Area SF = LF × H) and the vertical-SF display. Existing walls keep the height they were drawn at — select a wall to change just that one (§5).
 - **T** (thickness, in) — a Linear run with thickness also computes border/feature-strip SF = LF × T⁄12. Changing it re-flows existing runs.
 
-**Delete** (the row's ✕) asks first when the condition owns shapes — *"Delete 〈TAG〉 and its N takeoff(s)? This can't be undone."* — and means it: the cascade is deliberately outside the undo stack (§8).
+**Delete** (the row's ✕) asks first when the condition owns shapes — an in-app confirm, not the browser popup — and means it: the cascade is deliberately outside the undo stack (§8). Esc cancels; Enter confirms.
 
 There's no per-condition duplicate; the Library fills that role — read on.
 
@@ -243,7 +243,7 @@ The **Snap** toggle pulls your cursor onto true PDF endpoints — real corners e
 
 ### The live readout
 
-The top-right readout tracks the armed tool: totals for the tracing tools, `W × H · SF · SY` for Rectangle, wall SF at the condition height for Surface Area, and running One-Click selection totals. Any run or side that reaches **12′ turns the chip amber** — the roll-width warning rides every tool that measures a length.
+The live readout floats on the sheet at top-right (halo text, same language as the bottom scale bar — not a toolbar pill). It tracks the armed tool: totals for the tracing tools, `W × H · SF · SY` for Rectangle, wall SF at the condition height for Surface Area, and running One-Click selection totals. Wall-height and door-opening editors stay clickable when a wall is selected. Any run or side that reaches **12′ turns the chip amber** — the roll-width warning rides every tool that measures a length.
 
 ---
 
@@ -359,7 +359,7 @@ One more distinction: **Undo last shape** (Edit menu) and `⌫`-with-nothing-in-
 
 ## 9. Markups, stamps & RFIs
 
-The markup layer is communication, never quantity: clouds, callouts, notes, highlighter ink, and stamps live on a separate layer the totals never count. The left-rail **folder** icon opens one panel with four tabs — **Files**, **Markups**, **Stamps**, **RFIs**.
+The markup layer is communication, never quantity: clouds, callouts, notes, highlighter ink, and stamps live on a separate layer the totals never count. The left-rail **folder** icon opens one panel — **Files**, **Sheets**, **Layers**, **Markups**, **Stamps**, **RFIs**. If the tabs don't fit, drag or scroll the strip sideways; **×** stays put.
 
 ### The markup tools
 
@@ -585,7 +585,7 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 | `⌫` / `Delete` | Pop the last placed point — then, in order: delete the picked One-Click vertex → drop the last One-Click region → delete the picked shape vertex → delete the selected shape → delete the selected markup → pop a calibrate/check point |
 | `⌘Z` | Mid-trace: pop the last point. Otherwise: **undo** |
 | `⇧⌘Z` | Redo |
-| `Esc` | Back out one level: clear the vertex pick first, then everything in progress (trace, proposal, calibration, check, selection, markup draft, armed stamp, zone) |
+| `Esc` | Back out one level: clear the vertex pick first, then everything in progress (trace, proposal, calibration, check, selection, markup draft, armed stamp, zone), then return to **Select** (normal pointer) |
 | Hold `⇧` | Force the 45° angle lock at any cursor angle |
 | `⌥`-click (One-Click) | Carve a cutout inside a selected space |
 | `⇧`-click an edge | Insert a vertex at the edge midpoint (selected shape or One-Click proposal) and drag it |

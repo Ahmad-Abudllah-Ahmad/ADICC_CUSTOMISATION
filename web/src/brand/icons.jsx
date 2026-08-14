@@ -56,6 +56,9 @@ export const icons = {
   paste: (s) => <I size={s}><rect x="5" y="5" width="14" height="16" /><rect x="9" y="3" width="6" height="4" /><line x1="9" y1="12" x2="15" y2="12" /><line x1="9" y1="16" x2="15" y2="16" /></I>,
   duplicate: (s) => <I size={s}><rect x="8" y="8" width="12" height="12" /><path d="M16 8 V 4 H 4 V 16 H 8" /><path d="M12 14 H 16 M14 12 V 16" /></I>,
   undo: (s) => <I size={s}><path d="M9 5 L 5 9 L 9 13" /><path d="M5 9 H 14.5 a 4.8 4.8 0 0 1 0 9.6 H 8" /></I>,
+  redo: (s) => <I size={s}><path d="M15 5 L 19 9 L 15 13" /><path d="M19 9 H 9.5 a 4.8 4.8 0 0 0 0 9.6 H 16" /></I>,
+  flipH: (s) => <I size={s}><path d="M12 3 V 21" /><path d="M10 8 L 5 12 L 10 16" /><path d="M14 8 L 19 12 L 14 16" /></I>,
+  flipV: (s) => <I size={s}><path d="M3 12 H 21" /><path d="M8 10 L 12 5 L 16 10" /><path d="M8 14 L 12 19 L 16 14" /></I>,
   check: (s) => <I size={s}><path d="M5 13 L 10 18 L 19 7" /></I>,
   sheets: (s) => <I size={s}><rect x="4" y="4" width="7" height="7" /><rect x="13" y="4" width="7" height="7" /><rect x="4" y="13" width="7" height="7" /><rect x="13" y="13" width="7" height="7" /></I>,
   // stacked pages — open tabs on the canvas (distinct from the 4-up Files grid)
@@ -74,6 +77,11 @@ export const icons = {
   // RFI — a hexagon echoing the on-canvas ⬢ RFI marker, with a question motif
   rfi: (s) => <I size={s}><path d="M12 3 L 19 7 V 15 L 12 19 L 5 15 V 7 Z" /><path d="M10 10 a2 2 0 1 1 2.6 1.9 C 12 12.2 12 12.6 12 13.2" /><circle cx="12" cy="15.6" r="0.9" fill="currentColor" /></I>,
   takeoffs: (s) => <I size={s}><rect x="4" y="5" width="3" height="3" fill="currentColor" stroke="none" /><line x1="10" y1="6.5" x2="20" y2="6.5" /><rect x="4" y="10.5" width="3" height="3" fill="currentColor" stroke="none" /><line x1="10" y1="12" x2="20" y2="12" /><rect x="4" y="16" width="3" height="3" fill="currentColor" stroke="none" /><line x1="10" y1="17.5" x2="20" y2="17.5" /></I>,
+  // stacked-sheets layers motif — the Illustrator-style Layers panel toggle
+  layers: (s) => <I size={s}><path d="M12 3 L 21 8 L 12 13 L 3 8 Z" /><path d="M3 12 L 12 17 L 21 12" /><path d="M3 16 L 12 21 L 21 16" /></I>,
+  // padlock — locked / unlocked layer row state
+  lock: (s) => <I size={s}><rect x="5" y="10.5" width="14" height="9.5" rx="1" /><path d="M8 10.5 V 7.5 a 4 4 0 0 1 8 0 V 10.5" /><circle cx="12" cy="15" r="1.2" fill="currentColor" stroke="none" /></I>,
+  unlock: (s) => <I size={s}><rect x="5" y="10.5" width="14" height="9.5" rx="1" /><path d="M8 10.5 V 7.5 a 4 4 0 0 1 7.6 -1.6" /><circle cx="12" cy="15" r="1.2" fill="currentColor" stroke="none" /></I>,
   revisions: (s) => <I size={s}><circle cx="12" cy="12" r="8" /><path d="M12 7.5 V 12 L 15.4 14" /><circle cx="12" cy="12" r="0.9" fill="currentColor" /></I>,
   zone: (s) => <I size={s}><path d="M4 4 H 8 M11 4 H 15 M18 4 H 20 V 6 M20 9 H 20 V 13 M20 16 V 20 H 17 M14 20 H 10 M7 20 H 4 V 16 M4 13 V 9 M4 6 V 4" /><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none" /></I>,
   target: (s) => <I size={s}><circle cx="12" cy="12" r="6" /><path d="M12 3 V 7 M12 17 V 21 M3 12 H 7 M17 12 H 21" /><circle cx="12" cy="12" r="1" fill="currentColor" /></I>,

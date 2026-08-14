@@ -8,6 +8,7 @@ export default function ConfirmDeleteModal({
   body,
   confirmLabel = "Remove",
   cancelLabel = "Cancel",
+  tone = "danger",
   onConfirm,
   onCancel,
 }) {
@@ -47,7 +48,7 @@ export default function ConfirmDeleteModal({
           <button type="button" className="adicc-confirm-btn adicc-confirm-btn-ghost" onClick={onCancel}>
             {cancelLabel}
           </button>
-          <button type="button" className="adicc-confirm-btn adicc-confirm-btn-danger" autoFocus onClick={onConfirm}>
+          <button type="button" className={`adicc-confirm-btn ${tone === "ink" ? "adicc-confirm-btn-ink" : "adicc-confirm-btn-danger"}`} autoFocus onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>
