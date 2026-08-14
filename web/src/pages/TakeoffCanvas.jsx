@@ -1496,8 +1496,10 @@ export default function TakeoffCanvas() {
         hasSheetsRef.current = list.length > 0;
         sheetsLoadedRef.current = true;
         setSheets(list);
-        if (list.length) setActive(list[0].name);
-        else setStatus("empty");
+        if (list.length) {
+          setActive(list[0].name);
+          if (noTabsRef.current) setStatus("ready");
+        } else setStatus("empty");
         // decide the landing only once the annotations effect has also reported
         // no open tabs (see hydrate) — avoids a picker→gallery flash + wasted list
         if (noTabsRef.current) setView("canvas");
@@ -1634,7 +1636,10 @@ export default function TakeoffCanvas() {
     else {
       setOpenTabs([]);
       noTabsRef.current = true;
-      if (sheetsLoadedRef.current) setView("canvas");
+      if (sheetsLoadedRef.current) {
+        setView("canvas");
+        setStatus(hasSheetsRef.current ? "ready" : "empty");
+      }
     }
     const sc = {};
     const src = {};
@@ -8593,7 +8598,7 @@ export default function TakeoffCanvas() {
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
         {/* Central Toolbars - The Pill UI */}
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+        <div className="toolbar-glass-pills-row" style={{ display: "flex", gap: 10, alignItems: "flex-start", justifyContent: "center", width: "100%" }}>
           
           {/* Pill 1 */}
           <div className="toolbar-glass-pill" style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, borderRadius: 14, padding: "3px 12px", whiteSpace: "nowrap", width: 268, minWidth: 268, maxWidth: 268, boxSizing: "border-box" }}>
@@ -8832,8 +8837,8 @@ export default function TakeoffCanvas() {
             
           </div>
 
-          {/* Live readout — zero flex footprint; white pill floats over the canvas below */}
-          <div style={{ position: "relative", width: 0, height: 0, overflow: "visible", alignSelf: "flex-start", flexShrink: 0 }}>
+          {/* Live readout — flex footprint matches pill width so the toolbar group centers */}
+          <div style={{ position: "relative", width: 268, minHeight: 72, flexShrink: 0, alignSelf: "flex-start" }}>
             <LiveReadoutBar
               tool={tool}
               aCond={aCond}

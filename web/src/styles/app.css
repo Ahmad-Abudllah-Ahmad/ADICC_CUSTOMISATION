@@ -380,6 +380,17 @@ textarea {
 .toolbar-glass-bar {
   isolation: isolate;
   z-index: 70 !important;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.toolbar-glass-pills-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .toolbar-glass-pill {
