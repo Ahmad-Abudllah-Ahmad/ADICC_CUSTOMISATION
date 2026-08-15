@@ -24,7 +24,8 @@
 // The panel stays MOUNTED while collapsed (open=false renders null), so all of
 // that transient state survives a collapse/expand round-trip.
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../brand/icons.jsx";
 import { attrValue, columnLabel } from "../lib/conditionColumns.js";
 import { SPEC_FIELDS } from "../lib/reportColumns.js";
@@ -78,7 +79,7 @@ const btnClearX = { border: "none", background: "none", color: "var(--ink-muted)
 function GroutParamInput({ name, value, title, min = 0, max, width = 52, override, onCommit }) {
   const [draft, setDraft] = useState(null);   // raw text mid-edit; null = mirror the committed value
   return (
-    <input name={name} type="number" min={min || 0} max={max} step="any" title={title}
+    <input name={name} type="text" inputMode="decimal" title={title}
       value={draft ?? (value > 0 ? String(value) : "")}
       onChange={(e) => { const t = e.target.value; setDraft(t); const v = draftCommitValue(t, min, max); if (v != null) onCommit(v); }}
       onBlur={() => {
@@ -86,7 +87,8 @@ function GroutParamInput({ name, value, title, min = 0, max, width = 52, overrid
         if (v != null) onCommit(v);
         setDraft(null);
       }}
-      style={{ ...ip, width, ...(override ? { border: "1px solid var(--c-warning)" } : {}) }} />
+      className={override ? "is-override" : undefined}
+      style={{ width }} />
   );
 }
 
@@ -126,26 +128,26 @@ function LibDraftInput({ name, value, number, placeholder, width, onCommitText }
 function CoveragePresetSelect({ material: m, onPick }) {
   const presets = (m.basis || "area") === "area" ? MATERIAL_PRESETS[materialKind(m)] : undefined;
   if (!presets) return null;
+  const current = presets.some((t) => t.label === m.note) ? m.note : "";
   return (
-    <select name="coverage-preset" value={presets.some((t) => t.label === m.note) ? m.note : ""}
-      onChange={(e) => { const t = presets.find((x) => x.label === e.target.value); if (t) onPick({ note: t.label, per: t.per }); }}
-      title="Coverage preset — trowel notch / spread rate. Generic industry-typical values; verify against the product data sheet."
-      style={{ ...ip, background: "var(--paper-bright)" }}>
-      <option value="">preset…</option>
-      {presets.map((t) => <option key={t.label} value={t.label}>{t.label} · {t.per} SF/{m.unit || "unit"}</option>)}
-    </select>
+    <PaperSelect
+      name="coverage-preset"
+      ariaLabel="Coverage preset"
+      placeholder="Preset"
+      value={current}
+      options={[{ value: "", label: "Preset" }, ...presets.map((t) => ({ value: t.label, label: t.label, hint: t.per }))]}
+      renderOption={(o, inTrigger) => (inTrigger || !o.hint ? o.label : `${o.label} · ${o.hint}`)}
+      onChange={(v) => { const t = presets.find((x) => x.label === v); if (t) onPick({ note: t.label, per: t.per }); }}
+    />
   );
 }
 
 // Editable supporting-materials rows for a condition (coverage-derived order qty).
 function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libById, overridden, onRevert, onAttach, onPromote }) {
-  // library link affordances (#47, all optional so the editor works standalone):
-  // linked lines show ⛓; a field differing from its library entry tints amber
-  // and grows a per-field ↺ revert; unlinked lines can be promoted to the library
-  const OV = "1px solid var(--c-warning)";
   const rv = (m, f) => (
-    <button onClick={() => onRevert(m, f)} title="Revert this field to the library value"
-      style={{ padding: "0 3px", border: "none", background: "transparent", color: "var(--c-warning)", cursor: "pointer", fontSize: 11, lineHeight: 1 }}>↺</button>
+    <button type="button" className="tp-row-icon" onClick={() => onRevert(m, f)} title="Revert this field to the library value" aria-label="Revert to library">
+      <Icon name="undo" size={12} />
+    </button>
   );
   return (
     <>
@@ -153,11 +155,6 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
         const lm = libById ? libById[m.lib_id] : null;
         const ov = (f) => (lm && overridden ? overridden(m, lm, f) : false);
         const g = { ...GROUT_DEFAULTS, ...(m.grout || {}) };
-        // grout coverage derives from tile geometry — a param change re-derives
-        // per + writes the derivation into the note so the Report shows its
-        // work, but ONLY while the whole geometry is valid: an incomplete edit
-        // (cleared field, zero) keeps the last good per + note instead of
-        // silently committing a rate of 0 into the buy list and exports
         const setGrout = (patch) => {
           const grout = { ...g, ...patch };
           onUpdate(m.id, { grout, ...(groutDerivedFields(grout) || {}) });
@@ -167,60 +164,79 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
             onCommit={(v) => setGrout({ [key]: v })} {...extra} />
         );
         return (
-          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
-            {lm && <span title={`Linked to “${lm.name}” in the material library — amber fields differ from the library values`} style={{ color: "var(--ink-muted)", fontSize: 11, cursor: "default" }}>⛓</span>}
-            <input name="material-name" value={m.name} onChange={(e) => onUpdate(m.id, { name: e.target.value })} placeholder="Material (e.g. Adhesive)" style={{ ...ip, width: 160, ...(ov("name") ? { border: OV } : {}) }} />
-            {ov("name") && rv(m, "name")}
-            <span style={{ color: "var(--ink-soft)", fontWeight: 600 }}>1</span>
-            <input name="material-unit" value={m.unit} onChange={(e) => onUpdate(m.id, { unit: e.target.value })} placeholder="unit" style={{ ...ip, width: 60, ...(ov("unit") ? { border: OV } : {}) }} />
-            {ov("unit") && rv(m, "unit")}
-            <span style={{ color: "var(--ink-soft)", fontWeight: 600 }}>per</span>
-            <input name="material-per" type="number" min="0" step="any" value={m.per || ""} onChange={(e) => onUpdate(m.id, { per: Math.max(0, parseFloat(e.target.value) || 0) })} placeholder="0" style={{ ...ip, width: 66, ...(ov("per") ? { border: OV } : {}) }} />
-            {ov("per") && rv(m, "per")}
-            <select name="material-basis" value={m.basis || "area"} onChange={(e) => onUpdate(m.id, { basis: e.target.value })} style={{ ...ip, background: "var(--paper-bright)", ...(ov("basis") ? { border: OV } : {}) }}>
-              <option value="area">floor SF</option>
-              <option value="linear">linear LF</option>
-              <option value="count">each</option>
-            </select>
-            {ov("basis") && rv(m, "basis")}
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 4, color: ov("round") ? "var(--c-warning)" : "var(--ink-muted)" }} title="Round up to whole units (you buy whole buckets/bags)">
-              <input name="material-round" type="checkbox" checked={m.round !== false} onChange={(e) => onUpdate(m.id, { round: e.target.checked })} />round up
-            </label>
-            {ov("round") && rv(m, "round")}
-            <CoveragePresetSelect material={m} onPick={(patch) => onUpdate(m.id, patch)} />
-            <input name="material-note" value={m.note || ""} onChange={(e) => onUpdate(m.id, { note: e.target.value })} placeholder="note (coats, trowel…)" style={{ ...ip, width: 150, ...(ov("note") ? { border: OV } : {}) }} />
-            {ov("note") && rv(m, "note")}
-            {!lm && onPromote && (
-              <button onClick={() => onPromote(m)} title="Save this material to the library (this line becomes linked)"
-                style={{ padding: "2px 7px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>→ lib</button>
-            )}
-            <button onClick={() => onRemove(m.id)} title="Remove this material"
-              style={{ padding: "2px 7px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "transparent", color: "var(--c-danger)", cursor: "pointer", fontSize: 12 }}>✕</button>
-            {/* the calculator renders ONLY when the line HAS geometry; a grout
-                line without it keeps its rate untouched behind an explicit
-                opt-in below — never a calculator backfilled with defaults */}
+          <div key={m.id} className="tp-mat-line">
+            <div className="tp-mat-id">
+              {lm ? <span className="tp-mat-linked" title={`Linked to “${lm.name}” in the material library`}>Lib</span> : null}
+              <input name="material-name" className={`tp-mat-tag${ov("name") ? " is-override" : ""}`} value={m.name} onChange={(e) => onUpdate(m.id, { name: e.target.value })} placeholder="Material" />
+              {ov("name") && rv(m, "name")}
+              <span className="tp-mat-actions">
+                {!lm && onPromote && (
+                  <button type="button" className="tp-row-icon" onClick={() => onPromote(m)} title="Save this material to the library" aria-label="Save to library">
+                    <Icon name="product" size={14} />
+                  </button>
+                )}
+                <button type="button" className="tp-row-icon is-danger" onClick={() => onRemove(m.id)} title="Remove this material" aria-label="Remove material">
+                  <Icon name="trash" size={14} />
+                </button>
+              </span>
+            </div>
+            <div className="tp-mat-look">
+              <div className="tp-mat-formula">
+                <span className="tp-mat-k">1</span>
+                <input name="material-unit" value={m.unit} onChange={(e) => onUpdate(m.id, { unit: e.target.value })} placeholder="unit" className={ov("unit") ? "is-override" : undefined} style={{ width: 44 }} />
+                {ov("unit") && rv(m, "unit")}
+                <span className="tp-mat-k">per</span>
+                <input name="material-per" type="text" inputMode="decimal" value={m.per || ""} onChange={(e) => onUpdate(m.id, { per: Math.max(0, parseFloat(e.target.value) || 0) })} placeholder="0" className={ov("per") ? "is-override" : undefined} style={{ width: 48 }} />
+                {ov("per") && rv(m, "per")}
+              </div>
+              <div className="tp-mat-stroke">
+                <div className="tp-mat-stroke-row">
+                  <PaperSelect
+                    name="material-basis"
+                    ariaLabel="Coverage basis"
+                    value={m.basis || "area"}
+                    options={[
+                      { value: "area", label: "Floor SF" },
+                      { value: "linear", label: "Linear LF" },
+                      { value: "count", label: "Each" },
+                    ]}
+                    onChange={(v) => onUpdate(m.id, { basis: v })}
+                  />
+                  {ov("basis") && rv(m, "basis")}
+                  <CoveragePresetSelect material={m} onPick={(patch) => onUpdate(m.id, patch)} />
+                </div>
+                <label className={`tp-mat-round${ov("round") ? " is-override" : ""}`} title="Round up to whole units">
+                  <input name="material-round" type="checkbox" checked={m.round !== false} onChange={(e) => onUpdate(m.id, { round: e.target.checked })} />
+                  Round up
+                </label>
+                {ov("round") && rv(m, "round")}
+              </div>
+            </div>
+            <div className="tp-mat-note">
+              <input name="material-note" value={m.note || ""} onChange={(e) => onUpdate(m.id, { note: e.target.value })} placeholder="Note" className={ov("note") ? "is-override" : undefined} />
+              {ov("note") && rv(m, "note")}
+            </div>
             {showsGroutCalc(m) && (
-              <div style={{ flexBasis: "100%", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", paddingLeft: 14, color: "var(--ink-muted)", fontSize: 12 }}>
-                <span>tile</span>
+              <div className="tp-mat-grout">
+                <span>Tile</span>
                 {gi("tileL", "Tile length (in)")}
                 <span>×</span>
                 {gi("tileW", "Tile width (in)")}
-                <span>× thick</span>
+                <span>×</span>
                 {gi("tileT", "Tile thickness (in)")}
-                <span>″ · joint</span>
-                {gi("joint", "Joint width (in) — 1/32″ to 1/2″", { min: 0.03125, max: 0.5, width: 62 })}
-                <span>″ · bag</span>
+                <span>in · joint</span>
+                {gi("joint", "Joint width (in)", { min: 0.03125, max: 0.5, width: 56 })}
+                <span>· bag</span>
                 {gi("bagLbs", "Bag size (lbs)")}
                 <span>lb</span>
                 {ov("grout") && rv(m, "grout")}
               </div>
             )}
             {showsGroutDeriveAffordance(m) && (
-              <div style={{ flexBasis: "100%", display: "flex", alignItems: "center", gap: 6, paddingLeft: 14 }}>
-                <button onClick={() => setGrout({})}
-                  title="Start the grout calculator with standard tile geometry (12×24×3/8″ @ 1/8″, 25 lb bag) — REPLACES this line's coverage rate and note with the derived values"
-                  style={{ padding: "2px 7px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 11 }}>
-                  derive from tile geometry…
+              <div className="tp-mat-grout">
+                <button type="button" className="tp-mat-text-btn" onClick={() => setGrout({})}
+                  title="Start the grout calculator with standard tile geometry">
+                  Derive from tile
                 </button>
                 {ov("grout") && rv(m, "grout")}
               </div>
@@ -228,16 +244,22 @@ function MaterialsEditor({ materials, onAdd, onUpdate, onRemove, library, libByI
           </div>
         );
       })}
-      <button onClick={onAdd}
-        style={{ marginTop: 2, padding: "4px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", color: "var(--ink-muted)", cursor: "pointer", fontSize: 12 }}>+ add material</button>
-      {onAttach && (library || []).length > 0 && (
-        <select name="attach-material" value="" onChange={(e) => { if (e.target.value) onAttach(e.target.value); }}
-          title="Attach a material from the library — the line copies the library values and stays linked"
-          style={{ ...ip, marginLeft: 6, background: "var(--paper-bright)", color: "var(--ink-muted)" }}>
-          <option value="">+ from library…</option>
-          {library.map((lm) => <option key={lm.id} value={lm.id}>{lm.name || "(unnamed)"}{lm.per ? ` · ${lm.per}/${lm.unit || "?"}` : ""}</option>)}
-        </select>
-      )}
+      <div className="tp-mat-add">
+        <button type="button" className="tp-mat-text-btn" onClick={onAdd}>
+          <Icon name="plus" size={12} />
+          Material
+        </button>
+        {onAttach && (library || []).length > 0 && (
+          <PaperSelect
+            name="attach-material"
+            ariaLabel="Attach from library"
+            placeholder="From library"
+            value=""
+            options={[{ value: "", label: "From library" }, ...(library || []).map((lm) => ({ value: lm.id, label: lm.name || "(unnamed)" }))]}
+            onChange={(v) => { if (v) onAttach(v); }}
+          />
+        )}
+      </div>
     </>
   );
 }
@@ -278,6 +300,149 @@ function AddValueInput({ onAdd }) {
   );
 }
 
+/** Native <select> option lists cannot be themed. Closed trigger stays the
+ *  existing paper chip; the open list is a portaled paper menu. */
+function PaperSelect({ name, value, options, onChange, ariaLabel, renderOption, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef(null);
+  const menuRef = useRef(null);
+  const [menuStyle, setMenuStyle] = useState(null);
+  const current = options.find((o) => String(o.value) === String(value))
+    || (placeholder != null ? { value: "", label: placeholder } : options[0]);
+
+  const placeMenu = () => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const maxH = Math.max(120, Math.min(240, window.innerHeight - 16));
+    const estH = Math.min(options.length * 32 + 10, maxH);
+    const flip = window.innerHeight - r.bottom < estH + 8 && r.top > estH;
+    setMenuStyle({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - 168)),
+      top: flip ? r.top - estH - 4 : r.bottom + 4,
+      minWidth: Math.max(r.width, 132),
+      maxHeight: maxH,
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    placeMenu();
+    const onReflow = () => placeMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [open, options.length]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => {
+      const t = e.target;
+      if (btnRef.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        name={name}
+        className={`cond-paper-select${placeholder != null && String(value) === "" ? " is-placeholder" : ""}`}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+      >
+        <span className="cond-paper-select-label">{current ? (renderOption ? renderOption(current, true) : current.label) : ""}</span>
+        <span className="cond-paper-select-caret" aria-hidden>
+          <Icon name="chevronDown" size={10} />
+        </span>
+      </button>
+      {open && menuStyle && createPortal(
+        <div ref={menuRef} className="cond-paper-menu" role="listbox" aria-label={ariaLabel} style={menuStyle}>
+          {options.map((o) => {
+            const on = String(o.value) === String(value);
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={on}
+                className={`cond-paper-menu-item${on ? " is-on" : ""}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+              >
+                {renderOption ? renderOption(o, false) : o.label}
+              </button>
+            );
+          })}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function lineStyleMark(dash, weight = 1.5) {
+  return (
+    <svg className="cond-paper-mark" width="36" height="10" viewBox="0 0 36 10" aria-hidden>
+      <line
+        x1="2" y1="5" x2="34" y2="5"
+        stroke="currentColor"
+        strokeWidth={weight}
+        strokeLinecap="square"
+        strokeDasharray={dash && dash.length ? dash.join(" ") : undefined}
+      />
+    </svg>
+  );
+}
+
+function NoFillMark() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+      <rect x="1.2" y="1.2" width="9.6" height="9.6" fill="none" stroke="currentColor" strokeWidth="1" />
+      <line x1="2.2" y1="9.8" x2="9.8" y2="2.2" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function EnterSaveNumber({ name, value, min = 0, integer = false, width, onCommit }) {
+  const [draft, setDraft] = useState(null);
+  const commit = (raw) => {
+    const n = integer ? parseInt(raw, 10) : parseFloat(raw);
+    if (!Number.isFinite(n)) return;
+    onCommit(Math.max(min, n));
+  };
+  return (
+    <input
+      name={name}
+      type="text"
+      inputMode="decimal"
+      className="cond-plain-num"
+      value={draft ?? String(value ?? "")}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { if (draft != null) { commit(draft); setDraft(null); } }}
+      onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) e.currentTarget.blur(); }}
+      style={{ width, padding: "3px 5px" }}
+    />
+  );
+}
+
 // Appearance editor for ONE condition — tag, ×N, waste, line/fill color, hatch,
 // line style, height, thickness, and custom-column assignment. This is the row
 // that "used to live in its own toolbar row above the canvas"; extracted here so
@@ -286,113 +451,180 @@ function AddValueInput({ onAdd }) {
 // hatch-popover open state; everything else flows through the passed handlers.
 export function ConditionAppearanceEditor({ cond: c, onUpdateCond, onSetCondParam, onAssignAttr, conditionColumns = [], layout = "stack" }) {
   const [hatchOpen, setHatchOpen] = useState(false);
-  const activeColor = c.color || "#c96442";
-  // Two layouts, one editor. "stack" (docked panel, narrow) stacks the groups
-  // vertically; "row" (top-bar band, wide) flows them left-to-right so they use
-  // the horizontal space instead of clumping in a corner, split by thin rules.
+  const hatchBtnRef = useRef(null);
+  const hatchMenuRef = useRef(null);
+  const [hatchMenuStyle, setHatchMenuStyle] = useState(null);
+  const hatchId = c.hatch || "solid";
+  const hatchLabel = (HATCHES.find((h) => h.id === hatchId) || {}).label || "Solid";
   const isRow = layout === "row";
   const rule = () => <span aria-hidden className="condition-appearance-rule" />;
+
+  const placeHatchMenu = () => {
+    const btn = hatchBtnRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const w = 196;
+    setHatchMenuStyle({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)),
+      top: r.bottom + 4,
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!hatchOpen) return undefined;
+    placeHatchMenu();
+    const onReflow = () => placeHatchMenu();
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [hatchOpen]);
+
+  useEffect(() => {
+    if (!hatchOpen) return undefined;
+    const onDown = (e) => {
+      const t = e.target;
+      if (hatchBtnRef.current?.contains(t) || hatchMenuRef.current?.contains(t)) return;
+      setHatchOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setHatchOpen(false); };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [hatchOpen]);
+
   return (
-    <div style={isRow
-      ? { padding: "6px 2px 2px", display: "flex", flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 10, rowGap: 8, fontSize: 11 }
-      : { padding: "4px 12px 10px", display: "flex", flexDirection: "column", gap: 7, fontSize: 11 }}
-      className={`condition-appearance-editor${isRow ? " is-row" : ""}`}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <input name="condition-finish-tag" value={c.finish_tag} onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
+    <div className={`condition-appearance-editor${isRow ? " is-row" : ""}`}>
+      <div className="cond-edit-id">
+        <input
+          name="condition-finish-tag"
+          className="cond-edit-tag"
+          value={c.finish_tag}
+          onChange={(e) => onUpdateCond({ finish_tag: e.target.value })}
           title="Rename this condition / finish tag"
-          style={{ width: 88, padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--ink)" }} />
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Multiply this condition by N identical units (measure one, ×N)">
-          <span style={{ color: "var(--ink)", fontWeight: 600 }}>×</span>
-          <input name="condition-multiplier" type="number" min="1" step="1" value={c.multiplier || 1}
-            onChange={(e) => onUpdateCond({ multiplier: Math.max(1, parseInt(e.target.value, 10) || 1) })}
-            style={{ width: 46, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
+        />
+        <span className="cond-edit-unit" title="Multiply this condition by N identical units (measure one, ×N)">
+          <span className="cond-edit-k">×</span>
+          <EnterSaveNumber name="condition-multiplier" value={c.multiplier || 1} min={1} integer width={40}
+            onCommit={(v) => onUpdateCond({ multiplier: v })} />
         </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Waste % — a flooring allowance added on top of the measured quantity in the Report. You choose it per condition (e.g. ~8% straight-lay LVP, ~15% diagonal, ~20% herringbone).">
-          <span style={{ color: "var(--ink)", fontWeight: 600 }}>Waste</span>
-          <input name="condition-waste-pct" type="number" min="0" step="1" value={c.waste_pct ?? 0}
-            onChange={(e) => onUpdateCond({ waste_pct: Math.max(0, parseFloat(e.target.value) || 0) })}
-            style={{ width: 50, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-          <span style={{ color: "var(--ink)", fontWeight: 600 }}>%</span>
+        <span className="cond-edit-unit" title="Waste % — a flooring allowance added on top of the measured quantity in the Report. You choose it per condition (e.g. ~8% straight-lay LVP, ~15% diagonal, ~20% herringbone).">
+          <span className="cond-edit-k">Waste</span>
+          <EnterSaveNumber name="condition-waste-pct" value={c.waste_pct ?? 0} min={0} width={40}
+            onCommit={(v) => onUpdateCond({ waste_pct: v })} />
+          <span className="cond-edit-k">%</span>
+        </span>
+        <span className="cond-edit-unit" title="Height (ft) — the default for NEW wall traces (SF = LF × H) and the vertical-SF display on floor areas. Walls keep the height they were drawn at — select a wall to change just that one.">
+          <Icon name="height" size={13} />
+          <input name="condition-height-ft" type="text" inputMode="decimal" className="cond-plain-num" value={c.height_ft ?? ""} placeholder="ft"
+            onChange={(e) => onSetCondParam("height_ft", e.target.value)} style={{ width: 44 }} />
+        </span>
+        <span className="cond-edit-unit" title="Thickness (in) — a Linear run with thickness also computes border/feature-strip SF = LF × T/12. Changing it re-flows existing linear runs.">
+          <Icon name="thickness" size={13} />
+          <input name="condition-thickness-in" type="text" inputMode="decimal" className="cond-plain-num" value={c.thickness_in ?? ""} placeholder="in"
+            onChange={(e) => onSetCondParam("thickness_in", e.target.value)} style={{ width: 40 }} />
         </span>
       </div>
       {isRow && rule()}
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-        <span style={{ color: "var(--ink)", fontWeight: 600, width: 26 }}>Line</span>
-        {PALETTE.map((p) => <button key={p} title={p} onClick={() => onUpdateCond({ color: p })} style={{ width: 16, height: 16, borderRadius: 4, background: p, border: c.color === p ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
-        <span style={{ color: "var(--ink)", fontWeight: 600, width: 26 }}>Fill</span>
-        <button title="No fill" onClick={() => onUpdateCond({ fill: NO_FILL })} style={{ width: 16, height: 16, borderRadius: 4, background: "var(--paper-bright)", border: c.fill === NO_FILL ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer", fontSize: 9, lineHeight: "12px", color: "var(--c-danger)" }}>⦸</button>
-        {PALETTE.map((p) => <button key={p} title={p} onClick={() => onUpdateCond({ fill: p })} style={{ width: 16, height: 16, borderRadius: 4, background: p, opacity: 0.55, border: c.fill === p ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />)}
-      </div>
-      {isRow && rule()}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
-          <button onClick={() => setHatchOpen((v) => !v)} title="Choose a hatch pattern"
-            style={{ display: "flex", alignItems: "center", gap: 5, padding: "2px 7px 2px 2px", borderRadius: 0, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", lineHeight: 0 }}>
-            <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
-            <span style={{ fontSize: 10.5, color: "var(--ink)", fontWeight: 600, lineHeight: 1 }}>{(HATCHES.find((h) => h.id === (c.hatch || "solid")) || {}).label || "Solid"} ▾</span>
-          </button>
-          {hatchOpen && (
-            <div style={{ position: "absolute", top: 26, left: 0, zIndex: 30, display: "grid", gridTemplateColumns: "repeat(6, auto)", gap: 4, padding: 8, background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", borderRadius: 0, boxShadow: "var(--shadow-pop)" }}>
-              {HATCHES.map((h) => {
-                const hOn = (c.hatch || "solid") === h.id;
-                return <button key={h.id} title={h.label} onClick={() => { onUpdateCond({ hatch: h.id }); setHatchOpen(false); }} style={{ padding: 1, borderRadius: 0, border: hOn ? `2px solid ${activeColor}` : "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", lineHeight: 0 }}><HatchSwatch type={h.id} line={c.color} fill={c.fill} /></button>;
-              })}
+      <div className="cond-edit-look">
+        <div className="cond-edit-palettes">
+          <div className="cond-edit-palette">
+            <span className="cond-edit-k">Line</span>
+            <div className="cond-edit-swatches">
+              {PALETTE.map((p) => (
+                <button key={p} type="button" title={p} aria-label={p} aria-pressed={c.color === p}
+                  className={`cond-edit-swatch${c.color === p ? " is-on" : ""}`}
+                  style={{ background: p }}
+                  onClick={() => onUpdateCond({ color: p })} />
+              ))}
             </div>
+          </div>
+          <div className="cond-edit-palette">
+            <span className="cond-edit-k">Fill</span>
+            <div className="cond-edit-swatches">
+              <button type="button" title="No fill" aria-label="No fill" aria-pressed={c.fill === NO_FILL}
+                className={`cond-edit-swatch is-none${c.fill === NO_FILL ? " is-on" : ""}`}
+                onClick={() => onUpdateCond({ fill: NO_FILL })}>
+                <NoFillMark />
+              </button>
+              {PALETTE.map((p) => (
+                <button key={p} type="button" title={p} aria-label={`Fill ${p}`} aria-pressed={c.fill === p}
+                  className={`cond-edit-swatch is-fill${c.fill === p ? " is-on" : ""}`}
+                  style={{ background: p }}
+                  onClick={() => onUpdateCond({ fill: p })} />
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="cond-edit-stroke">
+          <button
+            ref={hatchBtnRef}
+            type="button"
+            className={`cond-edit-hatch${hatchOpen ? " is-on" : ""}`}
+            title={`Hatch pattern — ${hatchLabel}`}
+            aria-label="Hatch pattern"
+            aria-expanded={hatchOpen}
+            onClick={() => setHatchOpen((v) => !v)}
+          >
+            <span className="cond-edit-hatch-swatch"><HatchSwatch type={hatchId} line={c.color} fill={c.fill} /></span>
+            <span className="cond-edit-hatch-label">{hatchLabel}</span>
+            <span className="cond-paper-select-caret" aria-hidden><Icon name="chevronDown" size={10} /></span>
+          </button>
+          {hatchOpen && hatchMenuStyle && createPortal(
+            <div ref={hatchMenuRef} className="cond-edit-hatch-menu" style={hatchMenuStyle} role="listbox" aria-label="Hatch pattern">
+              {HATCHES.map((h) => {
+                const hOn = hatchId === h.id;
+                return (
+                  <button key={h.id} type="button" title={h.label} aria-label={h.label} aria-pressed={hOn}
+                    className={`cond-edit-hatch-opt${hOn ? " is-on" : ""}`}
+                    onClick={() => { onUpdateCond({ hatch: h.id }); setHatchOpen(false); }}>
+                    <HatchSwatch type={h.id} line={c.color} fill={c.fill} />
+                  </button>
+                );
+              })}
+            </div>,
+            document.body,
           )}
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Line style — the outline dash for this finish's floor-area and linear takeoffs (canvas + Marked Set PDF). Surface walls and deducts keep their own dashing.">
-          <span style={{ color: "var(--ink)", fontWeight: 600 }}>Style</span>
-          <select name="condition-line-style" value={c.line_style || "solid"} onChange={(e) => onUpdateCond({ line_style: e.target.value })}
-            style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
-            {LINE_STYLE_IDS.map((id) => <option key={id} value={id}>{LINE_STYLES[id].label}</option>)}
-          </select>
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Line thickness — stroke weight multiplier for this condition's takeoffs on the canvas (× base). Applies live to the selection and new draws.">
-          <span style={{ color: "var(--ink)", fontWeight: 600 }}>Weight</span>
-          <select name="condition-line-weight" value={String(snapWeight(c.weight))} onChange={(e) => onUpdateCond({ weight: Number(e.target.value) })}
-            style={{ fontSize: 11, border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", padding: "1px 3px" }}>
-            {WEIGHT_STEPS.map((wv) => <option key={wv} value={wv}>{wv}×</option>)}
-          </select>
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Height (ft) — the default for NEW wall traces (SF = LF × H) and the vertical-SF display on floor areas. Walls keep the height they were drawn at — select a wall to change just that one.">
-          <Icon name="height" size={13} /><span style={{ color: "var(--ink)", fontWeight: 600 }}>H</span>
-          <input name="condition-height-ft" type="number" min="0" step="0.25" value={c.height_ft ?? ""} placeholder="ft"
-            onChange={(e) => onSetCondParam("height_ft", e.target.value)}
-            style={{ width: 54, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-        </span>
-        <span style={{ display: "flex", alignItems: "center", gap: 4 }} title="Thickness (in) — a Linear run with thickness also computes border/feature-strip SF = LF × T/12. Changing it re-flows existing linear runs.">
-          <Icon name="thickness" size={13} /><span style={{ color: "var(--ink)", fontWeight: 600 }}>T</span>
-          <input name="condition-thickness-in" type="number" min="0" step="0.25" value={c.thickness_in ?? ""} placeholder="in"
-            onChange={(e) => onSetCondParam("thickness_in", e.target.value)}
-            style={{ width: 50, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
-        </span>
+          <div className="cond-edit-stroke-row">
+            <PaperSelect
+              name="condition-line-style"
+              ariaLabel="Line style"
+              value={c.line_style || "solid"}
+              options={LINE_STYLE_IDS.map((id) => ({ value: id, label: LINE_STYLES[id].label, dash: LINE_STYLES[id].dash }))}
+              onChange={(v) => onUpdateCond({ line_style: v })}
+              renderOption={(o, compact) => compact ? lineStyleMark(o.dash) : <>{lineStyleMark(o.dash)}{o.label}</>}
+            />
+            <PaperSelect
+              name="condition-line-weight"
+              ariaLabel="Line weight"
+              value={String(snapWeight(c.weight))}
+              options={WEIGHT_STEPS.map((wv) => ({ value: String(wv), label: `${wv}×`, weight: wv }))}
+              onChange={(v) => onUpdateCond({ weight: Number(v) })}
+              renderOption={(o, compact) => compact ? o.label : <>{lineStyleMark(null, Math.max(1, o.weight))}{o.label}</>}
+            />
+          </div>
+        </div>
       </div>
       {conditionColumns.length > 0 && isRow && rule()}
       {conditionColumns.length > 0 && (
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 2 }} title="Classify this condition — the Report can group and export by these (manage columns in the Columns tab)">
+        <div className="cond-edit-cols" title="Classify this condition — the Report can group and export by these (manage columns in the Columns tab)">
           <ColumnSelects columns={conditionColumns} cond={c} onAssign={onAssignAttr} />
         </div>
       )}
-      {/* Imported product spec (mfr/style/color/size/description) — editable here,
-          read-only columns in the Report. Docked ("stack") layout only: five text
-          fields would crowd the wide top-bar band. Shown only when a spec exists
-          (schedule-imported conditions); hand-drawn conditions have none. Patch
-          spreads c.spec so one edit can't clobber the other fields, and writes to
-          spec.color — NOT the condition's line `color`. Guard that spec is a plain
-          object first: a corrupted payload (spec an array/string) would otherwise
-          render and let an edit spread it into a garbage shape ({0:"f",1:"o",…}). */}
       {!isRow && c.spec && typeof c.spec === "object" && !Array.isArray(c.spec) && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4, paddingTop: 6, marginTop: 1, borderTop: "1px solid var(--ink-faint)" }}>
-          <span style={{ color: "var(--ink-soft)", fontSize: 10, letterSpacing: 0.4, textTransform: "uppercase", fontWeight: 600 }}
+        <div className="cond-edit-spec">
+          <span className="cond-edit-spec-k"
             title="Product spec imported from the finish schedule — editable; shown as read-only columns in the Report / CSV / XLSX">Spec</span>
           {SPEC_FIELDS.map(({ field, header }) => (
-            <label key={field} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: "var(--ink)", fontWeight: 600, width: 74, flexShrink: 0 }}>{header}</span>
+            <label key={field}>
+              <span>{header}</span>
               <input name={`condition-spec-${field}`} value={c.spec[field] || ""}
-                onChange={(e) => onUpdateCond({ spec: { ...c.spec, [field]: e.target.value } })}
-                style={{ flex: 1, minWidth: 0, padding: "3px 5px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12, color: "var(--ink)" }} />
+                onChange={(e) => onUpdateCond({ spec: { ...c.spec, [field]: e.target.value } })} />
             </label>
           ))}
         </div>
@@ -578,7 +810,7 @@ function TakeoffsPanel({
     const hIdx = palette.length ? pinIdx : conditions.findIndex((x) => x.id === c.id);
     const hot = hIdx >= 0 && hIdx < 9;
     return (
-      <div key={c.id} data-cond-id={c.id} className={`takeoffs-panel-glass-row${on ? " is-active" : ""}${checked ? " is-checked" : ""}`} style={{ borderTop: "1px solid var(--ink-faint)", borderLeft: on ? `3px solid ${c.color}` : checked ? "3px solid var(--cobalt)" : "3px solid transparent" }}>
+      <div key={c.id} data-cond-id={c.id} className={`takeoffs-panel-glass-row${on ? " is-active" : ""}${checked ? " is-checked" : ""}`} style={{ borderTop: "1px solid var(--ink-faint)" }}>
         <div draggable
           onDragStart={(e) => { e.dataTransfer.setData(CONDITION_DND_MIME, c.id); e.dataTransfer.effectAllowed = "copy"; }}
           onClick={(e) => {
@@ -593,25 +825,34 @@ function TakeoffsPanel({
           <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontWeight: on ? 700 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.finish_tag}{mult > 1 ? <span style={{ color: "var(--ink-soft)", fontWeight: 600 }}> ×{mult}</span> : null}</div>
-            <div style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 11, color: "var(--ink-soft)", fontWeight: 600 }}>
-              {sf ? fa(sf) : ""}{wsf ? `${sf ? " · " : ""}${fa(wsf)} wall` : ""}{lf ? `${sf || wsf ? " · " : ""}${fl(lf)}` : ""}{ea ? `${sf || wsf || lf ? " · " : ""}${num(ea, 0)} EA` : ""}{!sf && !wsf && !lf && !ea ? "—" : ""}
-            </div>
+            {(sf || wsf || lf || ea) ? (
+              <div style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 11, color: "var(--ink-soft)", fontWeight: 600 }}>
+                {sf ? fa(sf) : ""}{wsf ? `${sf ? " · " : ""}${fa(wsf)} wall` : ""}{lf ? `${sf || wsf ? " · " : ""}${fl(lf)}` : ""}{ea ? `${sf || wsf || lf ? " · " : ""}${num(ea, 0)} EA` : ""}
+              </div>
+            ) : null}
           </div>
-          <span style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 10.5, color: "var(--ink-soft)", fontWeight: 600, flexShrink: 0 }}>{shapeCount}▦</span>
-          <button type="button" className="takeoffs-panel-glass-icon-btn" onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Zoom the canvas to this condition's takeoffs"
-            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 999, cursor: "pointer", fontSize: 12, lineHeight: 1 }}>⌖</button>
-          <button type="button" className={`takeoffs-panel-glass-icon-btn${matOn ? " is-on" : ""}`} onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
-            title="Supporting Materials — labor, subfloor & materials for this condition"
-            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 6px", borderRadius: 999, cursor: "pointer", fontSize: 11 }}>
-            <Icon name="product" size={11} />{c.materials?.length ? c.materials.length : ""}
-          </button>
-          <button type="button" className={`takeoffs-panel-glass-icon-btn${pinned ? " is-pinned" : ""}`} onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }}
-            title={pinned ? "Unpin from the top-bar palette" : (palette.length >= 9 ? "Palette is full (9)" : "Pin to the top-bar palette for one-click access")}
-            style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", padding: "2px 5px", borderRadius: 999, cursor: "pointer", lineHeight: 0 }}>
-            <Icon name="pin" size={12} />
-          </button>
-          <button type="button" className="takeoffs-panel-glass-icon-btn is-danger" onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Delete this condition (and its takeoffs)"
-            style={{ flexShrink: 0, padding: "2px 6px", borderRadius: 999, cursor: "pointer", fontSize: 12 }}>✕</button>
+          <div className="tp-row-actions">
+            <span className="tp-row-metric" title={`${shapeCount} takeoff${shapeCount === 1 ? "" : "s"}`}>
+              <Icon name="takeoff" size={14} />
+              <span>{shapeCount}</span>
+            </span>
+            <button type="button" className="tp-row-icon" onClick={(e) => { e.stopPropagation(); onLocate(c.id); }} title="Zoom the canvas to this condition's takeoffs" aria-label="Zoom to takeoffs">
+              <Icon name="target" size={14} />
+            </button>
+            <button type="button" className={`tp-row-icon${matOn ? " is-on" : ""}`} onClick={(e) => { e.stopPropagation(); onSetActive(c.id); setPanelMatOpen((v) => (on ? !v : true)); }}
+              title="Supporting Materials — labor, subfloor & materials for this condition" aria-label="Supporting materials" aria-pressed={!!matOn}>
+              <Icon name="product" size={14} />
+              {c.materials?.length ? <span className="tp-row-icon-n">{c.materials.length}</span> : null}
+            </button>
+            <button type="button" className={`tp-row-icon${pinned ? " is-on" : ""}`} onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }}
+              title={pinned ? "Unpin from the top-bar palette" : (palette.length >= 9 ? "Palette is full (9)" : "Pin to the top-bar palette for one-click access")}
+              aria-label={pinned ? "Unpin from palette" : "Pin to palette"} aria-pressed={!!pinned}>
+              <Icon name="pin" size={14} />
+            </button>
+            <button type="button" className="tp-row-icon is-danger" onClick={(e) => { e.stopPropagation(); onDeleteCondition(c.id); }} title="Delete this condition (and its takeoffs)" aria-label="Delete condition">
+              <Icon name="trash" size={14} />
+            </button>
+          </div>
         </div>
         {/* properties for the ACTIVE condition — the appearance editing that
             used to live in its own toolbar row above the canvas. Extracted to
@@ -619,20 +860,17 @@ function TakeoffsPanel({
             render the same editor from one source of truth. */}
         {on && <ConditionAppearanceEditor cond={c} onUpdateCond={onUpdateCond} onSetCondParam={onSetCondParam} onAssignAttr={onAssignAttr} conditionColumns={conditionColumns} />}
         {matOn && (
-          <div className="takeoffs-panel-glass-materials" style={{ padding: "8px 12px 10px", borderTop: "1px solid var(--ink-faint)", fontSize: 11.5 }}>
-            <div style={{ marginBottom: 6, color: "var(--ink-muted)" }}>Supporting Materials — order qty = measured ÷ coverage, rounded up.</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ color: "var(--ink)", fontWeight: 600, width: 56, flexShrink: 0 }}>Labor</span>
-                <input name="condition-labor-type" value={c.laborType || ""} placeholder="e.g. Glue-down, Float, Nail-down"
-                  onChange={(e) => onUpdateCond({ laborType: e.target.value })}
-                  style={{ ...ip, flex: 1, minWidth: 0 }} />
+          <div className="takeoffs-panel-glass-materials">
+            <div className="tp-mat-id">
+              <label className="tp-mat-unit">
+                <span className="tp-mat-k">Labor</span>
+                <input name="condition-labor-type" value={c.laborType || ""} placeholder="Glue-down, float…"
+                  onChange={(e) => onUpdateCond({ laborType: e.target.value })} />
               </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ color: "var(--ink)", fontWeight: 600, width: 56, flexShrink: 0 }}>Subfloor</span>
-                <input name="condition-subfloor-type" value={c.subfloorType || ""} placeholder="e.g. Ply, Concrete slab, OSB"
-                  onChange={(e) => onUpdateCond({ subfloorType: e.target.value })}
-                  style={{ ...ip, flex: 1, minWidth: 0 }} />
+              <label className="tp-mat-unit">
+                <span className="tp-mat-k">Subfloor</span>
+                <input name="condition-subfloor-type" value={c.subfloorType || ""} placeholder="Ply, slab, OSB…"
+                  onChange={(e) => onUpdateCond({ subfloorType: e.target.value })} />
               </label>
             </div>
             <MaterialsEditor materials={c.materials} onAdd={onAddMaterial} onUpdate={onUpdateMaterial} onRemove={onRemoveMaterial}
@@ -660,10 +898,10 @@ function TakeoffsPanel({
         className="takeoffs-panel-glass-resize"
         style={{ width: 8, flexShrink: 0, cursor: "col-resize", touchAction: "none" }} />
       <div className="takeoffs-panel-glass-inner" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "row" }}>
-        <nav aria-label="Takeoffs panel sections" className="takeoffs-panel-glass-tabs" style={{ width: 84, flexShrink: 0, display: "flex", flexDirection: "column" }}>
+        <nav aria-label="Takeoffs panel sections" className="takeoffs-panel-glass-tabs" style={{ width: 104, flexShrink: 0, display: "flex", flexDirection: "column" }}>
           {panelTabs.map((t) => (
-            <button key={t.id} type="button" className={`takeoffs-panel-glass-tab${panelTab === t.id ? " is-active" : ""}`} onClick={() => setPanelTab(t.id)} data-tip={t.title} data-tip-at="right" aria-label={t.title}
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4, width: "100%", padding: "10px 8px", border: "none", cursor: "pointer", fontWeight: panelTab === t.id ? 700 : 600, fontSize: 10.5, fontFamily: "var(--f-mono)", letterSpacing: "0.02em", textAlign: "left", lineHeight: 1.2 }}>
+            <button key={t.id} type="button" className={`takeoffs-panel-glass-tab${panelTab === t.id ? " is-active" : ""}`} onClick={() => setPanelTab(t.id)} aria-label={t.title}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, width: "100%", padding: "12px 14px 12px 16px", border: "none", cursor: "pointer", fontWeight: panelTab === t.id ? 700 : 600, fontSize: 11, fontFamily: "var(--f-mono)", letterSpacing: "0.02em", textAlign: "left", lineHeight: 1.25 }}>
               <span>{t.short}</span>
               {t.n ? <span className="takeoffs-panel-glass-tab-n">{t.n}</span> : null}
             </button>
@@ -674,10 +912,9 @@ function TakeoffsPanel({
           <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.06em", fontWeight: 700, lineHeight: 1.35 }}>{activeTabLabel}</span>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
             <button type="button" className={`takeoffs-panel-glass-strip${panelPrefs.strip ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
-              data-tip="Compact strip — conditions as a horizontal bar above the canvas"
               aria-label="Compact strip — also show the conditions as a horizontal strip above the canvas"
               style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 8px", lineHeight: 1.4, borderRadius: 999 }}>strip</button>
-            <button type="button" className="takeoffs-panel-glass-close" onClick={onToggleCollapse} data-tip="Close panel" data-tip-at="left" aria-label="Close panel"
+            <button type="button" className="takeoffs-panel-glass-close" onClick={onToggleCollapse} aria-label="Close panel"
               style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>×</button>
           </span>
         </div>
@@ -685,13 +922,12 @@ function TakeoffsPanel({
         <div className="takeoffs-panel-glass-actions" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)", flexShrink: 0 }}>
           <input name="condition-filter" className="takeoffs-panel-glass-filter" value={condQuery} onChange={(e) => setCondQuery(e.target.value)} placeholder="filter conditions…"
             style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 999, fontSize: 12 }} />
-          {condQuery && <button type="button" className="takeoffs-panel-glass-clear" onClick={() => setCondQuery("")} data-tip="Clear the filter" aria-label="Clear the filter" style={btnClearX}>×</button>}
+          {condQuery && <button type="button" className="takeoffs-panel-glass-clear" onClick={() => setCondQuery("")} aria-label="Clear the filter" style={btnClearX}>×</button>}
           <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.az ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, az: !p.az }))}
-            data-tip="Natural sort by tag (CT-2 before CT-10)"
             aria-label="Natural sort by tag (CT-2 before CT-10) — a view; hotkeys 1–9 keep their original numbering"
             style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
           <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.group ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
-            data-tip="Group by tag family (CPT, LVT, CT…)"
+            aria-label="Group by tag family (the text before the dash: CPT, LVT, CT…)"
             aria-label="Group by tag family (the text before the dash: CPT, LVT, CT…)"
             style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
         </div>
@@ -791,7 +1027,7 @@ function TakeoffsPanel({
                 style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
               {matLibQuery && <button onClick={() => setMatLibQuery("")} title="Clear the filter" style={btnClearX}>×</button>}
             </div>
-            {matLib.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>No library materials yet — add one below, or use “→ lib” on a condition's material line.</div>}
+            {matLib.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>No library materials yet — add one below, or save a condition material with the box icon.</div>}
             {matLib.filter((lm) => !matQ || (lm.name || "").toLowerCase().includes(matQ)).map((lm) => {
               const n = linkedCountById[lm.id] || 0;
               return (

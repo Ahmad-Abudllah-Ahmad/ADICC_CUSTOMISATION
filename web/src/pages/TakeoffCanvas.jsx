@@ -69,8 +69,29 @@ import RfiPanel from "../components/RfiPanel.jsx";
 import StampPanel from "../components/StampPanel.jsx";
 import ImportSchedulePanel from "../components/ImportSchedulePanel.jsx";
 import BoqPanel from "../components/BoqPanel.jsx";
-import LayersSidebar from "../components/LayersSidebar.jsx";
 import LayersIllustratorPanel from "../components/LayersIllustratorPanel.jsx";
+import {
+  addEmptyGroup,
+  activeLayerPickIds,
+  collectIdsForLayerToggle,
+  descendantShapeIds,
+  groupSelection,
+  isHiddenId,
+  isLockedId,
+  layerPersistSlice,
+  liftSelection,
+  moveNodes,
+  parentOf,
+  picksForPrimarySelect,
+  renameGroup,
+  sanitizeForest,
+  sanitizeLayerIdMap,
+  setGroupFlag,
+  sheetKeyFromNodeId,
+  sheetNodeId,
+  togglePickIds,
+  ungroupNodes,
+} from "../lib/layerTree.js";
 import DrawingsChatPanel from "../components/DrawingsChatPanel.jsx";
 import OpenSheetsPill from "../components/OpenSheetsPill.jsx";
 import RatesPanel from "../components/RatesPanel.jsx";
@@ -79,7 +100,7 @@ import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
 import AdiccLoadingLogo from "../components/AdiccLoadingLogo.jsx";
-import { Contrast, FileStack, Folder, FolderOpen, Map as MapIcon, Menu, Minus, Plus, Redo2, Scan, Search, Undo2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Contrast, FileStack, Folder, FolderOpen, Map as MapIcon, Menu, Minus, Plus, Redo2, Scan, Search, Undo2, X } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
@@ -115,6 +136,7 @@ import {
   DETAIL_ENGAGE, DETAIL_MARGIN, SYNC_MS, GESTURE_MS, DETAIL_STALL_MS, SNAP_CELL,
   MEASURE_TOOLS, CUT_TOOLS, MARKUP_TOOLS, MARKUP_IDS, HL_INKS, HL_SIZES,
 } from "../lib/canvasConstants.js";
+import { LETTER_TO_TOOL, SHIFT_LETTER_TO_TOOL, canFinishDraw } from "../lib/canvasTools.js";
 import { autoRenderScale, invertCanvasPixels, uid, clamp, isDangerMsg, instantiateTemplate, seedConditions } from "../lib/canvasUtil.js";
 // Shape provenance policy now lives in ONE place: lib/shapeCommands.js. Every
 // meaningful mutation of `shapes` (create / reshape / reassign / relabel /
@@ -199,6 +221,13 @@ const PANEL_PREFS_KEY = "opentakeoff_panel";
 // choice being honored). An explicit COLLAPSE made under the old default is
 // preserved; any later toggle re-persists normally.
 const PANEL_DEFAULTS = { w: 320, collapsed: true, strip: false, az: false, group: false };
+const DRAWINGS_ASK_HINTS = [
+  "What scale is sheet A1105?",
+  "What STC requirements are in the acoustic report?",
+  "Which electrical drawings cover fire alarm?",
+  "What door tags appear on the 1st floor plan?",
+];
+const LP_TAB_ORDER = ["files", "sheets", "markup", "stamp", "rfi"];
 // Top-bar quick-access condition palette: a curated handful (≤9) of pinned
 // conditions for one-click activation without leaving the canvas. Palette holds
 // condition ids (workspace-scoped), so it persists with the annotation payload,
@@ -272,7 +301,7 @@ function EstimateValueSpark({ series, currency }) {
       <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="estimate-spark-svg" onMouseMove={onMove} role="img" aria-label="Live takeoff value trend">
         <path d={lineD} fill="none" stroke={stroke} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
         {mapped.map((p) => (
-          <circle key={p.i} cx={p.x} cy={p.y} r={hover?.i === p.i ? 3.2 : 1.6} fill={stroke} stroke="#fff" strokeWidth="0.8" />
+          <circle key={p.i} cx={p.x} cy={p.y} r={hover?.i === p.i ? 3.2 : 1.6} fill={stroke} stroke="var(--hud-halo, #fff)" strokeWidth="0.8" />
         ))}
         {hover && (
           <line x1={hover.x} y1={padY} x2={hover.x} y2={H - padY} stroke="rgba(31,63,199,0.35)" strokeWidth="1" strokeDasharray="2 2" />
@@ -293,6 +322,33 @@ function EstimateValueSpark({ series, currency }) {
       )}
     </div>
   );
+}
+
+function useOpenMotion(open, durationMs = 280) {
+  const [shown, setShown] = useState(() => !!open);
+  const [entered, setEntered] = useState(() => !!open);
+  useEffect(() => {
+    const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (open) {
+      setShown(true);
+      if (reduce || shown) {
+        setEntered(true);
+        return undefined;
+      }
+      let raf2 = 0;
+      const raf1 = window.requestAnimationFrame(() => {
+        raf2 = window.requestAnimationFrame(() => setEntered(true));
+      });
+      return () => {
+        window.cancelAnimationFrame(raf1);
+        window.cancelAnimationFrame(raf2);
+      };
+    }
+    setEntered(false);
+    const id = window.setTimeout(() => setShown(false), reduce ? 0 : durationMs);
+    return () => window.clearTimeout(id);
+  }, [open, durationMs]);
+  return { shown, entered };
 }
 
 export default function TakeoffCanvas() {
@@ -366,56 +422,101 @@ export default function TakeoffCanvas() {
   const resetZone = () => { setZoneCheck(null); setZoneExpand(null); };
   const [markups, setMarkups] = useState([]);                // cloud/callout/text annotations (separate from measurement shapes)
   const [markupDraft, setMarkupDraft] = useState(null);      // in-progress markup first point (cloud/callout/highlight)
-  // Floating LEFT panel — one at a time: null | "files" | "sheets" | "markup" | "stamp" | "rfi" | "layers".
-  // One folder icon opens/closes it; tabs switch inside the strip. Hover-out must NOT dismiss.
+  // Floating LEFT panel — one at a time: null | "files" | "sheets" | "markup" | "stamp" | "rfi".
+  // Layers has its own rail icon. One folder icon opens/closes this desk; tabs switch inside.
   const [leftTab, setLeftTab] = useState(null);
-  const [layersFloating, setLayersFloating] = useState(false); // Layers tab double-click → draggable/resizable window
-  const [illLayersOpen, setIllLayersOpen] = useState(false); // Illustrator-style Layers panel (UI preview, dummy data)
+  const [lpTabsOverflow, setLpTabsOverflow] = useState({ start: false, end: false });
+  const [illLayersOpen, setIllLayersOpen] = useState(false); // Illustrator-style Layers panel (live shapes)
   const lastLeftTabRef = useRef("files");
   const toggleLeftDesk = useCallback(() => {
     setLeftTab((cur) => {
       if (cur) return null;
-      const next = lastLeftTabRef.current || "files";
-      if (next === "layers" && layersFloating) setLayersFloating(false);
+      const next = lastLeftTabRef.current === "layers" ? "files" : (lastLeftTabRef.current || "files");
       return next;
     });
-  }, [layersFloating]);
-  useEffect(() => { if (leftTab) lastLeftTabRef.current = leftTab; }, [leftTab]);
+  }, []);
+  useEffect(() => { if (leftTab && leftTab !== "layers") lastLeftTabRef.current = leftTab; }, [leftTab]);
+  useEffect(() => { if (leftTab === "layers") setLeftTab("files"); }, [leftTab]);
   useEffect(() => {
     const el = lpTabsScrollRef.current;
     if (!el || !leftTab) return;
-    const wrap = el.parentElement;
+    const wrap = el.closest(".left-panel-glass-tabs");
     const sync = () => {
-      if (!wrap) return;
       const start = el.scrollLeft > 2;
       const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
-      wrap.classList.toggle("has-overflow-start", start);
-      wrap.classList.toggle("has-overflow-end", end);
+      setLpTabsOverflow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
+      if (wrap) {
+        wrap.classList.toggle("has-overflow-start", start);
+        wrap.classList.toggle("has-overflow-end", end);
+      }
     };
     sync();
     const ro = new ResizeObserver(sync);
     ro.observe(el);
+    const mo = new MutationObserver(sync);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
     el.addEventListener("scroll", sync, { passive: true });
-    return () => { ro.disconnect(); el.removeEventListener("scroll", sync); };
+    const onWheel = (e) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.scrollLeft += (e.deltaX || e.deltaY);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    const on = el.querySelector(".lp-tab.is-on");
+    on?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    sync();
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      el.removeEventListener("scroll", sync);
+      el.removeEventListener("wheel", onWheel);
+    };
   }, [leftTab]);
+  const shiftLpTabs = (dir) => {
+    const el = lpTabsScrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(96, el.clientWidth * 0.55), behavior: "smooth" });
+  };
   const [sheetsSearch, setSheetsSearch] = useState("");
   const toggleSheetsTab = useCallback(() => {
     setLeftTab((cur) => (cur === "sheets" ? null : "sheets"));
   }, []);
+  const leftDesk = useOpenMotion(!!leftTab);
+  const leftTabHoldRef = useRef(leftTab);
+  if (leftTab) leftTabHoldRef.current = leftTab;
+  const deskTab = leftTab || (leftDesk.shown ? leftTabHoldRef.current : null);
+  const lpTabMotionRef = useRef({ tab: deskTab, animate: false, dir: 1 });
+  if (deskTab && deskTab !== lpTabMotionRef.current.tab) {
+    const from = LP_TAB_ORDER.indexOf(lpTabMotionRef.current.tab);
+    const to = LP_TAB_ORDER.indexOf(deskTab);
+    lpTabMotionRef.current = {
+      tab: deskTab,
+      animate: leftDesk.entered && leftDesk.shown,
+      dir: from >= 0 && to >= 0 && to < from ? -1 : 1,
+    };
+  }
+  const layersMotion = useOpenMotion(illLayersOpen);
   const openGallery = useCallback(() => {
     setLeftTab(null);
     setView("gallery");
   }, []);
-  // Layers panel — session-only (never persisted): hide, group, pick for merge.
+  // Layers panel — hide/lock maps + nested group forest (additive `layer_tree`).
   const [hiddenShapeIds, setHiddenShapeIds] = useState({});
+  const [lockedShapeIds, setLockedShapeIds] = useState({});
   const [layerPickIds, setLayerPickIds] = useState({});
-  const [layerGroups, setLayerGroups] = useState({});
-  const [shapeToLayerGroup, setShapeToLayerGroup] = useState({});
-  const [layersSheetOpen, setLayersSheetOpen] = useState({});
-  const leftCanvasWork = leftTab === "markup" || leftTab === "stamp";
+  const [layerForest, setLayerForest] = useState({});
+  const layerTargetSheetRef = useRef(null);
+  const leftCanvasWork = deskTab === "markup" || deskTab === "stamp";
   useEffect(() => { if (!openTabs.length) setLeftTab((cur) => (cur === "sheets" ? "files" : cur)); }, [openTabs.length]);
-  const [minimapOpen, setMinimapOpen] = useState(false);   // bottom-left overview thumbnail with a draggable viewport box
+  const [minimapOpen, setMinimapOpen] = useState(() => {
+    try { return localStorage.getItem("opentakeoff_minimap") !== "0"; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem("opentakeoff_minimap", minimapOpen ? "1" : "0"); } catch { /* private mode */ } }, [minimapOpen]);
   const minimapCanvasRef = useRef(null);
+  const minimapViewRef = useRef(null);
+  const minimapScaleRef = useRef(0);
+  const minimapDragRef = useRef(false);
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
   const [panelEditId, setPanelEditId] = useState(null);       // markup id whose text is being edited inline in the markup panel (off-screen fallback for the ✎ button)
@@ -467,6 +568,29 @@ export default function TakeoffCanvas() {
   const panelW = clampPanelW(Number(panelPrefs.w) || PANEL_DEFAULTS.w);
   const takeoffsOpen = !panelPrefs.collapsed;
   const toggleTakeoffs = () => setPanelPrefs((p) => ({ ...p, collapsed: !p.collapsed }));
+  const [takeoffsShown, setTakeoffsShown] = useState(takeoffsOpen);
+  const [takeoffsEntered, setTakeoffsEntered] = useState(takeoffsOpen);
+  useEffect(() => {
+    const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (takeoffsOpen) {
+      setTakeoffsShown(true);
+      if (reduce || takeoffsShown) {
+        setTakeoffsEntered(true);
+        return undefined;
+      }
+      let raf2 = 0;
+      const raf1 = window.requestAnimationFrame(() => {
+        raf2 = window.requestAnimationFrame(() => setTakeoffsEntered(true));
+      });
+      return () => {
+        window.cancelAnimationFrame(raf1);
+        window.cancelAnimationFrame(raf2);
+      };
+    }
+    setTakeoffsEntered(false);
+    const id = window.setTimeout(() => setTakeoffsShown(false), reduce ? 0 : 420);
+    return () => window.clearTimeout(id);
+  }, [takeoffsOpen]);
   // Panel resize lives INSIDE TakeoffsPanel (mid-drag width goes straight to
   // its DOM node; the pref commits ONCE on release via setPanelPrefs). Each
   // committed width change reflows the canvas container — coordinate math is
@@ -614,6 +738,16 @@ export default function TakeoffCanvas() {
       redoStackRef.current = st.redo;   // a new command discards the redone future
     }
     if (applied.type === "add" && applied.shapes?.length) {
+      const hideExtra = {};
+      const lockExtra = {};
+      for (const s of applied.shapes) {
+        if (!s?.id) continue;
+        const sheetFlag = s.sheet_id ? sheetNodeId(s.sheet_id) : null;
+        if (hiddenShapeIds[s.id] || (sheetFlag && hiddenShapeIds[sheetFlag])) hideExtra[s.id] = true;
+        if (lockedShapeIds[s.id] || (sheetFlag && lockedShapeIds[sheetFlag])) lockExtra[s.id] = true;
+      }
+      if (Object.keys(hideExtra).length) setHiddenShapeIds((h) => ({ ...h, ...hideExtra }));
+      if (Object.keys(lockExtra).length) setLockedShapeIds((h) => ({ ...h, ...lockExtra }));
       suggestFinishForNewShapes(applied.shapes, res.shapes);
       if (drawAppearanceRef.current) setDrawAppearance(null);
     }
@@ -731,7 +865,7 @@ export default function TakeoffCanvas() {
   // It also dismisses any pinned/hovering plan-symbol card (e.g. a curtain-wall
   // finish-code popup) and any pinned mask BOQ card so neither lingers or blocks
   // hover on other masks after the selection changes (or is cleared).
-  const selectShape = (id) => {
+  const selectShape = (id, picksOverride) => {
     setSelectedId(id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null); setWallSegmentFocus(null);
     setSymbolFocus(null); setSymbolHover(null);
     setShapeBoqFocus(null); shapeBoqPinPosRef.current = null;
@@ -742,10 +876,11 @@ export default function TakeoffCanvas() {
       setShapeBoqHover((h) => (h?.id === id ? h : null));
       shapeBoqHoverStickyRef.current = false;
     }
+    setLayerPickIds(picksForPrimarySelect(id, picksOverride !== undefined ? picksOverride : layerPickIds));
     setShapeCtxMenu(null);
     if (!id) setSelectedCutoutIds(new Set());
   };
-  const selectMarkup = (id) => { setSelectedMarkupId(id); setSelectedId(null); };
+  const selectMarkup = (id) => { setSelectedMarkupId(id); setSelectedId(null); setLayerPickIds({}); };
   const pendingFlyRef = useRef(null);   // fly-to target whose sheet is opening this tick (two-phase center once its bitmap loads)
 
   const [snapOn, setSnapOn] = useState(false);   // snap-to-vector (beta) — off until calibrated on real plans
@@ -836,7 +971,7 @@ export default function TakeoffCanvas() {
     };
   }, []);
   const [showDrawingsChat, setShowDrawingsChat] = useState(false);
-  const [drawingsChatPill, setDrawingsChatPill] = useState(false);   // bottom-center search pill
+  const [drawingsChatPill, setDrawingsChatPill] = useState(false);   // centered drawings search
   const [drawingsChatDraft, setDrawingsChatDraft] = useState("");
   const [drawingsChatSeed, setDrawingsChatSeed] = useState("");      // question handed to side panel
   const drawingsChatInputRef = useRef(null);
@@ -844,13 +979,44 @@ export default function TakeoffCanvas() {
     setDrawingsChatPill(false);
     setDrawingsChatDraft("");
   }, []);
-  // Escape always dismisses the centered ask box (even with text — an explicit
-  // intent, unlike a stray outside click which we guard against below).
+  const submitDrawingsAsk = useCallback((raw) => {
+    const q = (raw || "").trim();
+    if (!q) return;
+    setDrawingsChatSeed(q);
+    setDrawingsChatDraft("");
+    setDrawingsChatPill(false);
+    setShowDrawingsChat(true);
+  }, []);
+  const toggleDrawingsAsk = useCallback(() => {
+    if (showDrawingsChat) {
+      setShowDrawingsChat(false);
+      setDrawingsChatSeed("");
+      return;
+    }
+    setDrawingsChatPill((open) => !open);
+    setDrawingsChatDraft("");
+  }, [showDrawingsChat]);
+  // Dismiss on Escape, or on any click outside the composer — including the
+  // left-rail tools, sheets, hamburger, toolbar. The chat trigger is excluded
+  // so it can toggle. Draft is discarded (same as Escape): another icon is an
+  // explicit leave, not an accidental canvas tap.
   useEffect(() => {
     if (!drawingsChatPill) return undefined;
     const onKey = (e) => { if (e.key === "Escape") closeDrawingsChatPill(); };
+    const onPointerDown = (e) => {
+      if (e.button != null && e.button !== 0) return;
+      const t = e.target;
+      if (!(t instanceof Element)) return;
+      if (t.closest(".drawings-ask-wrap")) return;
+      if (t.closest(".drawings-chat-glass-trigger")) return;
+      closeDrawingsChatPill();
+    };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointerDown, true);
+    };
   }, [drawingsChatPill, closeDrawingsChatPill]);
   const [showRates, setShowRates] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
@@ -888,6 +1054,9 @@ export default function TakeoffCanvas() {
   const containerRef = useRef(null);
   const stageRef = useRef(null);
   const panelCanvasRefs = useRef(new Map()); // sheetKey → <canvas>
+  const panelPaintRef = useRef(new Map());   // sheetKey → { canvas, w, h, inverted } — keep painted tabs across group changes
+  const prevHiResJoinRef = useRef("");
+  const prevGroupSigRef = useRef("");
   const pageObjsRef = useRef(new Map());     // sheetKey → pdf.js page object (kept for on-demand detail-view re-render)
   const renderScalesRef = useRef(new Map()); // sheetKey → base raster pdf scale (detail view renders at a multiple of it)
   const detailCanvasRef = useRef(null);      // single high-res viewport detail canvas (positioned imperatively)
@@ -898,6 +1067,39 @@ export default function TakeoffCanvas() {
   const renderTasksRef = useRef(new Map());  // sheetKey → pdf.js RenderTask
   const pdfDocsRef = useRef(new Map());      // file name → pdf.js loading task (doc cache)
   const renderSeqRef = useRef(0);            // monotonic token — stale render chains bail out
+  // Offscreen copies of finished panel bitmaps so Split / Eye / Close / row
+  // focus can keep already-painted sheets on screen instead of wiping the group.
+  const stashPanelPaint = (key, canvas) => {
+    if (!key || !canvas?.width) return;
+    const copy = document.createElement("canvas");
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    try { copy.getContext("2d").drawImage(canvas, 0, 0); } catch { return; }
+    panelPaintRef.current.set(key, {
+      canvas: copy, w: canvas.width, h: canvas.height, inverted: !!darkModeRef.current,
+    });
+  };
+  const blitPanelPaint = (key, el) => {
+    const cached = panelPaintRef.current.get(key);
+    if (!el || !cached?.canvas) return false;
+    if (el.width === cached.w && el.height === cached.h && canvasInvertedRef.current.has(el)) return true;
+    el.width = cached.w;
+    el.height = cached.h;
+    try { el.getContext("2d").drawImage(cached.canvas, 0, 0); } catch { return false; }
+    canvasInvertedRef.current.set(el, cached.inverted);
+    return true;
+  };
+  const sheetPainted = (key) => {
+    if (panelPaintRef.current.get(key)?.w) return true;
+    const cv = panelCanvasRefs.current.get(key);
+    return !!(cv && cv.width && canvasInvertedRef.current.has(cv));
+  };
+  const dropSheetPaint = (key) => {
+    if (!key) return;
+    const cv = panelCanvasRefs.current.get(key);
+    if (cv) canvasInvertedRef.current.delete(cv);
+    panelPaintRef.current.delete(key);
+  };
   const scanBusyRef = useRef(false);         // a paid schedule OCR read is in flight — blocks re-fire from a rapid re-draw
   const panRef = useRef(null);
   const spaceRef = useRef(false);
@@ -1047,12 +1249,37 @@ export default function TakeoffCanvas() {
   const sheetKey = page > 1 ? `${active}#${page}` : active;
   // toggle a sheet in/out of the side-by-side group; first toggle from single
   // mode seeds the group with the sheet currently on screen
-  const toggleInGroup = (key) => setSheetGroup((g) => {
-    if (g.includes(key)) { const f = g.filter((k) => k !== key); return f.length >= 2 ? f : []; }
-    if (g.length >= MAX_GROUP) return g;
-    const base = g.length ? g : (key === sheetKey ? [] : [sheetKey]);
-    return base.includes(key) ? base : [...base, key];
-  });
+  const toggleInGroup = (key) => {
+    if (!key) return;
+    if (sheetGroup.includes(key)) {
+      const f = sheetGroup.filter((k) => k !== key);
+      if (f.length >= 2) { setSheetGroup(f); return; }
+      const land = f[0];
+      setSheetGroup([]);
+      if (land) {
+        const t = parseSheetKey(land);
+        if (t.file !== active) setActive(t.file);
+        setPage(t.page);
+        setFocusKey(land);
+      }
+      return;
+    }
+    if (sheetGroup.length >= MAX_GROUP) {
+      setCommitMsg(`Side-by-side holds up to ${MAX_GROUP} sheets — close one first.`);
+      return;
+    }
+    const base = sheetGroup.length ? sheetGroup : (key === sheetKey ? [] : (sheetKey ? [sheetKey] : []));
+    if (base.includes(key)) return;
+    const nextGroup = [...base, key];
+    // A pair needs two different sheets — splitting the only/active sheet with
+    // itself would leave an invalid one-sheet group and a confusing "pair" UI.
+    if (nextGroup.length < 2) {
+      setCommitMsg("Open another sheet to place it side-by-side.");
+      return;
+    }
+    setSheetGroup(nextGroup);
+    setFocusKey(key);
+  };
   // Ungroup lands you on the sheet you were last working (the focused panel),
   // not whatever sheet the pager held before you grouped — shapes/markups all
   // carry their own sheet_id, so nothing is lost either way.
@@ -1072,11 +1299,40 @@ export default function TakeoffCanvas() {
     setSheetGroup(lastGroup);
     setFocusKey(lastGroup.includes(sheetKey) ? sheetKey : lastGroup[0]);
   };
-  // single-view a sheet by key (tab click, gallery View, tab restore)
+  // Row click: if the sheet is already in the side-by-side group, focus that
+  // panel (no ungroup, no re-raster). Otherwise switch to that tab alone.
   function goToSheet(key) {
+    if (sheetGroup.includes(key)) {
+      setFocusKey(key);
+      const t = parseSheetKey(key);
+      if (t.file !== active) setActive(t.file);
+      setPage(t.page);
+      const keys = sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []);
+      let xOff = 0, pw = 0, ph = 0;
+      for (const k of keys) {
+        const dims = panelImgs[k] || { w: 0, h: 0 };
+        if (k === key) { pw = dims.w; ph = dims.h; break; }
+        if (dims.w) xOff += dims.w + PANEL_GAP;
+      }
+      const el = containerRef.current;
+      if (pw && el) {
+        const r = el.getBoundingClientRect();
+        const sc = tfRef.current.scale;
+        tfRef.current = {
+          scale: sc,
+          x: r.width / 2 - (xOff + pw / 2) * sc,
+          y: r.height / 2 - (ph / 2) * sc,
+        };
+        if (stageRef.current) {
+          stageRef.current.style.transform = `translate(${tfRef.current.x}px, ${tfRef.current.y}px) scale(${sc})`;
+        }
+      }
+      return;
+    }
     const t = parseSheetKey(key);
     if (t.file !== active) setActive(t.file);
     setPage(t.page);
+    setFocusKey(key);
     setSheetGroup([]);
   }
   // gallery open: every key becomes a tab; side-by-side also groups (2–4)
@@ -1129,17 +1385,39 @@ export default function TakeoffCanvas() {
     const i = openTabs.indexOf(key);
     const next = openTabs.filter((k) => k !== key);
     setOpenTabs(next);
-    if (sheetGroup.includes(key)) { const f = sheetGroup.filter((k) => k !== key); setSheetGroup(f.length >= 2 ? f : []); }
+    dropSheetPaint(key);
+    const remainGroup = sheetGroup.filter((k) => k !== key);
+    const wasGrouped = remainGroup.length !== sheetGroup.length;
+    if (wasGrouped) setSheetGroup(remainGroup.length >= 2 ? remainGroup : []);
     if (!next.length) {
       setActive("");
       setPage(1);
       setSheetGroup([]);
       setPanelImgs({});
+      panelPaintRef.current.clear();
       setStatus("ready");
       setView("canvas");
       return;
     }
-    if (!sheetGroup.length && key === sheetKey) { const nb = next[Math.min(Math.max(i, 0), next.length - 1)]; if (nb) goToSheet(nb); }
+    if (wasGrouped && remainGroup.length === 1) {
+      const land = remainGroup[0];
+      const t = parseSheetKey(land);
+      if (t.file !== active) setActive(t.file);
+      setPage(t.page);
+      setFocusKey(land);
+      return;
+    }
+    if (wasGrouped && remainGroup.length >= 2) {
+      if (key === sheetKey || key === focusKey) {
+        const land = remainGroup[0];
+        setFocusKey(land);
+        const t = parseSheetKey(land);
+        if (t.file !== active) setActive(t.file);
+        setPage(t.page);
+      }
+      return;
+    }
+    if (key === sheetKey) { const nb = next[Math.min(Math.max(i, 0), next.length - 1)]; if (nb) goToSheet(nb); }
   }
   const tabLabel = (k) => {
     const lvl = sheetLevels[k] ? `${sheetLevels[k]} · ` : "";   // assigned floor/level rides every tab label
@@ -1222,7 +1500,7 @@ export default function TakeoffCanvas() {
     [visibleShapes, aiDetectShapeRevealed],
   );
   const drawableShapes = useMemo(
-    () => visibleRevealedShapes.filter((s) => !hiddenShapeIds[s.id]),
+    () => visibleRevealedShapes.filter((s) => !isHiddenId(s.id, { hiddenShapeIds, sheetId: s.sheet_id })),
     [visibleRevealedShapes, hiddenShapeIds],
   );
   const layerPanelShapes = useMemo(
@@ -1234,33 +1512,17 @@ export default function TakeoffCanvas() {
     }),
     [shapes, groupKeys, aiDetectShapeRevealed, isAiDetectFloorPlan, aiDetectSheetRevealCount],
   );
+  const selectedLayerIds = useMemo(() => {
+    const picks = Object.keys(activeLayerPickIds(selectedId, layerPickIds));
+    if (picks.length) return picks;
+    return selectedId ? [selectedId] : [];
+  }, [layerPickIds, selectedId]);
   useEffect(() => {
     const ids = new Set(shapes.map((s) => s.id));
-    setHiddenShapeIds((h) => {
-      const next = {};
-      for (const [id, on] of Object.entries(h)) if (on && ids.has(id)) next[id] = true;
-      return Object.keys(next).length === Object.keys(h).length ? h : next;
-    });
     setLayerPickIds((p) => {
       const next = {};
       for (const [id, on] of Object.entries(p)) if (on && ids.has(id)) next[id] = true;
       return Object.keys(next).length === Object.keys(p).length ? p : next;
-    });
-    setShapeToLayerGroup((m) => {
-      const next = {};
-      for (const [id, gid] of Object.entries(m)) if (ids.has(id)) next[id] = gid;
-      return next;
-    });
-    setLayerGroups((g) => {
-      let changed = false;
-      const next = {};
-      for (const [gid, grp] of Object.entries(g)) {
-        const shapeIds = (grp.shapeIds || []).filter((id) => ids.has(id));
-        if (shapeIds.length) next[gid] = { ...grp, shapeIds };
-        else changed = true;
-        if (shapeIds.length !== (grp.shapeIds || []).length) changed = true;
-      }
-      return changed ? next : g;
     });
   }, [shapes]);
   const runAiDetection = useCallback(() => {
@@ -1325,65 +1587,28 @@ export default function TakeoffCanvas() {
     });
   };
 
-  // ── minimap overview: draw every panel bitmap scaled into a small canvas and
-  // outline the current viewport. Redraws whenever the view (tf) or sheet moves.
-  const MINIMAP_MAX_W = 220, MINIMAP_MAX_H = 168;
-  useEffect(() => {
-    if (!minimapOpen) return;
-    const cv = minimapCanvasRef.current;
+  // Minimap viewport box — DOM overlay, not painted into the thumbnail. Called
+  // from applyTf so a pan (main canvas or minimap drag) moves the box without
+  // a React render or a bitmap redraw.
+  const paintMinimapView = useCallback(() => {
+    const el = minimapViewRef.current;
     const cont = containerRef.current;
-    if (!cv || !cont || !stage.w || !stage.h) return;
-    const s = Math.min(MINIMAP_MAX_W / stage.w, MINIMAP_MAX_H / stage.h);
-    const dispW = Math.max(1, Math.round(stage.w * s));
-    const dispH = Math.max(1, Math.round(stage.h * s));
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    cv.style.width = `${dispW}px`;
-    cv.style.height = `${dispH}px`;
-    cv.width = Math.round(dispW * dpr);
-    cv.height = Math.round(dispH * dpr);
-    const ctx = cv.getContext("2d");
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, dispW, dispH);
-    ctx.fillStyle = darkMode ? "#0f151f" : "#ffffff";
-    ctx.fillRect(0, 0, dispW, dispH);
-    for (const p of panels) {
-      const src = panelCanvasRefs.current.get(p.key);
-      if (!src || !src.width || !src.height) continue;
-      try { ctx.drawImage(src, p.xOffset * s, 0, p.img.w * s, p.img.h * s); } catch { /* bitmap not ready */ }
-    }
-    const r = cont.getBoundingClientRect();
+    const s = minimapScaleRef.current;
+    if (!el || !cont || !(s > 0)) return;
     const t = tfRef.current;
-    const rx = Math.max(0, (-t.x / t.scale) * s);
-    const ry = Math.max(0, (-t.y / t.scale) * s);
-    const rw = Math.min(dispW, ((r.width - t.x) / t.scale) * s) - rx;
-    const rh = Math.min(dispH, ((r.height - t.y) / t.scale) * s) - ry;
-    if (rw > 0 && rh > 0) {
-      ctx.fillStyle = "rgba(31,63,199,0.12)";
-      ctx.fillRect(rx, ry, rw, rh);
-      ctx.strokeStyle = "#1f3fc7";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(rx + 0.75, ry + 0.75, Math.max(0, rw - 1.5), Math.max(0, rh - 1.5));
-    }
-  }, [minimapOpen, tf, stage.w, stage.h, panels, darkMode, status]);
-
-  const recenterFromMinimap = (e) => {
-    const cv = minimapCanvasRef.current, cont = containerRef.current;
-    if (!cv || !cont || !stage.w) return;
-    const rect = cv.getBoundingClientRect();
-    const s = cv.clientWidth / stage.w;
-    const stageX = (e.clientX - rect.left) / s;
-    const stageY = (e.clientY - rect.top) / s;
     const r = cont.getBoundingClientRect();
-    const t = tfRef.current;
-    setTfNow({ scale: t.scale, x: r.width / 2 - stageX * t.scale, y: r.height / 2 - stageY * t.scale });
-  };
+    const sc = t.scale || 1;
+    el.style.width = `${Math.max(2, (r.width / sc) * s)}px`;
+    el.style.height = `${Math.max(2, (r.height / sc) * s)}px`;
+    el.style.transform = `translate(${(-t.x / sc) * s}px, ${(-t.y / sc) * s}px)`;
+  }, []);
 
   // ── transform: tfRef is source of truth; write straight to the DOM ─────────
   const applyTf = useCallback(() => {
     const { x, y, scale } = tfRef.current;
     if (stageRef.current) stageRef.current.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
-  }, []);
+    paintMinimapView();
+  }, [paintMinimapView]);
   // Re-apply after every React render so an unrelated re-render mid-drag can't
   // snap the transform back to a stale value.
   useLayoutEffect(() => { applyTf(); });
@@ -1412,6 +1637,67 @@ export default function TakeoffCanvas() {
     }, wait);
   }, []);
   const setTfNow = useCallback((next) => { tfRef.current = next; applyTf(); setTf({ ...next }); }, [applyTf]);
+
+  // Minimap thumbnail: sheet bitmaps only. Viewport box is a DOM overlay updated
+  // from applyTf — do not list `tf` here or every pan redraws every panel.
+  const MINIMAP_MAX_W = 220, MINIMAP_MAX_H = 168;
+  useEffect(() => {
+    if (!minimapOpen) { minimapScaleRef.current = 0; return; }
+    const cv = minimapCanvasRef.current;
+    if (!cv || !stage.w || !stage.h) return;
+    const s = Math.min(MINIMAP_MAX_W / stage.w, MINIMAP_MAX_H / stage.h);
+    minimapScaleRef.current = s;
+    const dispW = Math.max(1, Math.round(stage.w * s));
+    const dispH = Math.max(1, Math.round(stage.h * s));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.style.width = `${dispW}px`;
+    cv.style.height = `${dispH}px`;
+    cv.width = Math.round(dispW * dpr);
+    cv.height = Math.round(dispH * dpr);
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, dispW, dispH);
+    ctx.fillStyle = darkMode ? "#0f151f" : "#ffffff";
+    ctx.fillRect(0, 0, dispW, dispH);
+    for (const p of panels) {
+      const src = panelCanvasRefs.current.get(p.key);
+      if (!src || !src.width || !src.height) continue;
+      try { ctx.drawImage(src, p.xOffset * s, 0, p.img.w * s, p.img.h * s); } catch { /* bitmap not ready */ }
+    }
+    paintMinimapView();
+  }, [minimapOpen, stage.w, stage.h, panels, darkMode, status, paintMinimapView]);
+
+  const centerViewOnMinimap = (e) => {
+    const cv = minimapCanvasRef.current, cont = containerRef.current;
+    const s = minimapScaleRef.current;
+    if (!cv || !cont || !(s > 0)) return;
+    const rect = cv.getBoundingClientRect();
+    const stageX = (e.clientX - rect.left) / s;
+    const stageY = (e.clientY - rect.top) / s;
+    const r = cont.getBoundingClientRect();
+    const t = tfRef.current;
+    tfRef.current = { scale: t.scale, x: r.width / 2 - stageX * t.scale, y: r.height / 2 - stageY * t.scale };
+    applyTf();
+  };
+  const onMinimapPointerDown = (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    minimapDragRef.current = true;
+    centerViewOnMinimap(e);
+  };
+  const onMinimapPointerMove = (e) => {
+    if (!minimapDragRef.current) return;
+    centerViewOnMinimap(e);
+  };
+  const onMinimapPointerUp = (e) => {
+    if (!minimapDragRef.current) return;
+    minimapDragRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    scheduleSync();
+  };
 
   // ── local PDFs (dropped into this browser) ─────────────────────────────────
   const refreshSheets = useCallback(async () => {
@@ -1676,6 +1962,13 @@ export default function TakeoffCanvas() {
     // Extracted to sanitizeSheetLevels (lib/sheetLevels.js) so this gate has
     // its own unit tests independent of the reducer.
     setSheetLevels(sanitizeSheetLevels(a.sheet_levels));
+    {
+      const live = new Set((a.shapes || []).map((s) => s.id).filter(Boolean));
+      setHiddenShapeIds(sanitizeLayerIdMap(a.layer_hidden, live));
+      setLockedShapeIds(sanitizeLayerIdMap(a.layer_locked, live));
+      setLayerForest(sanitizeForest(a.layer_tree, live));
+      setLayerPickIds({});
+    }
     // additive boq_lines — manual BOQ detail persisted with the takeoff
     setBoqLines(Array.isArray(a.boq_lines)
       ? a.boq_lines.filter((l) => l && typeof l === "object" && typeof l.id === "string")
@@ -1892,9 +2185,15 @@ export default function TakeoffCanvas() {
 
   // land on the first restored tab (the sheet-list effect defaults to sheets[0])
   useEffect(() => {
-    if (tabInitRef.current || !openTabs.length || !sheets.length || sheetGroup.length) return;
+    if (tabInitRef.current || !openTabs.length || !sheets.length) return;
     tabInitRef.current = true;
-    goToSheet(openTabs[0]);
+    const land = sheetGroup.length
+      ? (sheetGroup.includes(openTabs[0]) ? openTabs[0] : sheetGroup[0])
+      : openTabs[0];
+    const t = parseSheetKey(land);
+    if (t.file !== active) setActive(t.file);
+    setPage(t.page);
+    setFocusKey(land);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openTabs, sheets]);
 
@@ -1938,6 +2237,12 @@ export default function TakeoffCanvas() {
     };
     for (const [, cv] of panelCanvasRefs.current) flip(cv);
     flip(detailCanvasRef.current);
+    for (const [, cached] of panelPaintRef.current) {
+      if (cached.canvas && cached.inverted !== darkMode) {
+        invertCanvasPixels(cached.canvas);
+        cached.inverted = darkMode;
+      }
+    }
   }, [darkMode]);
 
   // ── render the sheet group (a single sheet is a group of one) ──────────────
@@ -1946,29 +2251,130 @@ export default function TakeoffCanvas() {
   // to right. A monotonic token is checked after EVERY await so a stale chain
   // can never paint, resize, or cancel a newer chain's work (the old code had
   // that race between document-load and render).
+  //
+  // Split / Eye / Close / in-group row focus must NOT blank the canvas: keys
+  // that already have a finished bitmap are kept (no setStatus("rendering"),
+  // no cache wipe). Only missing keys raster; the full overlay is for a group
+  // with nothing painted yet (first open or a true jump to an uncached sheet).
   useEffect(() => {
-    if (!active || !openTabs.length) return;
+    if (!openTabs.length) return;
+    // Tabs restored before `active` is set → groupKeys is empty and we used to
+    // return while status stayed "loading" forever. Land on the first tab.
+    if (!groupKeys.length) {
+      const land = openTabs[0];
+      if (land && !active) {
+        const t = parseSheetKey(land);
+        setActive(t.file);
+        setPage(t.page);
+      }
+      return;
+    }
+    const hiJoin = hiResKeys.join(" ");
+    const prevHi = prevHiResJoinRef.current;
+    prevHiResJoinRef.current = hiJoin;
+    const compositionChanged = prevGroupSigRef.current !== groupSig;
+    prevGroupSigRef.current = groupSig;
+    const prevHiSet = new Set(prevHi ? prevHi.split(" ") : []);
+    const nextHiSet = new Set(hiResKeys);
+    const hiDirty = new Set();
+    if (prevHi !== hiJoin) {
+      for (const k of groupKeys) {
+        if (prevHiSet.has(k) !== nextHiSet.has(k)) hiDirty.add(k);
+      }
+    }
+    for (const k of hiDirty) dropSheetPaint(k);
+
+    const keep = groupKeys.filter((k) => sheetPainted(k) && !hiDirty.has(k));
+    const missing = groupKeys.filter((k) => !keep.includes(k));
+
+    const dimFor = (key) => {
+      const c = panelPaintRef.current.get(key);
+      if (c?.w) return { w: c.w, h: c.h };
+      const cv = panelCanvasRefs.current.get(key);
+      if (cv?.width) return { w: cv.width, h: cv.height };
+      return null;
+    };
+    const rowExtent = (keys, extra = []) => {
+      const byKey = new Map(extra.map((m) => [m.key, m]));
+      let rw = 0, rh = 0;
+      for (const k of keys) {
+        const d = byKey.get(k) || dimFor(k);
+        if (!d) continue;
+        rw += (rw ? PANEL_GAP : 0) + d.w;
+        rh = Math.max(rh, d.h);
+      }
+      return { rw, rh };
+    };
+    const liftOverlay = () => {
+      if (statusRef.current === "loading" || statusRef.current === "rendering") setStatus("ready");
+    };
+    const applyKeepLayout = (fit) => {
+      const imgs = {};
+      for (const k of groupKeys) {
+        const d = dimFor(k);
+        if (d) imgs[k] = d;
+      }
+      setPanelImgs((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const k of groupKeys) {
+          if (!imgs[k]) continue;
+          if (prev[k]?.w !== imgs[k].w || prev[k]?.h !== imgs[k].h) { next[k] = imgs[k]; changed = true; }
+        }
+        return changed ? next : prev;
+      });
+      const { rw, rh } = rowExtent(groupKeys);
+      requestAnimationFrame(() => {
+        for (const k of keep) {
+          const el = panelCanvasRefs.current.get(k);
+          if (el) blitPanelPaint(k, el);
+        }
+        if (fit && rw && rh) fitToView(rw, rh);
+      });
+    };
+
+    if (missing.length === 0) {
+      applyKeepLayout(compositionChanged);
+      liftOverlay();
+      return;
+    }
+
+    const blank = keep.length === 0;
     const seq = ++renderSeqRef.current;
     const stale = () => seq !== renderSeqRef.current;
-    setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
-    for (const [, rt] of renderTasksRef.current) { try { rt.cancel(); } catch { /* done */ } }
-    renderTasksRef.current.clear();
-    snapGridsRef.current.clear();
-    vectorSegsRef.current.clear();
-    segMetaRef.current.clear();
-    maskCacheRef.current.clear();
-    wallMaskCacheRef.current.clear();
-    sheetStatsRef.current.clear();
-    rasterMaskCacheRef.current.clear();
-    canvasInvertedRef.current.clear();
-    pageObjsRef.current.clear();
-    renderScalesRef.current.clear();
-    try { detailTaskRef.current?.cancel(); } catch { /* done */ }
-    if (detailCanvasRef.current) detailCanvasRef.current.style.display = "none";
+    const dropRuntime = (key) => {
+      const rt = renderTasksRef.current.get(key);
+      if (rt) { try { rt.cancel(); } catch { /* done */ } renderTasksRef.current.delete(key); }
+      snapGridsRef.current.delete(key);
+      vectorSegsRef.current.delete(key);
+      segMetaRef.current.delete(key);
+      maskCacheRef.current.delete(key);
+      wallMaskCacheRef.current.delete(key);
+      sheetStatsRef.current.delete(key);
+      rasterMaskCacheRef.current.delete(key);
+      pageObjsRef.current.delete(key);
+      renderScalesRef.current.delete(key);
+    };
+
+    if (blank) {
+      setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
+      try { detailTaskRef.current?.cancel(); } catch { /* done */ }
+      if (detailCanvasRef.current) detailCanvasRef.current.style.display = "none";
+    } else {
+      // A keep bitmap is on screen — chrome stays up (plan). If we arrived from
+      // mount "loading", lift it now so the overlay cannot sit on a painted sheet.
+      liftOverlay();
+      const focusStill = groupKeys.includes(focusKey) || groupKeys.includes(sheetKey);
+      if (!focusStill) {
+        setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
+      }
+    }
+    for (const k of missing) dropRuntime(k);
+
     (async () => {
-      // phase A — dimensions for every panel
+      // phase A — dimensions for missing panels; keep keys reuse cached size
       const metas = [];
-      for (const key of groupKeys) {
+      for (const key of missing) {
         const { file, page: pn } = parseSheetKey(key);
         const pdf = await docFor(file); if (stale()) return;
         if (file === active) setPageCount(pdf.numPages || 1);
@@ -1984,15 +2390,21 @@ export default function TakeoffCanvas() {
         renderScalesRef.current.set(key, rs);      // base raster scale — detail view renders at a multiple of it
         metas.push({ key, file, pageNum, pageObj, viewport, w: Math.ceil(viewport.width), h: Math.ceil(viewport.height) });
       }
-      setPanelImgs(Object.fromEntries(metas.map((m) => [m.key, { w: m.w, h: m.h }])));
-      let rw = 0, rh = 0;
-      for (const m of metas) { rw += (rw ? PANEL_GAP : 0) + m.w; rh = Math.max(rh, m.h); }
-      fitToView(rw, rh);
-      // phase B — raster left to right (the canvases mount when panelImgs commits;
-      // give React a frame or two for the refs of newly added panels)
+      setPanelImgs((prev) => {
+        const next = { ...prev };
+        for (const k of keep) {
+          const d = dimFor(k);
+          if (d) next[k] = d;
+        }
+        for (const m of metas) next[m.key] = { w: m.w, h: m.h };
+        return next;
+      });
+      const { rw, rh } = rowExtent(groupKeys, metas);
+      if (rw && rh) fitToView(rw, rh);
+      // phase B — raster missing keys only (keep canvases stay painted)
       for (const m of metas) {
         let canvas = panelCanvasRefs.current.get(m.key);
-        for (let t = 0; !canvas && t < 10; t++) {
+        for (let t = 0; !canvas && t < 24; t++) {
           await new Promise((r) => requestAnimationFrame(r)); if (stale()) return;
           canvas = panelCanvasRefs.current.get(m.key);
         }
@@ -2005,8 +2417,18 @@ export default function TakeoffCanvas() {
         renderTasksRef.current.set(m.key, rt);
         await rt.promise; if (stale()) return;
         if (darkModeRef.current) invertCanvasPixels(canvas);   // negative view baked into pixels
-        canvasInvertedRef.current.set(canvas, !!darkModeRef.current);
         canvas.style.visibility = "";
+        // Strict Mode / panel remount can swap the <canvas> mid-render — copy
+        // onto whatever node is live, then stash that.
+        const live = panelCanvasRefs.current.get(m.key);
+        if (live && live !== canvas) {
+          live.width = canvas.width;
+          live.height = canvas.height;
+          try { live.getContext("2d").drawImage(canvas, 0, 0); } catch { /* ignore */ }
+          canvas = live;
+        }
+        canvasInvertedRef.current.set(canvas, !!darkModeRef.current);
+        stashPanelPaint(m.key, canvas);
         // snap-to-vector index per panel (best-effort; off until the user enables it)
         m.pageObj.getOperatorList().then((ol) => {
           if (stale()) return;
@@ -2085,13 +2507,22 @@ export default function TakeoffCanvas() {
           if (!stale() && Object.keys(found).length) setPageLabels((m) => ({ ...found, ...m }));
         })();
       }
-    })().catch((e) => { if (stale() || e?.name === "RenderingCancelledException") return; setErr(String(e.message || e)); setStatus("error"); });
+    })().catch((e) => {
+      if (stale() || e?.name === "RenderingCancelledException") return;
+      setErr(String(e.message || e));
+      if (blank) setStatus("error");
+    });
     // cleanup MUST read the LIVE refs, not a mount-time copy: bumping the current
-    // renderSeqRef invalidates in-flight renders, and cancelling the current
-    // renderTasksRef set is the whole point. Copying to a variable (the rule's
-    // suggestion) would cancel the stale mount-time set and leak the live one.
+    // renderSeqRef invalidates in-flight renders. Only cancel tasks for keys this
+    // chain was rastering — keep-key tasks (already finished) stay put.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    return () => { renderSeqRef.current++; for (const [, rt] of renderTasksRef.current) { try { rt.cancel(); } catch { /* done */ } } };
+    return () => {
+      renderSeqRef.current++;
+      for (const k of missing) {
+        const rt = renderTasksRef.current.get(k);
+        if (rt) { try { rt.cancel(); } catch { /* done */ } renderTasksRef.current.delete(k); }
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupSig, hiResKeys.join(" ")]);
 
@@ -2392,7 +2823,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}), ...layerPersistSlice({ layerForest, hiddenShapeIds, lockedShapeIds }) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -2451,7 +2882,7 @@ export default function TakeoffCanvas() {
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units, layerForest, hiddenShapeIds, lockedShapeIds]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -2687,8 +3118,7 @@ export default function TakeoffCanvas() {
         if (agentOfferFnsRef.current?.pending()) { e.preventDefault(); agentOfferFnsRef.current.confirm(); return; }
         if (tool === "oneclick" && proposal?.regions.length) { e.preventDefault(); createProposal(); return; }
         if (tool === "walltrace" && wallProposal?.regions.length) { e.preventDefault(); createWallProposal(); return; }
-        const ok = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
-        if (ok) { e.preventDefault(); finishShape(); return; }
+        if (canFinishDraw(tool, poly.length, { zoneCross: zoneTraceCross })) { e.preventDefault(); finishShape(); return; }
         // ⏎ with agent proposals pending on a visible sheet = accept them all —
         // the agent's analogue of one-click's Create gate. Only fires when no
         // trace/proposal claimed the key above, so mid-draw ⏎ is untouched.
@@ -2698,10 +3128,8 @@ export default function TakeoffCanvas() {
       const lower = e.key.toLowerCase();
       if (viewRef.current === "gallery") return;
       if (lower === "g") { setLeftTab(null); setView("gallery"); return; }
-      if (e.key === "D" && e.shiftKey) { setTool("deduct-rect"); return; }
-      if (e.key === "Q" && e.shiftKey) { setTool("deduct-curve"); return; }
-      const map = { p: "pan", v: "select", a: "area", r: "rect", l: "linear", q: "curve", s: "surface", c: "count", d: "deduct", o: "oneclick", w: "walltrace", u: "wallarea", k: "check", h: "highlighter" };
-      const t = map[lower];
+      if (e.shiftKey && SHIFT_LETTER_TO_TOOL[e.key]) { setTool(SHIFT_LETTER_TO_TOOL[e.key]); return; }
+      const t = LETTER_TO_TOOL[lower];
       if (t) setTool(t);
     };
     window.addEventListener("keydown", onKey);
@@ -2774,10 +3202,12 @@ export default function TakeoffCanvas() {
       else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") { if (selectedId) { e.preventDefault(); copySelected(); } }
       else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") { if (clipRef.current.length) { e.preventDefault(); pasteClipboard(); } }
       else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") { if (selectedId) { e.preventDefault(); duplicateSelected(); } }
+      else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "g") { e.preventDefault(); groupLayerSelection(); }
+      else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "u") { e.preventDefault(); ungroupLayerSelection(); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tool, selectedId, selVert, selectedMarkupId, showMarkups, poly, proposal, ocSel, shapes, sheetKey, groupSig, scales, focusKey, overlapPrompt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tool, selectedId, selVert, selectedMarkupId, showMarkups, poly, proposal, ocSel, shapes, sheetKey, groupSig, scales, focusKey, overlapPrompt, layerPickIds, layerForest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The typed "drawing says" value belongs to ONE completed two-point check.
   // The moment the measurement is no longer complete — third-click restart,
@@ -2814,10 +3244,7 @@ export default function TakeoffCanvas() {
   }, [tool]);
 
   function canFinishCurrentDraw() {
-    if (tool === "zone" && zoneTraceCross) return false;
-    return ((tool === "area" || tool === "deduct") && poly.length >= 3)
-      || (tool === "zone" && poly.length >= 3)
-      || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
+    return canFinishDraw(tool, poly.length, { zoneCross: zoneTraceCross });
   }
   /** Right-click while drawing: finish & save when valid, else cancel preview — tool stays armed. */
   function stopDrawOnRightClick() {
@@ -3054,7 +3481,7 @@ export default function TakeoffCanvas() {
     //    model as One-Click proposals: click a corner to select it (Delete removes
     //    just it), drag a corner to move it, drag an edge grip to move the whole
     //    line (both endpoints), Shift-click an edge to insert a new anchor point.
-    if (sel && selSp && sel.measure_role !== "count") {
+    if (sel && selSp && sel.measure_role !== "count" && !shapeIsLocked(selectedId)) {
       const closed = sel.measure_role !== "linear" && sel.measure_role !== "surface_area";
       // trim-hole grips first — interior removal rings are editable polygons too
       if (closed && sel.holes_norm?.length) {
@@ -3155,12 +3582,14 @@ export default function TakeoffCanvas() {
       }
     }
     // 3. move the selected shape (or any grouped member) if its body was hit
-    if (sel && selSp) {
-      const memberIds = layerGroupIdsFor(selectedId);
+    if (sel && selSp && !(e.shiftKey || e.ctrlKey || e.metaKey)) {
+      const memberIds = moveIdsFor(selectedId);
+      const lockedMove = memberIds.some((id) => shapeIsLocked(id));
       for (const mid of memberIds) {
         const msh = mid === selectedId ? sel : shapes.find((s) => s.id === mid);
         const msp = msh && panelKeySet.has(msh.sheet_id) ? panelByKey(msh.sheet_id) : null;
         if (msh && msp && hitShapeC(msh, p[0] - msp.xOffset, p[1], msp.img.w, msp.img.h, thr)) {
+          if (lockedMove) return;
           if (memberIds.length > 1) armGroupMoveDrag(msh, p, e, memberIds);
           else dragRef.current = { kind: "move", shapeId: selectedId, start: p, orig: sel.verts_norm, prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY };
           e.currentTarget.setPointerCapture(e.pointerId); return;
@@ -3173,7 +3602,7 @@ export default function TakeoffCanvas() {
       const ad = a.measure_role === "deduct" ? 1 : 0, bd = b.measure_role === "deduct" ? 1 : 0;
       return ad - bd;
     }).reverse().find((s) => {
-      if (!aiDetectShapeRevealed(s) || hiddenShapeIds[s.id]) return false;
+      if (!aiDetectShapeRevealed(s) || isHiddenId(s.id, { hiddenShapeIds, sheetId: s.sheet_id })) return false;
       const sp = panelByKey(s.sheet_id);
       return hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
     });
@@ -3184,21 +3613,22 @@ export default function TakeoffCanvas() {
         return next;
       });
       setSelectedId(hit.id); setSelectedMarkupId(null); setSelHole(null); setSelVert(null);
+      setLayerPickIds(picksForPrimarySelect(hit.id, layerPickIds));
       setShapeCtxMenu(null);
       revealSheetInFilesSidebar(hit.sheet_id);
       return;
     }
     // Wall area lines — join at endpoints: drag an endpoint onto another run, or click
     // another run while an endpoint is selected; nearby endpoints auto-join on click.
-    if (hit?.measure_role === "surface_area" && selectedId && selectedId !== hit.id) {
+    if (hit?.measure_role === "surface_area" && selectedId && selectedId !== hit.id
+      && !shapeIsLocked(selectedId) && !shapeIsLocked(hit.id)) {
       const cur = shapesRef.current.find((s) => s.id === selectedId);
       if (cur?.measure_role === "surface_area"
         && cur.sheet_id === hit.sheet_id
         && cur.condition_id === hit.condition_id) {
         const last = cur.verts_norm.length - 1;
         const endpointSelected = selVert === 0 || selVert === last;
-        const shouldJoin = endpointSelected
-          || e.shiftKey || e.metaKey || e.ctrlKey || surfaceEndpointJoin(selectedId, hit.id);
+        const shouldJoin = endpointSelected || surfaceEndpointJoin(selectedId, hit.id);
         if (shouldJoin) {
           dragRef.current = null;
           setSelVert(null);
@@ -3208,6 +3638,24 @@ export default function TakeoffCanvas() {
           return;
         }
       }
+    }
+    if (hit && tool === "select" && (e.shiftKey || e.ctrlKey || e.metaKey)
+        && hit.measure_role !== "deduct") {
+      const live = shapesRef.current;
+      const cur = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+      if (selectedId && live.some((s) => s.id === selectedId) && !cur.includes(selectedId)) cur.push(selectedId);
+      const next = (e.ctrlKey || e.metaKey) && !e.shiftKey
+        ? togglePickIds(cur, [hit.id])
+        : [...new Set([...cur, hit.id])];
+      const picks = Object.fromEntries(next.map((id) => [id, true]));
+      setSelectedCutoutIds(new Set());
+      if (next.length) {
+        selectShape(next.includes(hit.id) ? hit.id : next[0], picks);
+        revealSheetInFilesSidebar(hit.sheet_id);
+      } else {
+        selectShape(null);
+      }
+      return;
     }
     if (hit?.measure_role === "deduct") setSelectedCutoutIds(new Set([hit.id]));
     else setSelectedCutoutIds(new Set());
@@ -3224,7 +3672,8 @@ export default function TakeoffCanvas() {
           cy: Math.min(e.clientY - r.top + 16, r.height - 220),
         });
       }
-      const memberIds = layerGroupIdsFor(hit.id);
+      const memberIds = moveIdsFor(hit.id);
+      if (shapeIsLocked(hit.id) || memberIds.some((id) => shapeIsLocked(id))) return;
       if (memberIds.length > 1) armGroupMoveDrag(hit, p, e, memberIds);
       else dragRef.current = { kind: "move", shapeId: hit.id, start: p, orig: hit.verts_norm, prev: geomSnapshot(hit), shape: hit, gx: e.clientX, gy: e.clientY };
       e.currentTarget.setPointerCapture(e.pointerId); return;
@@ -3268,7 +3717,7 @@ export default function TakeoffCanvas() {
   // shape — mirrors the One-Click proposal behavior.
   function deleteSelectedShapeVertex() {
     const sel = shapes.find((s) => s.id === selectedId);
-    if (!sel || selVert == null) { setSelVert(null); setSelHole(null); return; }
+    if (!sel || selVert == null || shapeIsLocked(selectedId)) { setSelVert(null); setSelHole(null); return; }
     const closed = sel.measure_role !== "linear" && sel.measure_role !== "surface_area";
     const min = closed ? 3 : 2;
     if (selHole != null && Array.isArray(sel.holes_norm) && sel.holes_norm[selHole]) {
@@ -5880,6 +6329,7 @@ export default function TakeoffCanvas() {
                                   : {}),
                                 ...(sel.label ? { label: sel.label } : {}), ...cloneOrigin(sel.origin) });
   function copySelected() {
+    if (shapeIsLocked(selectedId)) return;
     const sel = shapes.find((s) => s.id === selectedId);
     if (!sel) { setCommitMsg("Select a takeoff to copy."); return; }
     clipRef.current = [clipEntry(sel)];
@@ -5912,10 +6362,12 @@ export default function TakeoffCanvas() {
     // clones are the array's last N — select the newest one
     const res = dispatchShape({ type: "add", shapes: made });
     selectShape(res.shapes[res.shapes.length - 1].id);
+    setLayerPickFromShape(res.shapes[res.shapes.length - 1].id);
     setTool("select");
     setCommitMsg(`Pasted ${made.length} takeoff${made.length === 1 ? "" : "s"}${cross ? ` onto ${labelFor(tp)}` : ""} — drag to position.`);
   }
   function duplicateSelected() {
+    if (shapeIsLocked(selectedId)) return;
     const sel = shapes.find((s) => s.id === selectedId);
     if (!sel) { setCommitMsg("Select a takeoff to duplicate."); return; }
     clipRef.current = [clipEntry(sel)];
@@ -5926,7 +6378,7 @@ export default function TakeoffCanvas() {
   // vertex drag, which gives correct undo/redo and provenance stamping for free.
   function flipSelected(axis) {
     const sel = shapes.find((s) => s.id === selectedId);
-    if (!sel || !Array.isArray(sel.verts_norm) || sel.verts_norm.length < 2) {
+    if (!sel || shapeIsLocked(selectedId) || !Array.isArray(sel.verts_norm) || sel.verts_norm.length < 2) {
       setCommitMsg("Select an area or linear takeoff to flip."); return;
     }
     const vn = reflectVertsNorm(sel.verts_norm, axis);
@@ -6465,7 +6917,7 @@ export default function TakeoffCanvas() {
     setPoly([]);
   }
   function deleteSelected() {
-    const cutIds = [...selectedCutoutIds];
+    const cutIds = [...selectedCutoutIds].filter((id) => !shapeIsLocked(id));
     if (cutIds.length > 1) {
       dispatchShape({ type: "delete", ids: cutIds });
       setSelectedCutoutIds(new Set());
@@ -6477,7 +6929,7 @@ export default function TakeoffCanvas() {
       });
       return;
     }
-    if (selectedId) {
+    if (selectedId && !shapeIsLocked(selectedId)) {
       dispatchShape({ type: "delete", ids: [selectedId] });
       setSelectedCutoutIds((prev) => { const n = new Set(prev); n.delete(selectedId); return n; });
       setCutoutChecks((m) => { const n = { ...m }; delete n[selectedId]; return n; });
@@ -6691,37 +7143,23 @@ export default function TakeoffCanvas() {
       ? `Applied ${applied} cutout${applied === 1 ? "" : "s"} to parent mask${applied === 1 ? "" : "s"}.`
       : "No overlapping parent mask found for those cutouts.");
   }
-  function reassignSelected(condId) { if (selectedId) dispatchShape({ type: "reassign", ids: [selectedId], condition_id: condId }); }
-  function reassignSelectedLabel(value) { if (selectedId) dispatchShape({ type: "label", ids: [selectedId], value }); }   // Select-tool single-shape re-label (#111) — value "" / null clears it; label commands never stamp
-  function toggleLayerPick(id) {
-    setLayerPickIds((p) => {
-      const next = { ...p };
-      if (next[id]) delete next[id];
-      else next[id] = true;
-      return next;
-    });
-  }
-  function toggleShapeHidden(id) {
-    setHiddenShapeIds((h) => {
-      const next = { ...h };
-      if (next[id]) delete next[id];
-      else next[id] = true;
-      return next;
-    });
-  }
-  function deleteLayerShape(id) {
-    dispatchShape({ type: "delete", ids: [id] });
-    setHiddenShapeIds((h) => { const next = { ...h }; delete next[id]; return next; });
-    setLayerPickIds((p) => { const next = { ...p }; delete next[id]; return next; });
-    setShapeToLayerGroup((m) => { const next = { ...m }; delete next[id]; return next; });
-    if (selectedId === id) selectShape(null);
-  }
+  function reassignSelected(condId) { if (selectedId && !shapeIsLocked(selectedId)) dispatchShape({ type: "reassign", ids: [selectedId], condition_id: condId }); }
+  function reassignSelectedLabel(value) { if (selectedId && !shapeIsLocked(selectedId)) dispatchShape({ type: "label", ids: [selectedId], value }); }   // Select-tool single-shape re-label (#111) — value "" / null clears it; label commands never stamp
   function layerGroupIdsFor(shapeId) {
     if (!shapeId) return [];
-    const gid = shapeToLayerGroup[shapeId];
-    if (!gid) return [shapeId];
-    const ids = layerGroups[gid]?.shapeIds;
-    return ids?.length ? ids : [shapeId];
+    const p = parentOf(layerForest, shapeId);
+    if (!p) return [shapeId];
+    const ids = descendantShapeIds(layerForest, p);
+    return ids.length ? ids : [shapeId];
+  }
+  function moveIdsFor(shapeId) {
+    const picks = Object.keys(layerPickIds).filter((id) => shapesRef.current.some((s) => s.id === id));
+    if (picks.length > 1) return [...new Set(picks.flatMap((id) => layerGroupIdsFor(id)))];
+    return layerGroupIdsFor(shapeId);
+  }
+  function shapeIsLocked(id) {
+    const s = shapesRef.current.find((x) => x.id === id);
+    return isLockedId(id, { lockedShapeIds, forest: layerForest, sheetId: s?.sheet_id });
   }
   function setLayerPickFromShape(id) {
     const ids = layerGroupIdsFor(id);
@@ -6753,50 +7191,140 @@ export default function TakeoffCanvas() {
       groupPrevs,
     };
   }
-  function openLayerConditionEdit(shapeId) {
-    const s = shapesRef.current.find((x) => x.id === shapeId);
-    if (!s) return;
-    selectShape(shapeId);
-    setFocusKey(s.sheet_id || focusKey);
-    activateCondition(s.condition_id, { reassign: false });
-    setShowCondEdit(true);
-  }
   function groupLayerSelection() {
-    const ids = Object.keys(layerPickIds).filter((id) => shapesRef.current.some((s) => s.id === id));
-    if (ids.length < 2) return;
-    const sheetKey = shapesRef.current.find((s) => s.id === ids[0])?.sheet_id;
+    const live = shapesRef.current;
+    const shapeIds = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+    const lifted = liftSelection(layerForest, shapeIds);
+    if (lifted.length < 2) return;
+    const first = live.find((s) => s.id === (descendantShapeIds(layerForest, lifted[0])[0] || lifted[0]));
+    const sheetKey = first?.sheet_id || (layerForest[lifted[0]]?.sheetKey) || focusKey;
     const gid = uid("lg");
-    setLayerGroups((g) => ({
-      ...g,
-      [gid]: { id: gid, label: `Group ${Object.keys(g).length + 1}`, sheetKey, shapeIds: ids },
-    }));
-    setShapeToLayerGroup((m) => {
-      const next = { ...m };
-      for (const id of ids) next[id] = gid;
-      return next;
-    });
-    selectShape(ids[0]);
-    setLayerPickIds(Object.fromEntries(ids.map((id) => [id, true])));
+    const shapeById = new Map(live.map((s) => [s.id, s]));
+    const next = groupSelection(layerForest, lifted, { newId: gid, name: "Group", sheetKey, shapeById });
+    if (next === layerForest) return;
+    setLayerForest(next);
+    const members = [...new Set(lifted.flatMap((id) => (layerForest[id] ? descendantShapeIds(layerForest, id) : [id])))];
+    const picks = Object.fromEntries(members.map((id) => [id, true]));
+    if (members[0]) selectShape(members[0], picks);
+    else setLayerPickIds(picks);
   }
   function ungroupLayerSelection() {
-    const ids = Object.keys(layerPickIds);
-    const gids = new Set(ids.map((id) => shapeToLayerGroup[id]).filter(Boolean));
-    setShapeToLayerGroup((m) => {
-      const next = { ...m };
-      for (const id of ids) delete next[id];
-      return next;
+    const live = shapesRef.current;
+    const shapeIds = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+    const lifted = liftSelection(layerForest, shapeIds);
+    setLayerForest((g) => ungroupNodes(g, lifted));
+    setLayerPickIds({});
+  }
+  function selectLayerIds(ids, opts = {}) {
+    if (opts.sheetKey) layerTargetSheetRef.current = opts.sheetKey;
+    const live = shapesRef.current;
+    const shapeIds = (ids || []).filter((id) => live.some((s) => s.id === id));
+    const picks = Object.fromEntries(shapeIds.map((id) => [id, true]));
+    if (shapeIds[0]) {
+      const sk = live.find((s) => s.id === shapeIds[0])?.sheet_id;
+      if (sk) layerTargetSheetRef.current = sk;
+      selectShape(shapeIds[0], picks);
+      setFocusKey(sk || focusKey);
+      setTool("select");
+    } else {
+      selectShape(null);
+    }
+  }
+  function expandLayerIds(ids) {
+    return collectIdsForLayerToggle(ids, {
+      forest: layerForest,
+      shapes: shapesRef.current,
+      sheetMatch: aiFloorSheetKeysMatch,
     });
-    setLayerGroups((g) => {
-      const next = { ...g };
-      for (const gid of gids) {
-        if (!next[gid]) continue;
-        const keep = next[gid].shapeIds.filter((id) => !ids.includes(id));
-        if (!keep.length) delete next[gid];
-        else next[gid] = { ...next[gid], shapeIds: keep };
+  }
+  function toggleHideIds(ids, hidden) {
+    const { shapeIds, groupIds, sheetIds } = expandLayerIds(ids);
+    setHiddenShapeIds((h) => {
+      const next = { ...h };
+      for (const id of [...shapeIds, ...sheetIds]) {
+        if (hidden) next[id] = true;
+        else delete next[id];
       }
       return next;
     });
-    setLayerPickIds({});
+    if (groupIds.length) {
+      setLayerForest((g) => {
+        let next = g;
+        for (const id of groupIds) next = setGroupFlag(next, id, "hidden", hidden);
+        return next;
+      });
+    }
+  }
+  function toggleLockIds(ids, locked) {
+    const { shapeIds, groupIds, sheetIds } = expandLayerIds(ids);
+    setLockedShapeIds((h) => {
+      const next = { ...h };
+      for (const id of [...shapeIds, ...sheetIds]) {
+        if (locked) next[id] = true;
+        else delete next[id];
+      }
+      return next;
+    });
+    if (groupIds.length) {
+      setLayerForest((g) => {
+        let next = g;
+        for (const id of groupIds) next = setGroupFlag(next, id, "locked", locked);
+        return next;
+      });
+    }
+  }
+  function deleteLayerIds(ids) {
+    const list = (ids || []).filter((id) => shapesRef.current.some((s) => s.id === id) && !shapeIsLocked(id));
+    if (!list.length) return;
+    dispatchShape({ type: "delete", ids: list });
+    setHiddenShapeIds((h) => {
+      const next = { ...h };
+      for (const id of list) delete next[id];
+      return next;
+    });
+    setLockedShapeIds((h) => {
+      const next = { ...h };
+      for (const id of list) delete next[id];
+      return next;
+    });
+    setLayerPickIds((p) => {
+      const next = { ...p };
+      for (const id of list) delete next[id];
+      return next;
+    });
+    if (list.includes(selectedId)) selectShape(null);
+  }
+  function duplicateLayerIds(ids) {
+    const entries = (ids || [])
+      .filter((id) => !shapeIsLocked(id))
+      .map((id) => shapesRef.current.find((s) => s.id === id))
+      .filter(Boolean)
+      .map(clipEntry);
+    if (!entries.length) return;
+    clipRef.current = entries;
+    pasteClipboard();
+  }
+  function renameLayer(id, name, kind) {
+    const trimmed = String(name || "").trim();
+    if (!trimmed) return;
+    if (kind === "group") {
+      setLayerForest((g) => renameGroup(g, id, trimmed));
+      return;
+    }
+    dispatchShape({ type: "label", ids: [id], value: trimmed });
+  }
+  function newLayerGroup() {
+    const wanted = layerTargetSheetRef.current || focusKey || groupKeys[0];
+    const sheetKey = (groupKeys || []).find((k) => k === wanted || aiFloorSheetKeysMatch(k, wanted)) || wanted;
+    if (!sheetKey) return;
+    const gid = uid("lg");
+    setLayerForest((g) => addEmptyGroup(g, { id: gid, name: "Group", sheetKey }));
+  }
+  function moveLayerTree({ dragIds, parentId, index }) {
+    const live = shapesRef.current;
+    const shapeById = new Map(live.map((s) => [s.id, s]));
+    const dest = sheetKeyFromNodeId(parentId) ? null : parentId;
+    setLayerForest((g) => moveNodes(g, dragIds || [], dest, index, { shapeById }));
   }
 
   // pan/zoom the canvas to fit a condition's takeoffs on the open sheets —
@@ -7854,12 +8382,11 @@ export default function TakeoffCanvas() {
     return selShapeRaw;
   }, [selShapeRaw, visibleShapes, scales, conditions]);
   const selectedLayerGroupMemberIds = useMemo(() => {
+    const picks = Object.keys(activeLayerPickIds(selectedId, layerPickIds));
+    if (picks.length) return new Set(picks);
     if (!selectedId) return new Set();
-    const gid = shapeToLayerGroup[selectedId];
-    if (!gid) return new Set([selectedId]);
-    const ids = layerGroups[gid]?.shapeIds;
-    return ids?.length ? new Set(ids) : new Set([selectedId]);
-  }, [selectedId, shapeToLayerGroup, layerGroups]);
+    return new Set(layerGroupIdsFor(selectedId));
+  }, [selectedId, layerPickIds, layerForest]);
   const selWallSegmentRows = useMemo(() => {
     if (!selShape || selShape.measure_role !== "surface_area") return [];
     const sp = panelByKey(selShape.sheet_id);
@@ -8286,7 +8813,7 @@ export default function TakeoffCanvas() {
     return aCond;
   })();
   const liveDrawLook = drawAppearance && aCond ? { ...aCond, ...drawAppearance } : aCond;
-  const finishOk = ((tool === "area" || tool === "deduct") && poly.length >= 3) || (tool === "zone" && poly.length >= 3 && !zoneTraceCross) || ((tool === "linear" || tool === "surface" || tool === "wallarea" || tool === "curve" || tool === "deduct-curve") && poly.length >= 2);
+  const finishOk = canFinishDraw(tool, poly.length, { zoneCross: zoneTraceCross });
 
   const RAIL_ICO = { size: 15, strokeWidth: 1.5 };
   const railBtn = (onClick, icon, label, isOn, extraClass = "") => (
@@ -8765,36 +9292,32 @@ export default function TakeoffCanvas() {
     );
   })();
 
-  const renderLayersSidebar = () => (
-    <LayersSidebar
-      docked
-      multiSheet={groupKeys.length > 1}
-      sheetKeys={groupKeys}
-      sheetLabel={tabLabel}
+  const renderLiveLayersPanel = (opts = {}) => (
+    <LayersIllustratorPanel
+      embedded={!!opts.embedded}
+      closeOnOutside={!opts.embedded}
+      onClose={opts.onClose}
       shapes={layerPanelShapes}
       condById={condById}
       hiddenShapeIds={hiddenShapeIds}
-      layerPickIds={new Set(Object.keys(layerPickIds))}
-      layerGroups={layerGroups}
-      shapeToLayerGroup={shapeToLayerGroup}
-      layersSheetOpen={layersSheetOpen}
-      selectedId={selectedId}
-      onToggleSheetOpen={(key) => setLayersSheetOpen((m) => {
-        if (m[key] === false) { const next = { ...m }; delete next[key]; return next; }
-        return { ...m, [key]: false };
-      })}
-      onTogglePick={toggleLayerPick}
-      onSelectShape={(id) => { selectShape(id); setLayerPickFromShape(id); setFocusKey(shapesRef.current.find((s) => s.id === id)?.sheet_id || focusKey); }}
-      onToggleHide={toggleShapeHidden}
-      onDelete={deleteLayerShape}
+      lockedShapeIds={lockedShapeIds}
+      layerForest={layerForest}
+      sheetKeys={groupKeys}
+      sheetLabel={tabLabel}
+      focusSheetKey={focusKey}
+      selectedIds={selectedLayerIds}
+      units={units}
+      sheetMatch={aiFloorSheetKeysMatch}
+      onSelectIds={selectLayerIds}
+      onToggleHideIds={toggleHideIds}
+      onToggleLockIds={toggleLockIds}
       onGroup={groupLayerSelection}
       onUngroup={ungroupLayerSelection}
-      onOpenConditionEdit={openLayerConditionEdit}
-      wallSegmentRows={selWallSegmentRows}
-      activeWallSegment={selShape?.measure_role === "surface_area" ? (wallSegmentFocus ?? wallSegmentIndexFromVert(selShape, selVert)) : null}
-      onFlyToWallSegment={(idx) => selectedId && flyToWallSegment(selectedId, idx)}
-      selVert={selVert}
-      onSeparateWallLine={() => selectedId != null && selVert != null && separateSurfaceRunAtVertex(selectedId, selVert)}
+      onDeleteIds={deleteLayerIds}
+      onDuplicateIds={duplicateLayerIds}
+      onRename={renameLayer}
+      onMove={moveLayerTree}
+      onNewGroup={newLayerGroup}
     />
   );
   const canvasReady = view === "canvas" && status === "ready";
@@ -9048,7 +9571,7 @@ export default function TakeoffCanvas() {
                 <div className="cond-edit-float-kicker">Condition</div>
                 <div className="cond-edit-float-title">{aCond.finish_tag}</div>
               </div>
-              <button type="button" className="cond-edit-float-close" onClick={() => setShowCondEdit(false)} data-tip="Close" data-tip-at="left" aria-label="Close">×</button>
+              <button type="button" className="cond-edit-float-close" onClick={() => setShowCondEdit(false)} aria-label="Close">×</button>
             </header>
             <div className="cond-edit-float-body">
               <ConditionAppearanceEditor
@@ -9074,41 +9597,6 @@ export default function TakeoffCanvas() {
           </div>
         </FloatingWindow>
       )}
-
-      {layersFloating && (
-        <FloatingWindow
-          shellClassName="left-panel-glass"
-          defaultRect={{ x: 56, y: 72, w: 360, h: Math.min(640, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
-          minW={280}
-          minH={240}
-        >
-          <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
-            <div
-              className="left-panel-glass-tabs"
-              data-float-drag
-              style={{ display: "flex", alignItems: "stretch", color: "var(--accent-contrast)", flexShrink: 0, cursor: "grab", userSelect: "none" }}
-            >
-              <div style={{ flex: 1, padding: "9px 12px", fontWeight: 700, fontSize: 11.5 }}>
-                Layers{layerPanelShapes.length ? ` · ${layerPanelShapes.length}` : ""}
-              </div>
-              <button
-                type="button"
-                onClick={() => setLayersFloating(false)}
-                data-tip="Close floating Layers panel"
-                data-tip-at="left"
-                aria-label="Close floating Layers panel"
-                style={{ padding: "0 12px", border: "none", background: "transparent", color: "var(--accent-contrast)", fontSize: 16, cursor: "pointer" }}
-              >
-                ×
-              </button>
-            </div>
-            <div style={{ flex: 1, overflow: "hidden", minHeight: 0, display: "flex", flexDirection: "column" }}>
-              {renderLayersSidebar()}
-            </div>
-          </div>
-        </FloatingWindow>
-      )}
-
 
       {/* compact conditions strip — OPTIONAL small-project mode. The docked
           Takeoffs panel is the primary conditions surface; the strip renders
@@ -9215,35 +9703,34 @@ export default function TakeoffCanvas() {
            onDoubleClick={(e) => e.stopPropagation()}
          >
            <div className="canvas-glass-cluster">
-             {railBtn(toggleLeftDesk, leftTab ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, markups, stamps, RFIs, layers", !!leftTab)}
-             {railBtn(() => setIllLayersOpen((v) => !v), <Icon name="layers" size={16} />, "Layers panel", illLayersOpen)}
+             {railBtn(toggleLeftDesk, leftTab ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, sheets, markups, stamps, RFIs", !!leftTab)}
+             {railBtn(() => {
+               setIllLayersOpen((v) => !v);
+             }, <Icon name="layers" size={16} />, "Layers panel", illLayersOpen)}
              <span className="canvas-rail-rule" aria-hidden="true" />
              {MEASURE_TOOLS.map((t) => measureRailBtn(t))}
              <span className="canvas-rail-rule" aria-hidden="true" />
              {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
            </div>
-           {!showDrawingsChat && !drawingsChatPill && (
-             <button
-               type="button"
-              className={`canvas-sheets-fab canvas-circle-btn${leftTab === "sheets" ? " is-on" : ""}`}
-              data-tip="Open sheets — jump, pair, or close tabs"
-              aria-label="Sheets open on the canvas — jump, pair, or close tabs"
-              onClick={() => {
-                if (sheetKey) setOpenTabs((t) => (t.includes(sheetKey) ? t : [...t, sheetKey]));
-                toggleSheetsTab();
-              }}
-            >
-               <FileStack size={18} strokeWidth={1.7} aria-hidden="true" />
-             </button>
-           )}
-           {!showDrawingsChat && !drawingsChatPill && (
-             <button
-               type="button"
-               className="drawings-chat-glass-trigger canvas-circle-btn"
-               data-tip="Ask the drawings corpus"
-               aria-label="Ask the Volume 4 drawings corpus"
-               onClick={() => setDrawingsChatPill(true)}
-             >
+           <button
+             type="button"
+             className={`canvas-sheets-fab canvas-circle-btn${leftTab === "sheets" ? " is-on" : ""}`}
+             data-tip="Open sheets — jump, pair, or close tabs"
+             aria-label="Sheets open on the canvas — jump, pair, or close tabs"
+             onClick={() => {
+               if (sheetKey) setOpenTabs((t) => (t.includes(sheetKey) ? t : [...t, sheetKey]));
+               toggleSheetsTab();
+             }}
+           >
+             <FileStack size={18} strokeWidth={1.7} aria-hidden="true" />
+           </button>
+           <button
+             type="button"
+             className={`drawings-chat-glass-trigger canvas-circle-btn${drawingsChatPill || showDrawingsChat ? " is-on" : ""}`}
+             data-tip="Ask the drawings corpus"
+             aria-label="Ask the Volume 4 drawings corpus"
+             onClick={toggleDrawingsAsk}
+           >
                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                  <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H10l-3.8 3.2c-.7.6-1.7.1-1.7-.8V16H6.5A2.5 2.5 0 0 1 4 13.5v-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
                  <circle cx="9" cy="10" r="1" fill="currentColor"/>
@@ -9251,93 +9738,118 @@ export default function TakeoffCanvas() {
                  <circle cx="15" cy="10" r="1" fill="currentColor"/>
                </svg>
              </button>
-          )}
         </div>
         {/* Illustrator-style Layers panel — docks left, next to the rail icon */}
-        {illLayersOpen && (
-          <LayersIllustratorPanel onClose={() => setIllLayersOpen(false)} />
+        {layersMotion.shown && (
+          <div className={`left-window${layersMotion.entered ? " is-open" : ""}`}>
+            {renderLiveLayersPanel({ onClose: () => setIllLayersOpen(false) })}
+          </div>
         )}
-        {/* Floating LEFT panel — Files/Markups/Stamps/RFIs/Layers; fixed size, not resizable */}
-         {leftTab && (
+        {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
+         {leftDesk.shown && deskTab && (
+         <div className={`left-window${leftDesk.entered ? " is-open" : ""}`}>
          <div
            className="left-panel-glass"
            role="dialog"
-           aria-label={leftTab === "layers" ? "Layers panel" : "Files panel"}
+           aria-label="Files panel"
            style={{
-             pointerEvents: "auto",
              width: 360,
              alignSelf: "stretch",
              display: "flex",
              flexDirection: "column",
-             borderRadius: 10,
+             borderRadius: 5,
              overflow: "hidden",
              minHeight: 0,
            }}
          >
-           {/* tab strip — scrolls when labels don't fit; close stays pinned */}
-           <div className="left-panel-glass-tabs" style={{ color: "var(--accent-contrast)", flexShrink: 0 }}>
+           {/* tab strip — tabs scroll in their own track; close is a pinned end-cap */}
+           <div className={`left-panel-glass-tabs${lpTabsOverflow.start ? " has-overflow-start" : ""}${lpTabsOverflow.end ? " has-overflow-end" : ""}`} style={{ color: "var(--accent-contrast)", flexShrink: 0 }}>
+             <div className="lp-tabs-track">
+             {lpTabsOverflow.start && (
+               <button
+                 type="button"
+                 className="lp-tabs-shift is-start"
+                 onClick={() => shiftLpTabs(-1)}
+                 data-tip="Earlier tabs"
+                 aria-label="Earlier tabs"
+               >
+                 <ChevronLeft size={14} strokeWidth={2.6} />
+               </button>
+             )}
              <div
                ref={lpTabsScrollRef}
                className="lp-tabs-scroller"
                onPointerDown={(e) => {
                  if (e.button !== 0) return;
                  const el = lpTabsScrollRef.current;
-                 if (!el) return;
-                 lpTabsDragRef.current = { x: e.clientX, sl: el.scrollLeft, moved: false };
-                 try { el.setPointerCapture(e.pointerId); } catch { /* not all targets capture */ }
+                 if (!el || el.scrollWidth <= el.clientWidth) return;
+                 lpTabsDragRef.current = { x: e.clientX, sl: el.scrollLeft, moved: false, id: e.pointerId };
                }}
                onPointerMove={(e) => {
                  const d = lpTabsDragRef.current;
                  const el = lpTabsScrollRef.current;
                  if (!d || !el) return;
                  const dx = e.clientX - d.x;
-                 if (Math.abs(dx) > 4) d.moved = true;
+                 if (!d.moved && Math.abs(dx) > 10) {
+                   d.moved = true;
+                   try { el.setPointerCapture(d.id); } catch { /* not all targets capture */ }
+                 }
                  if (d.moved) el.scrollLeft = d.sl - dx;
                }}
                onPointerUp={() => {
-                 if (lpTabsDragRef.current?.moved) lpTabsSkipClickRef.current = true;
+                 if (lpTabsDragRef.current?.moved) {
+                   lpTabsSkipClickRef.current = true;
+                   setTimeout(() => { lpTabsSkipClickRef.current = false; }, 120);
+                 }
                  lpTabsDragRef.current = null;
                }}
-               onPointerCancel={() => { lpTabsDragRef.current = null; }}
+               onPointerCancel={() => { lpTabsSkipClickRef.current = false; lpTabsDragRef.current = null; }}
                onClickCapture={(e) => {
                  if (!lpTabsSkipClickRef.current) return;
                  e.preventDefault();
                  e.stopPropagation();
                  lpTabsSkipClickRef.current = false;
                }}
-               onWheel={(e) => {
-                 const el = lpTabsScrollRef.current;
-                 if (!el || el.scrollWidth <= el.clientWidth) return;
-                 if (e.deltaY && !e.deltaX) el.scrollLeft += e.deltaY;
-               }}
              >
-             {[{ id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "layers", label: "Layers", n: layerPanelShapes.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
+             {[{ id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
                <button
                  key={t.id}
                  type="button"
-                 className={`lp-tab${leftTab === t.id ? " is-on" : ""}`}
-                 onClick={() => { lastLeftTabRef.current = t.id; if (t.id === "layers" && layersFloating) setLayersFloating(false); setLeftTab(t.id); }}
-                 onDoubleClick={(e) => {
-                   if (t.id !== "layers") return;
-                   e.preventDefault();
-                   e.stopPropagation();
-                   setLayersFloating(true);
-                   setLeftTab(null);
+                 className={`lp-tab${deskTab === t.id ? " is-on" : ""}`}
+                 onClick={() => {
+                   lastLeftTabRef.current = t.id;
+                   setLeftTab(t.id);
                  }}
-                 title={t.id === "layers" ? `${t.label} — double-click to detach as floating window` : t.label}
+                 title={t.label}
                >
                  <span>{t.label}</span>
                  {t.n ? <span className="lp-tab-count">{t.n}</span> : null}
                </button>
              ))}
              </div>
-             <button type="button" className="lp-tab-close" onClick={() => setLeftTab(null)} data-tip="Close panel" aria-label="Close panel">
+             {lpTabsOverflow.end && (
+               <button
+                 type="button"
+                 className="lp-tabs-shift is-end"
+                 onClick={() => shiftLpTabs(1)}
+                 data-tip="More tabs"
+                 aria-label="More tabs"
+               >
+                 <ChevronRight size={14} strokeWidth={2.6} />
+               </button>
+             )}
+             </div>
+             <button type="button" className="lp-tab-close" onClick={() => setLeftTab(null)} aria-label="Close panel">
                <Icon name="close" size={14} />
              </button>
            </div>
            {/* body of the active tab */}
-           <div className="left-panel-scroll" style={{ flex: 1, overflow: leftTab === "layers" ? "hidden" : "auto", minHeight: 0, display: leftTab === "layers" ? "flex" : "block", flexDirection: "column" }}>
-             {leftTab === "files" && (
+           <div className="left-panel-scroll" style={{ flex: 1, overflowX: "hidden", overflowY: "auto", minHeight: 0 }}>
+             <div
+               key={deskTab}
+               className={`lp-tab-pane${lpTabMotionRef.current.animate ? (lpTabMotionRef.current.dir < 0 ? " is-back" : " is-fwd") : ""}`}
+             >
+             {deskTab === "files" && (
                <div>
                  <div className="left-panel-glass-actions">
                    <div className="lp-action-row" role="group" aria-label="File actions">
@@ -9504,52 +10016,48 @@ export default function TakeoffCanvas() {
                  })()}
                </div>
              )}
-             {leftTab === "sheets" && (
-               <div>
-                 <div className="lp-find-wrap" style={{ paddingTop: 10 }}>
-                   <label className={`lp-find${sheetsSearch ? " is-filled" : ""}`}>
-                     <span className="lp-find-ico" aria-hidden="true">
-                       <Search size={15} strokeWidth={2.25} />
-                     </span>
-                     <input
-                       name="open-sheets-search"
-                       value={sheetsSearch}
-                       onChange={(e) => setSheetsSearch(e.target.value)}
-                       placeholder="Jump to a sheet…"
-                       aria-label="Filter open sheets"
-                       autoComplete="off"
-                     />
-                     {sheetsSearch ? (
-                       <button
-                         type="button"
-                         className="lp-find-clear"
-                         title="Clear"
-                         aria-label="Clear search"
-                         onClick={() => setSheetsSearch("")}
-                       >
-                         <X size={13} strokeWidth={2.4} />
-                       </button>
-                     ) : null}
-                   </label>
-                 </div>
-                 <OpenSheetsPill
-                   embedded
-                   hideFind
-                   hideActions
-                   query={sheetsSearch}
-                   openTabs={openTabs}
-                   sheetGroup={sheetGroup}
-                   sheetKey={sheetKey}
-                   focusKey={focusKey}
-                   tabLabel={tabLabel}
-                   onGoToSheet={goToSheet}
-                   onToggleInGroup={toggleInGroup}
-                   onCloseTab={closeTab}
-                   onClose={() => setLeftTab(null)}
-                 />
+             {deskTab === "sheets" && (
+               <div className="open-sheets-tab">
+                 <label className="open-sheets-find">
+                   <Search size={15} strokeWidth={2} className="open-sheets-find-ico" aria-hidden="true" />
+                   <input
+                     name="open-sheets-search"
+                     value={sheetsSearch}
+                     onChange={(e) => setSheetsSearch(e.target.value)}
+                     placeholder="Jump to a sheet…"
+                     aria-label="Filter open sheets"
+                     autoComplete="off"
+                   />
+                   {sheetsSearch ? (
+                     <button
+                       type="button"
+                       className="open-sheets-find-clear"
+                       onClick={() => setSheetsSearch("")}
+                       aria-label="Clear search"
+                     >
+                       <X size={13} strokeWidth={2.4} />
+                     </button>
+                   ) : null}
+                 </label>
+                <OpenSheetsPill
+                  embedded
+                  hideFind
+                  hideActions
+                  query={sheetsSearch}
+                  openTabs={openTabs}
+                  sheetGroup={sheetGroup}
+                  sheetKey={sheetKey}
+                  focusKey={focusKey}
+                  tabLabel={tabLabel}
+                  maxGroup={MAX_GROUP}
+                  onGoToSheet={goToSheet}
+                  onToggleInGroup={toggleInGroup}
+                  onCloseTab={closeTab}
+                  onClose={() => setLeftTab(null)}
+                />
                </div>
              )}
-             {leftTab === "markup" && (
+             {deskTab === "markup" && (
                <div>
                  {/* layer show/hide — hides the on-canvas markup layer AND its hit-testing
                      (can't select/delete/fly-to an invisible markup); orthogonal to the
@@ -9651,7 +10159,7 @@ export default function TakeoffCanvas() {
                  ))}
                </div>
              )}
-             {leftTab === "stamp" && (
+             {deskTab === "stamp" && (
                <StampPanel
                  docked
                  library={stampLib} armedStamp={armedStamp}
@@ -9660,7 +10168,7 @@ export default function TakeoffCanvas() {
                  onExport={exportStamps} onImport={importStamps} onImportSvg={importSvgStamp} onClose={() => setLeftTab(null)}
                />
              )}
-             {leftTab === "rfi" && (
+             {deskTab === "rfi" && (
                <RfiPanel
                  docked
                  rfis={rfis} markups={markups}
@@ -9668,17 +10176,18 @@ export default function TakeoffCanvas() {
                  sheetLabel={(k) => tabLabel(k)} onClose={() => setLeftTab(null)}
                />
              )}
-             {leftTab === "layers" && !layersFloating && renderLayersSidebar()}
+             </div>
            </div>
+         </div>
          </div>
          )}
        </div>
        )}
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {canvasReady && leftTab && (leftCanvasWork ? (
-          <div className="left-panel-stage-scrim is-pass" aria-hidden="true" />
+        {canvasReady && leftDesk.shown && (leftCanvasWork ? (
+          <div className={`left-panel-stage-scrim is-pass${leftDesk.entered ? " is-open" : ""}`} aria-hidden="true" />
         ) : (
-          <button type="button" className="left-panel-stage-scrim" aria-label="Close panel" onClick={() => setLeftTab(null)} />
+          <button type="button" className={`left-panel-stage-scrim${leftDesk.entered ? " is-open" : ""}`} aria-label="Close panel" onClick={() => setLeftTab(null)} />
         ))}
         {/* Bottom-right canvas controls: undo/redo pill + zoom pill. Lives in the
             canvas column (not the outer row) so the Takeoffs dock never covers it. */}
@@ -9687,8 +10196,18 @@ export default function TakeoffCanvas() {
             style={{ position: "absolute", right: 16, bottom: 14, zIndex: 55, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, pointerEvents: "none" }}
           >
             {minimapOpen && (
-              <div className="canvas-minimap" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                <canvas ref={minimapCanvasRef} className="canvas-minimap-cv" onClick={recenterFromMinimap} title="Overview — click to recenter the view" />
+              <div
+                className="canvas-minimap"
+                onPointerDown={onMinimapPointerDown}
+                onPointerMove={onMinimapPointerMove}
+                onPointerUp={onMinimapPointerUp}
+                onPointerCancel={onMinimapPointerUp}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                <div className="canvas-minimap-stage">
+                  <canvas ref={minimapCanvasRef} className="canvas-minimap-cv" title="Overview — drag to pan" />
+                  <div ref={minimapViewRef} className="canvas-minimap-view" aria-hidden="true" />
+                </div>
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "none" }}>
@@ -9730,7 +10249,7 @@ export default function TakeoffCanvas() {
                   onClick={() => stage.w && fitToView(stage.w, stage.h)}>
                   <Scan size={15} strokeWidth={1.6} />
                 </button>
-                <button type="button" className={`canvas-zoom-btn${minimapOpen ? " is-on" : ""}`} data-tip="Minimap — click to jump" aria-label="Minimap — sheet overview; click it to jump"
+                <button type="button" className={`canvas-zoom-btn${minimapOpen ? " is-on" : ""}`} data-tip="Minimap — drag to pan" aria-label="Minimap — sheet overview; drag to pan"
                   onClick={() => setMinimapOpen((v) => !v)}>
                   <MapIcon size={15} strokeWidth={1.6} />
                 </button>
@@ -10094,7 +10613,7 @@ export default function TakeoffCanvas() {
           )}
           <div ref={stageRef} style={{ position: "absolute", transformOrigin: "0 0", width: stage.w || undefined, height: stage.h || undefined, opacity: status === "ready" ? 1 : 0, pointerEvents: status === "ready" ? "auto" : "none" }}>
             {panels.map((p) => (
-              <canvas key={p.key} ref={(el) => { if (el) panelCanvasRefs.current.set(p.key, el); else panelCanvasRefs.current.delete(p.key); }}
+              <canvas key={p.key} ref={(el) => { if (el) { panelCanvasRefs.current.set(p.key, el); blitPanelPaint(p.key, el); } else panelCanvasRefs.current.delete(p.key); }}
                 style={{ position: "absolute", left: p.xOffset, top: 0, boxShadow: status === "ready" ? "0 2px 20px rgba(0,0,0,.18)" : "none" }} />
             ))}
             {/* high-res detail overlay — a crop of the visible region re-rendered at the current zoom (see the detail-view effect) */}
@@ -10138,7 +10657,7 @@ export default function TakeoffCanvas() {
                       const aiSheet = isAiDetectFloorPlan(p.key);
                       // Cutouts always paint; AI floor masks follow reveal. Deducts on top.
                       const drawn = (!aiSheet ? pShapes : pShapes.filter((s) => aiDetectShapeRevealed(s)))
-                        .filter((s) => !hiddenShapeIds[s.id])
+                        .filter((s) => !isHiddenId(s.id, { hiddenShapeIds, sheetId: s.sheet_id }))
                         .slice()
                         .sort((a, b) => {
                           const ad = a.measure_role === "deduct" ? 1 : 0;
@@ -10225,7 +10744,7 @@ export default function TakeoffCanvas() {
                         strokeDasharray={dash} />;
                     })}
                     {/* vertex handles for the selected shape (drag to reshape) */}
-                    {selectedId && (() => {
+                    {selectedId && !shapeIsLocked(selectedId) && (() => {
                       const sel = pShapes.find((s) => s.id === selectedId && aiDetectShapeRevealed(s));
                       if (!sel || sel.measure_role === "count") return null;
                       const qs = dn(sel.verts_norm);
@@ -10924,7 +11443,9 @@ export default function TakeoffCanvas() {
                     selectedCutoutIds.has(hit.id) && selectedCutoutIds.size ? [...selectedCutoutIds] : [hit.id],
                   ))}
                   {item("Remove cutout", () => {
-                    const ids = selectedCutoutIds.has(hit.id) && selectedCutoutIds.size > 1 ? [...selectedCutoutIds] : [hit.id];
+                    const ids = (selectedCutoutIds.has(hit.id) && selectedCutoutIds.size > 1 ? [...selectedCutoutIds] : [hit.id])
+                      .filter((id) => !shapeIsLocked(id));
+                    if (!ids.length) return;
                     dispatchShape({ type: "delete", ids });
                     setSelectedCutoutIds(new Set());
                     setSelectedId(null);
@@ -10932,6 +11453,7 @@ export default function TakeoffCanvas() {
                 </>
               ) : (
                 item("Remove mask", () => {
+                  if (shapeIsLocked(hit.id)) return;
                   dispatchShape({ type: "delete", ids: [hit.id] });
                   setSelectedId(null);
                 }, true)
@@ -10942,7 +11464,7 @@ export default function TakeoffCanvas() {
 
         {sheetTools && Number(projectEstimateTotal) > 0 && (
           <div
-            className={darkMode ? "canvas-estimate-hud is-sheet-invert has-focus" : "canvas-estimate-hud has-focus"}
+            className="canvas-estimate-hud has-focus"
             title="Live takeoff value — updates as quantities and rates change"
           >
             <div className="canvas-estimate-hud-copy">
@@ -11148,8 +11670,6 @@ export default function TakeoffCanvas() {
           <button
             type="button"
             className="canvas-hamburger-btn"
-            data-tip="Takeoffs — conditions + running totals"
-            data-tip-at="left"
             aria-label="Takeoffs — conditions + running totals"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={toggleTakeoffs}
@@ -11160,80 +11680,87 @@ export default function TakeoffCanvas() {
 
         {/* Drawings Q&A — centered ask box. Trigger lives in the left stack. */}
 
-        {/* Centered, expanding ask box — outside click dismisses only when empty,
-            so an accidental tap never wipes a half-typed question. */}
+        {/* Centered drawings ask — click outside or any other chrome closes it. */}
         {canvasReady && !showDrawingsChat && drawingsChatPill && (
-          <div
-            className="drawings-chat-center-scrim"
-            onPointerDown={(e) => {
-              if (e.target === e.currentTarget && !drawingsChatDraft.trim()) closeDrawingsChatPill();
-            }}
-          >
-            <form
-              className="drawings-chat-glass-pill drawings-chat-center-box"
+          <div className="drawings-chat-center-scrim">
+            <div
+              className="drawings-ask-wrap"
               onPointerDown={(e) => e.stopPropagation()}
-              onSubmit={(e) => {
-                e.preventDefault();
-                const q = drawingsChatDraft.trim();
-                if (!q) return;
-                setDrawingsChatSeed(q);
-                setDrawingsChatDraft("");
-                setDrawingsChatPill(false);
-                setShowDrawingsChat(true);
-              }}
             >
-              <span className="drawings-chat-center-lead" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7A2.5 2.5 0 0 1 17.5 16H10l-3.8 3.2c-.7.6-1.7.1-1.7-.8V16H6.5A2.5 2.5 0 0 1 4 13.5v-7Z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
-                  <circle cx="9" cy="10" r="1" fill="currentColor"/>
-                  <circle cx="12" cy="10" r="1" fill="currentColor"/>
-                  <circle cx="15" cy="10" r="1" fill="currentColor"/>
-                </svg>
-              </span>
-              <input
-                ref={drawingsChatInputRef}
-                className="drawings-chat-glass-pill-input drawings-chat-center-input"
-                autoFocus
-                value={drawingsChatDraft}
-                onChange={(e) => setDrawingsChatDraft(e.target.value)}
-                placeholder="Ask about Volume 4 drawings…"
-              />
-              {drawingsChatDraft && (
-                <button
-                  type="button"
-                  className="drawings-chat-center-clear"
-                  data-tip="Clear"
-                  aria-label="Clear question"
-                  onClick={() => {
-                    setDrawingsChatDraft("");
-                    drawingsChatInputRef.current?.focus();
-                  }}
-                >
-                  <X size={16} strokeWidth={2} />
-                </button>
-              )}
-              <button
-                type="submit"
-                className="drawings-chat-glass-pill-send canvas-circle-btn drawings-chat-center-send"
-                data-tip="Send"
-                aria-label="Send"
-                disabled={!drawingsChatDraft.trim()}
+              <form
+                className="drawings-ask"
+                onPointerDown={(e) => e.stopPropagation()}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  submitDrawingsAsk(drawingsChatDraft);
+                }}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path d="M4.5 11.2 19.2 4.4c.7-.3 1.4.4 1.1 1.1L13.5 20.2c-.3.7-1.3.6-1.5-.2l-1.6-6.1-6.1-1.6c-.8-.2-.9-1.2-.2-1.5Z" fill="currentColor"/>
-                </svg>
-              </button>
-            </form>
+                <span className="drawings-ask-mark" aria-hidden="true">
+                  <Search size={16} strokeWidth={1.7} />
+                </span>
+                <label className="drawings-ask-field">
+                  <span className="drawings-ask-k">Ask the drawings</span>
+                  <input
+                    ref={drawingsChatInputRef}
+                    className="drawings-ask-input"
+                    autoFocus
+                    value={drawingsChatDraft}
+                    onChange={(e) => setDrawingsChatDraft(e.target.value)}
+                    placeholder="A scale, a door tag, a spec…"
+                  />
+                </label>
+                {drawingsChatDraft && (
+                  <button
+                    type="button"
+                    className="drawings-ask-clear"
+                    aria-label="Clear question"
+                    onClick={() => {
+                      setDrawingsChatDraft("");
+                      drawingsChatInputRef.current?.focus();
+                    }}
+                  >
+                    <X size={15} strokeWidth={2} />
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  className="drawings-ask-send"
+                  aria-label="Send"
+                  disabled={!drawingsChatDraft.trim()}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M4.5 11.2 19.2 4.4c.7-.3 1.4.4 1.1 1.1L13.5 20.2c-.3.7-1.3.6-1.5-.2l-1.6-6.1-6.1-1.6c-.8-.2-.9-1.2-.2-1.5Z" fill="currentColor"/>
+                  </svg>
+                </button>
+              </form>
+              <div className="drawings-ask-hits" role="listbox" aria-label="Suggested questions">
+                {DRAWINGS_ASK_HINTS.map((hint) => (
+                  <button
+                    key={hint}
+                    type="button"
+                    className="drawings-ask-hit"
+                    onClick={() => submitDrawingsAsk(hint)}
+                  >
+                    <span className="drawings-ask-pip" aria-hidden="true" />
+                    <span>{hint}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="drawings-ask-foot">
+                <span>Enter sends</span>
+                <span>Esc closes</span>
+              </div>
+            </div>
           </div>
         )}
 
-        {canvasReady && takeoffsOpen && (
-          <button type="button" className="takeoffs-drawer-scrim" aria-label="Close takeoffs" onClick={toggleTakeoffs} />
+        {canvasReady && takeoffsShown && (
+          <button type="button" className={`takeoffs-drawer-scrim${takeoffsEntered ? " is-open" : ""}`} aria-label="Close takeoffs" onClick={toggleTakeoffs} />
         )}
-        {canvasReady && (
-        <div className="takeoffs-drawer-slot">
+        {canvasReady && takeoffsShown && (
+        <div className={`takeoffs-drawer-slot${takeoffsEntered ? " is-open" : ""}`}>
           <TakeoffsPanel
-            open={takeoffsOpen}
+            open
             width={panelW}
             multiSheet={groupKeys.length > 1}
             units={units}

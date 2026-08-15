@@ -1,5 +1,5 @@
-// LayersSidebar — dedicated left-rail panel for takeoff layers.
-// Session-only hide/group state lives in TakeoffCanvas; this panel never persists.
+// LayersSidebar — previous layers list (checkbox pick + sheet blocks).
+// Live UI is LayersIllustratorPanel, wired to the same session hide/group store.
 
 import React, { useMemo } from "react";
 import { Icon } from "../brand/icons.jsx";

@@ -20,6 +20,7 @@ export default function OpenSheetsPill({
   hideFind = false,
   hideActions = false,
   query,
+  maxGroup = 4,
 }) {
   const [q, setQ] = useState("");
   const findRef = useRef(null);
@@ -59,10 +60,10 @@ export default function OpenSheetsPill({
     return openTabs[0] || "";
   })();
 
-  const onEye = (e, k, visible, inGroup) => {
+  const onEye = (e, k, eyeDisabled) => {
     e.stopPropagation();
-    if (!visible) { onGoToSheet(k); return; }
-    if (inGroup && sheetGroup.length >= 2) onToggleInGroup(k);
+    if (eyeDisabled) return;
+    onToggleInGroup(k);
   };
 
   const list = (
@@ -78,46 +79,73 @@ export default function OpenSheetsPill({
           const lbl = tabLabel ? tabLabel(k) : k;
           const n = String(i + 1).padStart(2, "0");
           const canHide = visible && inGroup && sheetGroup.length >= 2;
+          const eyeDisabled = visible && sheetGroup.length < 2;
+          const eyeTip = eyeDisabled
+            ? "On canvas"
+            : canHide
+              ? "Hide from view"
+              : "Show in pair";
+          // Split makes/keeps a side-by-side pair. Removing (in-group) is always
+          // allowed; adding is a dead action when the group is already full, or
+          // when it would try to pair the only/active sheet with itself — disable
+          // it there so no click ever lands on nothing.
+          const atCap = sheetGroup.length >= maxGroup;
+          const selfPair = sheetGroup.length === 0 && k === activeKey;
+          const splitDisabled = !inGroup && (atCap || selfPair);
+          const splitTip = inGroup
+            ? "Unsplit"
+            : atCap
+              ? `Max ${maxGroup} sheets`
+              : selfPair
+                ? "Open another sheet first"
+                : "Split view";
           return (
             <div
               key={k}
               className={`open-sheets-row${selected ? " is-on" : ""}${visible && !selected ? " is-up" : ""}`}
               onClick={() => onGoToSheet(k)}
-              title={k}
               role="button"
               tabIndex={0}
+              aria-current={selected ? "true" : undefined}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onGoToSheet(k); } }}
             >
               <span className="open-sheets-idx" aria-hidden="true">{n}</span>
               <span className="open-sheets-name">{lbl}</span>
-              {selected && <span className="open-sheets-now">Selected</span>}
-              <button
-                type="button"
-                className={`open-sheets-ico${visible ? " is-eye" : ""}`}
-                onClick={(e) => onEye(e, k, visible, inGroup)}
-                data-tip={canHide ? "Hide from this view" : visible ? "On the canvas" : "Show this sheet"}
-                aria-label={canHide ? "Hide from this view" : visible ? "On the canvas" : "Show this sheet"}
-              >
-                {visible ? <Eye {...ICO} /> : <EyeOff {...ICO} />}
-              </button>
-              <button
-                type="button"
-                className={`open-sheets-ico${inGroup ? " is-pair" : ""}`}
-                onClick={(e) => { e.stopPropagation(); onToggleInGroup(k); }}
-                data-tip={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
-                aria-label={inGroup ? "Remove from side-by-side" : "Side-by-side with the current sheet"}
-              >
-                <Columns2 {...ICO} />
-              </button>
-              <button
-                type="button"
-                className="open-sheets-ico is-x"
-                onClick={(e) => { e.stopPropagation(); onCloseTab(k); }}
-                data-tip="Close tab"
-                aria-label="Close tab"
-              >
-                <X {...ICO} size={16} />
-              </button>
+              <span className={`open-sheets-now${selected ? " is-on" : ""}`}>{selected ? "Now" : ""}</span>
+              <span className="open-sheets-tools">
+                <button
+                  type="button"
+                  className={`open-sheets-ico${visible ? " is-eye" : ""}`}
+                  onClick={(e) => onEye(e, k, eyeDisabled)}
+                  disabled={eyeDisabled}
+                  data-tip={eyeTip}
+                  data-tip-at="left"
+                  aria-label={eyeTip}
+                >
+                  {visible ? <Eye {...ICO} /> : <EyeOff {...ICO} />}
+                </button>
+                <button
+                  type="button"
+                  className={`open-sheets-ico${inGroup ? " is-pair" : ""}`}
+                  onClick={(e) => { e.stopPropagation(); if (!splitDisabled) onToggleInGroup(k); }}
+                  disabled={splitDisabled}
+                  data-tip={splitTip}
+                  data-tip-at="left"
+                  aria-label={splitTip}
+                >
+                  <Columns2 {...ICO} />
+                </button>
+                <button
+                  type="button"
+                  className="open-sheets-ico is-x"
+                  onClick={(e) => { e.stopPropagation(); onCloseTab(k); }}
+                  data-tip="Close"
+                  data-tip-at="left"
+                  aria-label="Close tab"
+                >
+                  <X {...ICO} />
+                </button>
+              </span>
             </div>
           );
         })}

@@ -17,9 +17,9 @@ const FLOW = [
   {
     phase: "Layers & left panel",
     steps: [
-      { title: "Layers list", desc: "Every measured shape listed by sheet — masks, wall areas, lines, counts, and cutouts with condition tags." },
+      { title: "Layers list", desc: "Every measured shape listed by sheet — open from the left-rail layers icon (2nd). Masks, wall areas, lines, counts, and cutouts with condition tags." },
       { title: "Show / hide", desc: "Toggle layer visibility on the canvas without deleting quantities; re-show hidden layers anytime." },
-      { title: "Select & group", desc: "Multi-select layers (⌘/⇧), group related shapes, and ungroup when you need to edit individually." },
+      { title: "Select & group", desc: "Ctrl/Cmd-click toggles, Shift-click ranges, Alt-click eye solos. Group related shapes (Ctrl+Shift+G); ungroup with Ctrl+Shift+U." },
       { title: "Fly to & edit", desc: "Click a layer to select and fly to it; open condition edit; delete shapes; separate wall lines at corners." },
       { title: "Wall segments", desc: "Per-line wall heights and door-opening rows in the layer detail — scrolls when more than five lines." },
       { title: "Markups tab", desc: "Clouds, callouts, text notes, and highlights — browse, show/hide all markups, and fly to each item." },
@@ -43,7 +43,7 @@ const FLOW = [
       { title: "45° guides", desc: "Lock traces to 45°/90° while drawing; hold ⇧ for angle constraint on the fly." },
       { title: "Snap", desc: "Snap to plan linework and corners (beta) for faster, accurate vertices." },
       { title: "Render", desc: "Hi-res sheet render plus fill and wall-trace sensitivity for one-click and AI detection." },
-      { title: "Canvas view", desc: "Zoom (+/−), fit sheet, and dark negative print (☾). Double-click Layers tab to float the panel." },
+      { title: "Canvas view", desc: "Zoom (+/−), fit sheet, and dark negative print (☾)." },
       { title: "Live readout", desc: "Running floor/wall totals, per-segment heights, and door-opening deductions on the selected wall." },
     ],
   },

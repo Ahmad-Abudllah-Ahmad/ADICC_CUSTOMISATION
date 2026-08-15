@@ -62,7 +62,7 @@ Press `G` (or click **Sheets** in the toolbar) for the visual gallery: one card 
 
 ### Tabs, groups, and Regroup
 
-Open sheets live in the **Sheets** tab (next to Files / Markups) — the stacked-pages button above chat opens the same tab. Count badges sit on the tab, not in the label. Search if the list is long, click a row to view it, **⊞** to put it side-by-side with the current sheet, **✕** to close the tab. The sheet chip's dropdown lists every page and file, and holds **Ungroup — back to one sheet** and **Regroup (N)** — one click to restore your last side-by-side composition after working sheets individually. Each sheet in a group keeps its own scale, takeoffs, and markups.
+Open sheets live in the **Sheets** tab (next to Files / Markups) — the stacked-pages button above chat opens the same tab. Count badges sit on the tab, not in the label. Search if the list is long. The current sheet is the cobalt row marked **Now**. **Row click** focuses that sheet: if it is already in the side-by-side row, the canvas pans to it (no reload); if it is not, that tab becomes the single view. **Eye** shows or hides the sheet in the current pair (off adds it, like Split; on a pair of two or more, on removes it). Eye is disabled when that sheet is already the only one on the canvas. **⊞ Split** toggles membership in the side-by-side group (max 4) — a sheet that is already painted stays on screen; only the new page rasters. **✕** closes the tab; remaining painted sheets stay. The sheet chip's dropdown lists every page and file, and holds **Ungroup — back to one sheet** and **Regroup (N)** — one click to restore your last side-by-side composition after working sheets individually. Each sheet in a group keeps its own scale, takeoffs, and markups.
 
 ### Levels (multi-floor sets)
 
@@ -74,6 +74,7 @@ Panning is always at hand, whatever tool is armed:
 
 - **Trackpad**: two-finger scroll pans both axes; pinch zooms.
 - **Mouse**: a wheel notch zooms toward the cursor (~12% per notch, glided); `⇧`+wheel pans.
+- **Minimap** (on by default, map icon in the zoom cluster): drag the overview to pan — the cobalt box is the current view. Toggle persists per browser.
 - **Any device**: middle-drag, right-drag, or hold `Space` and drag. The **Pan** tool (`P`) is there if you want it.
 - **Select tool**: dragging open canvas pans — the instinct you brought from desktop takeoff tools just works.
 - **Mid-measure**: a held click that moves becomes a pan instead of placing a point. Click-release places; press-drag travels.
@@ -243,7 +244,7 @@ The **Snap** toggle pulls your cursor onto true PDF endpoints — real corners e
 
 ### The live readout
 
-The live readout floats on the sheet at top-right (halo text, same language as the bottom scale bar — not a toolbar pill). It tracks the armed tool: totals for the tracing tools, `W × H · SF · SY` for Rectangle, wall SF at the condition height for Surface Area, and running One-Click selection totals. Wall-height and door-opening editors stay clickable when a wall is selected. Any run or side that reaches **12′ turns the chip amber** — the roll-width warning rides every tool that measures a length.
+The live readout floats on the sheet at top-right as text inside thin crop-marks (same as the takeoff-value figure at top-left) — no plate, no glow. Corners are black in light chrome and white in dark chrome. It tracks the armed tool: totals for the tracing tools, `W × H · SF · SY` for Rectangle, wall SF at the condition height for Surface Area, and running One-Click selection totals. Wall-height and door-opening editors stay clickable when a wall is selected. Any run or side that reaches **12′ turns the chip amber** — the roll-width warning rides every tool that measures a length.
 
 ---
 
@@ -359,7 +360,7 @@ One more distinction: **Undo last shape** (Edit menu) and `⌫`-with-nothing-in-
 
 ## 9. Markups, stamps & RFIs
 
-The markup layer is communication, never quantity: clouds, callouts, notes, highlighter ink, and stamps live on a separate layer the totals never count. The left-rail **folder** icon opens one panel — **Files**, **Sheets**, **Layers**, **Markups**, **Stamps**, **RFIs**. If the tabs don't fit, drag or scroll the strip sideways; **×** stays put.
+The markup layer is communication, never quantity: clouds, callouts, notes, highlighter ink, and stamps live on a separate layer the totals never count. The left-rail **folder** icon opens one panel — **Files**, **Sheets**, **Markups**, **Stamps**, **RFIs**. If the tabs don't fit, drag or scroll the strip sideways; **×** stays put. The **layers** icon (2nd on the left rail) docks the Layers list beside the rail: one row per takeoff (and a folder per open sheet when more than one is on the canvas). Eye hides a shape, a group, or a whole sheet; padlock locks the same way (no move / vertex / delete). The vertical strip and selection square use the takeoff's **live paint** — the colour you set on the shape, else the condition colour, else the type fallback. **Ctrl/Cmd-click** toggles a row (or its descendants) in the pick; **Shift-click** takes the visible range from the last click; **Alt-click** the name picks that row's shapes. **Alt-click the eye** solos that row (again to show all); **Alt-click the lock** locks everything else (again to unlock all); **Alt-click the triangle** expands the whole nested group. With the panel focused, **Ctrl/Cmd+A** picks every takeoff on the focused sheet. On the canvas with Select, **Shift-click** adds a shape and **Ctrl/Cmd-click** toggles it (wall-area joins still happen when you click an endpoint onto another run). Group / Ungroup (`Ctrl+Shift+G` / `Ctrl+Shift+U`). Groups nest; selecting a parent picks every descendant. Drag a group onto a group to nest it. `+` makes a new group on the sheet folder you last clicked. Hide and lock do not change quantities; the tree survives refresh.
 
 ### The markup tools
 
@@ -554,6 +555,8 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 | Key | Tool |
 |---|---|
 | `O` | One-Click Area |
+| `W` | Wall Trace |
+| `U` | Wall Area |
 | `A` | Area |
 | `R` | Rectangle |
 | `L` | Linear |
@@ -562,6 +565,7 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 | `C` | Count |
 | `D` | Deduct shape (Cut Out) |
 | `⇧D` | Deduct rectangle |
+| `⇧Q` | Deduct curved line |
 | `H` | Highlighter |
 | `K` | Check a dimension |
 | `V` | Select |
@@ -581,7 +585,7 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 |---|---|
 | Click (release without moving) | Place a point |
 | Press-and-drag | Pan mid-measure (no point placed) |
-| `⏎` / double-click | Finish the shape (areas/deducts/zone need ≥ 3 points; linear/surface ≥ 2). In One-Click: **Create** the selection. With agent proposals pending and nothing mid-draw: accept all visible. |
+| `⏎` / double-click | Finish the shape (areas/deducts/zone need ≥ 3 points; linear/surface/wallarea/curve/deduct-curve ≥ 2). Deduct-curve only saves if the flattened spline has ≥ 3 points. In One-Click: **Create** the selection. With agent proposals pending and nothing mid-draw: accept all visible. |
 | `⌫` / `Delete` | Pop the last placed point — then, in order: delete the picked One-Click vertex → drop the last One-Click region → delete the picked shape vertex → delete the selected shape → delete the selected markup → pop a calibrate/check point |
 | `⌘Z` | Mid-trace: pop the last point. Otherwise: **undo** |
 | `⇧⌘Z` | Redo |
@@ -597,6 +601,10 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 | `⌘C` | Copy the shape |
 | `⌘V` | Paste under the cursor — lands on the sheet you're hovering |
 | `⌘D` | Duplicate |
+| `⇧⌘G` | Group the picked layers (nests if a group is already in the pick) |
+| `⇧⌘U` | Ungroup the picked layers |
+| `⇧`-click a shape (Select) | Add it to the pick |
+| `⌘`-click a shape (Select) | Toggle it in the pick |
 | `⌫` | Delete (a picked vertex first, else the shape or markup) |
 | Double-click a markup | Edit its text in place |
 
@@ -619,6 +627,14 @@ Every shortcut in the app, verified against the code. Letter keys are suppressed
 |---|---|
 | `⌘⏎` | Run the agent (in the Agent panel's goal box) |
 | `⏎` | Apply calibration (calibrate field) · grade the check (check field) · save (revision-name field) |
+| Layers: click | Replace the pick with that row |
+| Layers: `⌘`-click | Toggle that row in the pick |
+| Layers: `⇧`-click | Pick every visible row between the last click and this one |
+| Layers: `⌥`-click name | Pick that row's shapes (a group = every descendant) |
+| Layers: `⌥`-click eye | Solo that row; again to show all |
+| Layers: `⌥`-click lock | Lock every other row; again to unlock all |
+| Layers: `⌥`-click triangle | Expand the whole nested group |
+| Layers: `⌘A` | Pick every takeoff on the focused sheet |
 
 ---
 

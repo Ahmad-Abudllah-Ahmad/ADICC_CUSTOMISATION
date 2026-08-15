@@ -4,7 +4,6 @@
 import { winAnsiSafe } from "./markedset.js";
 import { areaUnit } from "./units";
 import { money } from "./num.js";
-import adiccLogoUrl from "../../public/images/logos/adicc-logo.png?url";
 
 const PAGE_W = 612;
 const PAGE_H = 792;
@@ -15,7 +14,6 @@ const M_TOP = 748;
 const CONTENT_W = M_RIGHT - M_LEFT;
 
 const ADICC_LOGO_URLS = [
-  adiccLogoUrl,
   "/images/logos/adicc-logo.png",
   `${typeof import.meta !== "undefined" && import.meta.env?.BASE_URL ? import.meta.env.BASE_URL : "/"}images/logos/adicc-logo.png`,
 ];

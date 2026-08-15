@@ -7,7 +7,6 @@ import { roundSheetRow, hasMultipliers, BY_SHEET_BASE_NOTE, grandTotals } from "
 import { areaVal, areaUnit, lenVal, lenUnit } from "./units";
 import { columnLabel } from "./conditionColumns.js";
 import { sheetExportName } from "./sheetKey.ts";
-import adiccLogoUrl from "../../public/images/logos/adicc-logo.png?url";
 
 const PAGE_W = 612;
 const PAGE_H = 792;
@@ -18,7 +17,6 @@ const M_TOP = 748;
 const CONTENT_W = M_RIGHT - M_LEFT;
 
 const ADICC_LOGO_URLS = [
-  adiccLogoUrl,
   "/images/logos/adicc-logo.png",
   `${typeof import.meta !== "undefined" && import.meta.env?.BASE_URL ? import.meta.env.BASE_URL : "/"}images/logos/adicc-logo.png`,
 ];
