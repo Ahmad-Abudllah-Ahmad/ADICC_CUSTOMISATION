@@ -928,7 +928,6 @@ function TakeoffsPanel({
             style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
           <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.group ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
             aria-label="Group by tag family (the text before the dash: CPT, LVT, CT…)"
-            aria-label="Group by tag family (the text before the dash: CPT, LVT, CT…)"
             style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
         </div>
         {/* bulk actions — appear while a ⌘/⇧ multi-selection is live

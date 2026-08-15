@@ -14,8 +14,6 @@ venv/
 server/.venv/
 
 # Local env / secrets — never commit
-.env
-.env.*
 !.env.example
 
 # Netlify CLI local state (never commit; the root netlify.toml IS committed)
@@ -24,7 +22,6 @@ server/.venv/
 
 # Editor / OS
 .DS_Store
-.vscode/
 .idea/
 *.log
 
@@ -46,3 +43,4 @@ mcp/dist-mcpb/
 # Voice model artifacts (~45 MB) — staged by web/scripts/fetch-voice-model.mjs
 # into public/ for same-origin serving; never committed (RFC #59)
 web/public/models/
+config.bat
