@@ -154,9 +154,8 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
   const room = row.room || row.room_detected || "";
   const sheetFloor = floorLabelFromSheetId(row.sheet_id);
   const refs = row.schedule_refs || [];
-  const finishRef = (tag
-    ? refs.filter((r) => r.tag?.toUpperCase() === tag)
-    : refs.filter((r) => r.kind === "finish"))
+  const finishRef = refs
+    .filter((r) => r.tag?.toUpperCase() === tag || r.kind === "finish")
     .sort((a, b) => {
       let sa = a.description ? 40 : 0;
       let sb = b.description ? 40 : 0;
@@ -166,7 +165,7 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
       if (sheetFloor && b.floors) sb += b.floors.toUpperCase().includes(sheetFloor.split(" ")[0]) ? 25 : 0;
       return sb - sa;
     })[0]
-    || (tag ? refs.find((r) => r.tag?.toUpperCase() === tag) : refs.find((r) => r.description))
+    || refs.find((r) => r.description)
     || refs[0];
   const description = row.description || finishRef?.description || conditionDescription || "";
   if (!description && !finishRef && !tag) return null;
@@ -191,25 +190,30 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
     if (!ceiling && split.ceiling) ceiling = split.ceiling;
   }
 
+  const resolvedTag = finishRef?.tag || kbEntry?.tag || tag;
+  const resolvedBbox = finishRef?.source_bbox || kbEntry?.source_bbox || null;
+  const resolvedSource = finishRef?.source || finishRef?.source_title || kbEntry?.source_title || kbEntry?.source_sheet || "";
+  const resolvedSourceSheet = finishRef?.source_sheet || kbEntry?.source_sheet || "";
+
   return {
-    tag,
-    room_name: row.room || row.room_detected || finishRef?.room_name || "",
-    type: finishRef?.type || "Finish code",
+    tag: resolvedTag,
+    room_name: row.room || row.room_detected || finishRef?.room_name || kbEntry?.room_name || "",
+    type: finishRef?.type || kbEntry?.type || "Finish code",
     description,
     floor_finish,
     skirting,
     wall_finishes,
     ceiling,
-    size: finishRef?.size || "",
-    fire_rating: finishRef?.fire_rating || "",
-    floors: finishRef?.floors || sheetFloor || "",
-    manufacturer: finishRef?.manufacturer || "",
-    style: finishRef?.style || "",
-    color: finishRef?.color || "",
-    remarks: finishRef?.remarks || "",
-    source: finishRef?.source || finishRef?.source_title || "",
-    source_sheet: finishRef?.source_sheet || "",
-    source_bbox: finishRef?.source_bbox || null,
+    size: finishRef?.size || kbEntry?.size || "",
+    fire_rating: finishRef?.fire_rating || kbEntry?.fire_rating || "",
+    floors: finishRef?.floors || kbEntry?.floors || sheetFloor || "",
+    manufacturer: finishRef?.manufacturer || kbEntry?.manufacturer || "",
+    style: finishRef?.style || kbEntry?.style || "",
+    color: finishRef?.color || kbEntry?.color || "",
+    remarks: finishRef?.remarks || kbEntry?.remarks || "",
+    source: resolvedSource,
+    source_sheet: resolvedSourceSheet,
+    source_bbox: resolvedBbox,
   };
 }
 

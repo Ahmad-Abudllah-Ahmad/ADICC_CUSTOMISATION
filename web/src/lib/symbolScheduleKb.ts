@@ -113,14 +113,6 @@ export function tagLookupKeys(tag: string): string[] {
     keys.add(`SD${sm[1]}${sm[2]}`);
     keys.add(`SD-${sm[1]}${sm[2]}`);
   }
-  const wm = n.match(/^W(\d{2,3})([A-Z]?)$/);
-  if (wm) {
-    const num = String(parseInt(wm[1], 10));
-    keys.add(`W${wm[1]}${wm[2]}`);
-    keys.add(`W-${num}${wm[2]}`);
-    keys.add(`W${num}${wm[2]}`);
-    keys.add(`W-${wm[1]}${wm[2]}`);
-  }
   const xm = n.match(/^(CW|GD|LV)-(\d{2})$/);
   if (xm) {
     keys.add(`${xm[1]}-${xm[2]}`);
@@ -128,12 +120,14 @@ export function tagLookupKeys(tag: string): string[] {
     keys.add(`${xm[1]}${parseInt(xm[2], 10)}`);
     keys.add(`${xm[1]}-${parseInt(xm[2], 10)}`);
   }
-  // Generic format for ANY finish/trade tag (PT-1, CPT-1, TL-2, RB-1, ACT-1, P-01, WD-1, etc.)
-  // Support dashed and un-dashed variants within the SAME prefix, but never cross-alias different prefixes (PT != CPT).
-  const fm = n.match(/^([A-Z]{1,5})-?([A-Z0-9]{1,4})$/);
+  const fm = n.match(/^(PT|CPT|STN|RUB|EPD|SK|WP|WD|FC|PC)-([A-Z0-9]{1,4})$/);
   if (fm) {
-    keys.add(`${fm[1]}-${fm[2]}`);
-    keys.add(`${fm[1]}${fm[2]}`);
+    if (fm[1] === "PT" || fm[1] === "CPT") {
+      keys.add(`PT-${fm[2]}`);
+      keys.add(`CPT-${fm[2]}`);
+    } else {
+      keys.add(`${fm[1]}-${fm[2]}`);
+    }
   }
   return [...keys];
 }
@@ -425,7 +419,7 @@ function parseDoorMarksLoose(toks: SymbolToken[], meta: SheetMeta): ScheduleKbEn
       description: `Door ${tag} — see ${meta.file_name.replace(/\.pdf$/i, "")}`,
       source_sheet: meta.sheet_id,
       source_title: meta.file_name.replace(/\.pdf$/i, ""),
-      source_bbox: { x: Math.max(0, t.x - 6), y: Math.max(0, t.y - h - 4), w: Math.max(w + 12, 60), h: Math.max(h * 2, 24) },
+      source_bbox: { x: t.x, y: t.y - h, w: Math.max(w, h * 4), h: h * 8 },
     });
   }
   return out;
@@ -685,7 +679,7 @@ function finishLinesFromTokens(tokens: SymbolToken[]): { y: number; text: string
   let cur: SymbolToken[] = [];
   let cy = 0;
   for (const t of toks) {
-    const tol = Math.max((t.h || 10) * 0.85, 6);
+    const tol = Math.max(t.h * 0.65, 4);
     if (cur.length && Math.abs(t.y - cy) > tol) {
       lines.push({
         y: cy,
@@ -713,8 +707,8 @@ function isFinishesTablePage(text: string): boolean {
     && (/SPACE\s*NAME/.test(up) || /FLOOR\s*FINISH/.test(up));
 }
 
-const FINISH_CODE_RE = /^[A-Z]{1,5}-[A-Z0-9]{1,4}$/;
-const FLOOR_FINISH_MARK_RE = /^[A-Z]{1,5}-[A-Z0-9]{1,4}$/i;
+const FINISH_CODE_RE = /^[A-Z]{2,4}-[A-Z0-9]{1,4}$/;
+const FLOOR_FINISH_MARK_RE = /^(PT|STN|RUB|EPD|CPT|LVT|VCT|RB|ACT|SK|WP|WD|FC|PC)-[A-Z0-9]{1,4}$/i;
 
 function isFloorSectionHeader(text: string): string | null {
   const up = (text || "").toUpperCase().trim().replace(/\s+/g, " ");
@@ -765,7 +759,7 @@ export function parseFinishesScheduleTable(
       continue;
     }
     const up = line.text.toUpperCase();
-    if (/^(SPACE\s*NAME|FLOOR\s*FINISH|SKIRTING|WALL\s*FINISH|CEILING|MARK|LEGEND)/.test(up)) continue;
+    if (/^(SPACE\s*NAME|FLOOR\s*FINISH|SKIRTING|WALL\s*FINISH|CEILING|MARK|LEGEND|PT\s|STN\s|RUB\s|EPD\s|SK\s|WP\s|WD\s|FC\s|PC\s)/.test(up)) continue;
     if (/^(PROJECT|DRAWING|SCALE|REVISION|GENERAL\s+NOTES|SHEET\s+NO)/.test(up)) continue;
 
     const marks = line.tokens.filter((t) => {
@@ -796,8 +790,14 @@ export function parseFinishesScheduleTable(
 
     const normMark = (t: SymbolToken) => (t.str || "").trim().toUpperCase().replace(/\s+/g, "");
     const skirtingMark = marks.find((m) => m !== floorMark && /^SK-/i.test(normMark(m)));
-    const wallMark = marks.find((m) => /^(WP|WD)-/i.test(normMark(m)));
-    const ceilingMark = marks.find((m) => /^(FC|PC)-/i.test(normMark(m)));
+    const ceilingMark = marks.find((m) => m !== floorMark && /^(FC|PC|GYP)-/i.test(normMark(m)));
+    const wallMark = marks.find((m) =>
+      m !== floorMark
+      && m !== skirtingMark
+      && m !== ceilingMark
+      && !/^SK-/i.test(normMark(m))
+      && !/^(FC|PC|GYP)-/i.test(normMark(m))
+    );
 
     const splitX = floorFinishColX >= 0
       ? floorFinishColX - 12
@@ -815,15 +815,10 @@ export function parseFinishesScheduleTable(
         .replace(/\s+/g, " ")
         .trim();
     }
-    if (!description || description.length < 4) continue;
+    if (!description || description.length < 8) continue;
 
-    const rowTokens = line.tokens;
-    const minX = Math.min(...rowTokens.map((t) => t.x));
-    const maxX = Math.max(...rowTokens.map((t) => t.x + tokW(t)));
-    const minY = Math.min(...rowTokens.map((t) => t.y - (t.h || 10)));
-    const maxY = Math.max(...rowTokens.map((t) => t.y + (t.h || 10) * 0.4));
-    const pad = 6;
-
+    const h = Math.max(6, floorMark.h || 10);
+    const fw = tokW(floorMark);
     const entry: ScheduleKbEntry = {
       tag,
       kind: "finish",
@@ -836,10 +831,10 @@ export function parseFinishesScheduleTable(
       source_sheet: meta.sheet_id,
       source_title: meta.file_name.replace(/\.pdf$/i, ""),
       source_bbox: {
-        x: Math.max(0, minX - pad),
-        y: Math.max(0, minY - pad),
-        w: Math.max(40, (maxX - minX) + pad * 2),
-        h: Math.max(20, (maxY - minY) + pad * 2),
+        x: Math.round(floorMark.x - 6),
+        y: Math.round(floorMark.y - 4),
+        w: Math.max(Math.round(fw + 12), 36),
+        h: Math.max(Math.round(h + 8), 18),
       },
     };
     const dedupeKey = `${tag}::${normRoomKey(room_name)}::${normFloorKey(floorCtx)}`;
@@ -871,7 +866,7 @@ export function parseFinishScheduleTokens(
   let cur: SymbolToken[] = [];
   let cy = 0;
   for (const t of toks) {
-    const tol = Math.max((t.h || 10) * 0.85, 6);
+    const tol = Math.max(t.h * 0.65, 4);
     if (cur.length && Math.abs(t.y - cy) > tol) {
       lines.push({
         y: cy,
@@ -894,7 +889,6 @@ export function parseFinishScheduleTokens(
   const out: ScheduleKbEntry[] = [];
   const byTag = new Map<string, ScheduleKbEntry>();
   let pendingDesc: string[] = [];
-  let pendingTokens: SymbolToken[] = [];
   let roomCtx = "";
 
   for (const line of lines) {
@@ -904,7 +898,6 @@ export function parseFinishScheduleTokens(
     if (roomM) {
       roomCtx = roomM[2].trim();
       pendingDesc = [];
-      pendingTokens = [];
       continue;
     }
     // Skip title-block noise
@@ -919,24 +912,11 @@ export function parseFinishScheduleTokens(
       const tag = (codeTok.str || "").trim().toUpperCase().replace(/\s+/g, "");
       if (!FINISH_CODE_RE.test(tag)) {
         pendingDesc.push(line.text);
-        pendingTokens.push(...line.tokens);
         continue;
       }
       const desc = pendingDesc.join(" ").replace(/\s+/g, " ").trim();
-      const allEntryTokens = [...pendingTokens, ...line.tokens];
       pendingDesc = [];
-      pendingTokens = [];
-
-      const xs = allEntryTokens.map((t) => t.x);
-      const x1s = allEntryTokens.map((t) => t.x + tokW(t));
-      const ys = allEntryTokens.map((t) => t.y - (t.h || 10));
-      const y1s = allEntryTokens.map((t) => t.y + (t.h || 10) * 0.4);
-      const minX = xs.length ? Math.min(...xs) : codeTok.x - 8;
-      const maxX = x1s.length ? Math.max(...x1s) : codeTok.x + tokW(codeTok) + 8;
-      const minY = ys.length ? Math.min(...ys) : codeTok.y - (codeTok.h || 10) * 4;
-      const maxY = y1s.length ? Math.max(...y1s) : codeTok.y + (codeTok.h || 10) * 2;
-      const pad = 6;
-
+      const h = Math.max(6, codeTok.h || 10);
       const entry: ScheduleKbEntry = {
         tag,
         kind: "finish",
@@ -945,10 +925,10 @@ export function parseFinishScheduleTokens(
         source_sheet: meta.sheet_id,
         source_title: meta.file_name.replace(/\.pdf$/i, ""),
         source_bbox: {
-          x: Math.max(0, minX - pad),
-          y: Math.max(0, minY - pad),
-          w: Math.max(40, (maxX - minX) + pad * 2),
-          h: Math.max(20, (maxY - minY) + pad * 2),
+          x: codeTok.x - 8,
+          y: codeTok.y - h * 6,
+          w: Math.max(tokW(codeTok) + 16, 180),
+          h: h * 10,
         },
       };
       // Keep one row per finish tag per room group (same tag can repeat under different rooms).
@@ -962,11 +942,7 @@ export function parseFinishScheduleTokens(
     // Accumulate description prose
     if (line.text.length > 3 && !/^[A-Z]{1,3}\d{4}/.test(up)) {
       pendingDesc.push(line.text);
-      pendingTokens.push(...line.tokens);
-      if (pendingDesc.length > 6) {
-        pendingDesc.shift();
-        pendingTokens = pendingTokens.slice(-30);
-      }
+      if (pendingDesc.length > 6) pendingDesc.shift();
     }
   }
 
