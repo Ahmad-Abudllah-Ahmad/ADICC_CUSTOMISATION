@@ -10732,8 +10732,11 @@ export default function TakeoffCanvas() {
                   setSymbolSourceView({
                     sheetId: fd.source_sheet,
                     title: fd.source || fd.source_sheet,
-                    bbox: fd.source_bbox || null,
+                    bbox: fd.space_bbox || fd.source_bbox || null,
+                    spaceBbox: fd.space_bbox || null,
+                    markBbox: fd.source_bbox || null,
                     tag: fd.tag || data.finish_tag || "",
+                    room: fd.room_name || data.room || "",
                   });
                 }}
                 onPointerEnter={() => { shapeBoqHoverStickyRef.current = true; }}
@@ -10899,6 +10902,9 @@ export default function TakeoffCanvas() {
               sheetId={symbolSourceView.sheetId}
               title={`${symbolSourceView.tag || ""} · ${symbolSourceView.title || ""}`.replace(/^ · /, "")}
               bbox={symbolSourceView.bbox}
+              spaceBbox={symbolSourceView.spaceBbox}
+              markBbox={symbolSourceView.markBbox}
+              room={symbolSourceView.room}
               getDoc={docFor}
               onClose={() => setSymbolSourceView(null)}
             />
@@ -12280,19 +12286,24 @@ export default function TakeoffCanvas() {
           </FloatingWindow>
         )}
 
-        {showFinishesSchedule && (
-          <FloatingWindow
-            defaultRect={{ x: Math.max(16, ((typeof window !== "undefined" ? window.innerWidth : 1280) - 920) / 2), y: 72, w: 920, h: Math.min(680, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
-            minW={520}
-            minH={360}
-          >
-            <FinishesSchedulePanel
-              open={showFinishesSchedule}
-              onClose={() => setShowFinishesSchedule(false)}
-              scheduleKb={scheduleKb}
-            />
-          </FloatingWindow>
-        )}
+        {showFinishesSchedule && (() => {
+          const selShapeObj = selectedId ? shapes.find((s) => s.id === selectedId) : null;
+          const activeRoom = selShapeObj ? (selShapeObj.room || detectRoomName(selShapeObj, boqDetectCtx, shapes) || selShapeObj.room_detected || "") : "";
+          return (
+            <FloatingWindow
+              defaultRect={{ x: Math.max(16, ((typeof window !== "undefined" ? window.innerWidth : 1280) - 920) / 2), y: 72, w: 920, h: Math.min(680, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+              minW={520}
+              minH={360}
+            >
+              <FinishesSchedulePanel
+                open={showFinishesSchedule}
+                onClose={() => setShowFinishesSchedule(false)}
+                scheduleKb={scheduleKb}
+                highlightRoom={activeRoom}
+              />
+            </FloatingWindow>
+          );
+        })()}
 
       </div>
 

@@ -191,6 +191,7 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
     source: effectiveRef?.source || effectiveRef?.source_title || "",
     source_sheet: effectiveRef?.source_sheet || "",
     source_bbox: effectiveRef?.source_bbox || null,
+    space_bbox: effectiveRef?.space_bbox || null,
   };
 }
 
@@ -215,6 +216,7 @@ function refFromKb(entry, sourceLabel = "Schedule") {
     source_sheet: entry.source_sheet || "",
     source_title: entry.source_title || "",
     source_bbox: entry.source_bbox || null,
+    space_bbox: entry.space_bbox || null,
     relevance: 0,
   };
 }

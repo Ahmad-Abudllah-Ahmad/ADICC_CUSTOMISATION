@@ -10,11 +10,14 @@ import { RENDER_SCALE, parseSheetKey } from "../lib/sheets";
  *   sheetId: string,
  *   title?: string,
  *   bbox?: { x: number, y: number, w: number, h: number } | null,
+ *   spaceBbox?: { x: number, y: number, w: number, h: number } | null,
+ *   markBbox?: { x: number, y: number, w: number, h: number } | null,
+ *   room?: string,
  *   getDoc: (file: string) => Promise<any>,
  *   onClose: () => void,
  * }} props
  */
-export default function SymbolSourceViewer({ sheetId, title, bbox, getDoc, onClose }) {
+export default function SymbolSourceViewer({ sheetId, title, bbox, spaceBbox, markBbox, room, getDoc, onClose }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -53,24 +56,35 @@ export default function SymbolSourceViewer({ sheetId, title, bbox, getDoc, onClo
         await task.promise;
         if (cancelled) return;
         setStatus("ready");
+
+        const targetBbox = spaceBbox || bbox;
         // Scroll the highlighted region into view
         const sc = wrapRef.current;
-        if (sc && bbox) {
-          const sx = (bbox.x / RENDER_SCALE) * scale;
-          const sy = (bbox.y / RENDER_SCALE) * scale;
-          const sw = (bbox.w / RENDER_SCALE) * scale;
-          const sh = (bbox.h / RENDER_SCALE) * scale;
+        if (sc && targetBbox) {
+          const sx = (targetBbox.x / RENDER_SCALE) * scale;
+          const sy = (targetBbox.y / RENDER_SCALE) * scale;
           sc.scrollLeft = Math.max(0, sx - 40);
           sc.scrollTop = Math.max(0, sy - 40);
-          // Draw highlight overlay on a second pass
+        }
+
+        // Draw highlight overlay on a second pass
+        const drawHighlight = (b) => {
+          if (!b) return;
+          const bx = (b.x / RENDER_SCALE) * scale;
+          const by = (b.y / RENDER_SCALE) * scale;
+          const bw = (b.w / RENDER_SCALE) * scale;
+          const bh = (b.h / RENDER_SCALE) * scale;
           ctx.save();
           ctx.strokeStyle = "#1f3fc7";
-          ctx.lineWidth = 2.5;
-          ctx.setLineDash([6, 4]);
-          ctx.strokeRect(sx, sy, Math.max(sw, 24), Math.max(sh, 24));
-          ctx.fillStyle = "rgba(31,63,199,.08)";
-          ctx.fillRect(sx, sy, Math.max(sw, 24), Math.max(sh, 24));
+          ctx.lineWidth = 3;
+          ctx.strokeRect(bx, by, Math.max(bw, 28), Math.max(bh, 18));
+          ctx.fillStyle = "rgba(31,63,199,.20)";
+          ctx.fillRect(bx, by, Math.max(bw, 28), Math.max(bh, 18));
           ctx.restore();
+        };
+
+        if (targetBbox) {
+          drawHighlight(targetBbox);
         }
       } catch (e) {
         if (!cancelled) {
@@ -83,7 +97,7 @@ export default function SymbolSourceViewer({ sheetId, title, bbox, getDoc, onClo
       cancelled = true;
       try { task?.cancel(); } catch { /* done */ }
     };
-  }, [sheetId, bbox, getDoc]);
+  }, [sheetId, bbox, spaceBbox, markBbox, room, getDoc]);
 
   useEffect(() => {
     const sc = wrapRef.current;

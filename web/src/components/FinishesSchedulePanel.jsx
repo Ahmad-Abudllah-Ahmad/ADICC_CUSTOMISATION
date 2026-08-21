@@ -1,7 +1,7 @@
 // Finishes Schedule — tabular view from parsed A0002-style schedule KB (floating window).
 import React, { useMemo } from "react";
 import { Icon } from "../brand/icons.jsx";
-import { finishesLegendEntries } from "../lib/symbolScheduleKb";
+import { finishesLegendEntries, roomKeyMatch } from "../lib/symbolScheduleKb";
 
 const th = {
   padding: "6px 8px",
@@ -115,7 +115,7 @@ function floorBandColors(floor) {
   return { bg: "#eef2ff", border: "#4c6ef5", text: "#1c3280", rowTint: "#f6f8ff" };
 }
 
-export default function FinishesSchedulePanel({ open, onClose, scheduleKb, sourceTitle }) {
+export default function FinishesSchedulePanel({ open, onClose, scheduleKb, sourceTitle, highlightRoom }) {
   const rows = useMemo(() => (open ? resolveFinishesRows(scheduleKb) : []), [open, scheduleKb]);
   const legend = useMemo(() => (open ? finishesLegendEntries(scheduleKb) : []), [open, scheduleKb]);
   const groups = useMemo(() => groupRowsByFloor(rows), [rows]);
@@ -165,17 +165,22 @@ export default function FinishesSchedulePanel({ open, onClose, scheduleKb, sourc
                     </tr>
                   </thead>
                   <tbody>
-                    {g.rows.map((row) => (
-                      <tr key={`${g.floor}-${row.room_name}-${row.tag}`} style={{ background: band.rowTint }}>
-                        <td style={{ ...td, fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 10.5, color: band.text, textAlign: "center", background: band.bg }}>{row.roomNo}</td>
-                        <td style={{ ...td, fontWeight: 600 }}>{row.spaceName}</td>
-                        <td style={td}>{row.description || "—"}</td>
-                        <MarkCell tag={row.tag} />
-                        <MarkCell tag={row.skirting_tag} />
-                        <MarkCell tag={row.wall_tag} />
-                        <MarkCell tag={row.ceiling_tag} />
-                      </tr>
-                    ))}
+                    {g.rows.map((row) => {
+                      const isMatch = !!(highlightRoom && (roomKeyMatch(row.spaceName, highlightRoom) || roomKeyMatch(row.room_name, highlightRoom)));
+                      return (
+                        <tr key={`${g.floor}-${row.room_name}-${row.tag}`} style={{ background: isMatch ? "rgba(31, 63, 199, 0.10)" : band.rowTint }}>
+                          <td style={{ ...td, fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 10.5, color: isMatch ? "var(--cobalt)" : band.text, textAlign: "center", background: isMatch ? "rgba(31, 63, 199, 0.15)" : band.bg }}>{row.roomNo}</td>
+                          <td style={{ ...td, fontWeight: isMatch ? 700 : 600, color: isMatch ? "var(--cobalt)" : "inherit", background: isMatch ? "rgba(31, 63, 199, 0.18)" : undefined }}>
+                            {row.spaceName}
+                          </td>
+                          <td style={td}>{row.description || "—"}</td>
+                          <MarkCell tag={row.tag} />
+                          <MarkCell tag={row.skirting_tag} />
+                          <MarkCell tag={row.wall_tag} />
+                          <MarkCell tag={row.ceiling_tag} />
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

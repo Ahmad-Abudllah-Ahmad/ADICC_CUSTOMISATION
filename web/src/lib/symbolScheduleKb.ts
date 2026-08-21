@@ -37,6 +37,7 @@ export interface ScheduleKbEntry {
   source_sheet: string;
   source_title: string;
   source_bbox: SourceBBox;
+  space_bbox?: SourceBBox;
 }
 
 export interface SheetMeta {
@@ -939,6 +940,17 @@ export function parseFinishesScheduleTable(
     }
     if (!description || description.length < 8) continue;
 
+    const spaceXs = spaceTokens.map((t) => t.x);
+    const spaceX1s = spaceTokens.map((t) => t.x + tokW(t));
+    const spaceYs = spaceTokens.map((t) => t.y - (t.h || 10));
+    const spaceY1s = spaceTokens.map((t) => t.y + (t.h || 10) * 0.4);
+    const space_bbox: SourceBBox | undefined = spaceTokens.length ? {
+      x: Math.round(Math.max(0, Math.min(...spaceXs) - 4)),
+      y: Math.round(Math.max(0, Math.min(...spaceYs) - 2)),
+      w: Math.round(Math.max(36, Math.max(...spaceX1s) - Math.min(...spaceXs) + 8)),
+      h: Math.round(Math.max(16, Math.max(...spaceY1s) - Math.min(...spaceYs) + 4)),
+    } : undefined;
+
     const h = Math.max(6, floorMark.h || 10);
     const entry: ScheduleKbEntry = {
       tag,
@@ -957,6 +969,7 @@ export function parseFinishesScheduleTable(
         w: Math.max(tokW(floorMark) + 12, 38),
         h: Math.max(h * 2.4, 20),
       },
+      space_bbox,
     };
     const dedupeKey = `${tag}::${normRoomKey(room_name)}::${normFloorKey(floorCtx)}`;
     const prev = byKey.get(dedupeKey);
@@ -1011,6 +1024,7 @@ export function parseFinishScheduleTokens(
   const byTag = new Map<string, ScheduleKbEntry>();
   let pendingDesc: string[] = [];
   let roomCtx = "";
+  let roomBbox: SourceBBox | undefined = undefined;
 
   for (const line of lines) {
     const up = line.text.toUpperCase();
@@ -1018,6 +1032,16 @@ export function parseFinishScheduleTokens(
     const roomM = up.match(/^(\d{1,2})\.\s*([A-Z][A-Z0-9 &/'/-]{2,40})$/);
     if (roomM) {
       roomCtx = roomM[2].trim();
+      const rXs = line.tokens.map((t) => t.x);
+      const rX1s = line.tokens.map((t) => t.x + tokW(t));
+      const rYs = line.tokens.map((t) => t.y - (t.h || 10));
+      const rY1s = line.tokens.map((t) => t.y + (t.h || 10) * 0.4);
+      roomBbox = line.tokens.length ? {
+        x: Math.round(Math.max(0, Math.min(...rXs) - 4)),
+        y: Math.round(Math.max(0, Math.min(...rYs) - 2)),
+        w: Math.round(Math.max(36, Math.max(...rX1s) - Math.min(...rXs) + 8)),
+        h: Math.round(Math.max(16, Math.max(...rY1s) - Math.min(...rYs) + 4)),
+      } : undefined;
       pendingDesc = [];
       continue;
     }
@@ -1051,6 +1075,7 @@ export function parseFinishScheduleTokens(
           w: Math.max(tokW(codeTok) + 12, 38),
           h: Math.max(h * 2.4, 20),
         },
+        space_bbox: roomBbox,
       };
       // Keep one row per finish tag per room group (same tag can repeat under different rooms).
       const dedupeKey = `${tag}::${normRoomKey(roomCtx)}`;
