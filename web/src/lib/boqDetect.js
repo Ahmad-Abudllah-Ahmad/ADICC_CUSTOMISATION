@@ -154,8 +154,9 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
   const room = row.room || row.room_detected || "";
   const sheetFloor = floorLabelFromSheetId(row.sheet_id);
   const refs = row.schedule_refs || [];
-  const finishRef = refs
-    .filter((r) => r.tag?.toUpperCase() === tag || r.kind === "finish")
+  const finishRef = (tag
+    ? refs.filter((r) => r.tag?.toUpperCase() === tag)
+    : refs.filter((r) => r.kind === "finish"))
     .sort((a, b) => {
       let sa = a.description ? 40 : 0;
       let sb = b.description ? 40 : 0;
@@ -165,7 +166,7 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
       if (sheetFloor && b.floors) sb += b.floors.toUpperCase().includes(sheetFloor.split(" ")[0]) ? 25 : 0;
       return sb - sa;
     })[0]
-    || refs.find((r) => r.description)
+    || (tag ? refs.find((r) => r.tag?.toUpperCase() === tag) : refs.find((r) => r.description))
     || refs[0];
   const description = row.description || finishRef?.description || conditionDescription || "";
   if (!description && !finishRef && !tag) return null;

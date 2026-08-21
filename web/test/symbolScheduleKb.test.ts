@@ -76,11 +76,26 @@ test("normalizeSymbolTag: D-1 / D1 / D01 unify", () => {
   assert.equal(normalizeSymbolTag("LV1"), "LV-01");
 });
 
-test("tagLookupKeys includes dashed variants", () => {
+test("tagLookupKeys includes dashed variants and maintains distinct tag families", () => {
   const keys = tagLookupKeys("D01");
   assert.ok(keys.includes("D01"));
   assert.ok(keys.includes("D-1"));
   assert.ok(keys.includes("D1"));
+
+  const ptKeys = tagLookupKeys("PT-1");
+  assert.ok(ptKeys.includes("PT-1"));
+  assert.ok(ptKeys.includes("PT1"));
+  assert.ok(!ptKeys.includes("CPT-1"), "PT-1 must NOT alias CPT-1");
+
+  const cptKeys = tagLookupKeys("CPT-1");
+  assert.ok(cptKeys.includes("CPT-1"));
+  assert.ok(cptKeys.includes("CPT1"));
+  assert.ok(!cptKeys.includes("PT-1"), "CPT-1 must NOT alias PT-1");
+
+  const tlKeys = tagLookupKeys("TL-02");
+  assert.ok(tlKeys.includes("TL-02"));
+  assert.ok(tlKeys.includes("TL02"));
+  assert.ok(!tlKeys.includes("PT-02"));
 });
 
 test("parseDoorScheduleTokens: Wooden Door Schedule _ D-7 card (A7102 layout)", () => {
