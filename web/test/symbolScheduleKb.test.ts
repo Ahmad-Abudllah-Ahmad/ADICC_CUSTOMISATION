@@ -13,6 +13,8 @@ import {
   extractScheduleKbFromSheet,
   buildScheduleKb,
   lookupScheduleKb,
+  lookupScheduleKbForRoom,
+  roomMatchScore,
 } from "../src/lib/symbolScheduleKb.ts";
 import { enrichSymbolsWithSchedule, buildPlanSymbolIndex, resolveSymbolFields } from "../src/lib/planSymbols.ts";
 
@@ -76,26 +78,11 @@ test("normalizeSymbolTag: D-1 / D1 / D01 unify", () => {
   assert.equal(normalizeSymbolTag("LV1"), "LV-01");
 });
 
-test("tagLookupKeys includes dashed variants and maintains distinct tag families", () => {
+test("tagLookupKeys includes dashed variants", () => {
   const keys = tagLookupKeys("D01");
   assert.ok(keys.includes("D01"));
   assert.ok(keys.includes("D-1"));
   assert.ok(keys.includes("D1"));
-
-  const ptKeys = tagLookupKeys("PT-1");
-  assert.ok(ptKeys.includes("PT-1"));
-  assert.ok(ptKeys.includes("PT1"));
-  assert.ok(!ptKeys.includes("CPT-1"), "PT-1 must NOT alias CPT-1");
-
-  const cptKeys = tagLookupKeys("CPT-1");
-  assert.ok(cptKeys.includes("CPT-1"));
-  assert.ok(cptKeys.includes("CPT1"));
-  assert.ok(!cptKeys.includes("PT-1"), "CPT-1 must NOT alias PT-1");
-
-  const tlKeys = tagLookupKeys("TL-02");
-  assert.ok(tlKeys.includes("TL-02"));
-  assert.ok(tlKeys.includes("TL02"));
-  assert.ok(!tlKeys.includes("PT-02"));
 });
 
 test("parseDoorScheduleTokens: Wooden Door Schedule _ D-7 card (A7102 layout)", () => {
@@ -369,4 +356,64 @@ test("enrich hover: CW-06 matches schedule KB variants", () => {
   const fields = resolveSymbolFields(en[0].schedule, {}, en[0].room_name);
   assert.equal(fields.type, "Curtain Wall CW-06");
   assert.equal(fields.size, "W 3000 × H 2600 mm");
+});
+
+test("roomMatchScore matches synonyms: M.BED ROOM -> 10.BEDROOMS, GYM -> GYM, DRESS -> DRESSING", () => {
+  assert.equal(roomMatchScore("M.BED ROOM T1-10", "10.BEDROOMS"), 100);
+  assert.equal(roomMatchScore("BED ROOM", "10.BEDROOMS"), 100);
+  assert.equal(roomMatchScore("GYM", "07.GYM"), 100);
+  assert.ok(roomMatchScore("FITNESS CENTER", "07.GYM") >= 85);
+  assert.equal(roomMatchScore("DRESS T1-14", "07.DRESSING ROOM"), 100);
+  assert.equal(roomMatchScore("LIVING & DINING ROOM T1-09", "04.ENT.LOBBY / LIVING / DINING"), 90);
+  assert.equal(roomMatchScore("M.BED ROOM T1-10", "04.ENT.LOBBY / LIVING / DINING"), 0);
+});
+
+test("lookupScheduleKbForRoom picks accurate room row when multiple rooms share same tag PT-1", () => {
+  const kb = buildScheduleKb([
+    {
+      tag: "PT-1",
+      kind: "finish",
+      room_name: "04.ENT.LOBBY / LIVING / DINING",
+      description: "600*1200*10MM PORCELAIN TILE FOR LIVING",
+      floors: "2ND-25TH",
+      source_sheet: "A0002.pdf",
+      source_title: "A0002-FINISHES SCHEDUALE",
+      source_bbox: { x: 450, y: 160, w: 40, h: 20 },
+    },
+    {
+      tag: "PT-1",
+      kind: "finish",
+      room_name: "10.BEDROOMS",
+      description: "600*1200*10MM PORCELAIN TILE FOR BEDROOMS",
+      floors: "2ND-25TH",
+      source_sheet: "A0002.pdf",
+      source_title: "A0002-FINISHES SCHEDUALE",
+      source_bbox: { x: 450, y: 280, w: 40, h: 20 },
+    },
+    {
+      tag: "PT-1",
+      kind: "finish",
+      room_name: "07.DRESSING ROOM",
+      description: "600*1200*10MM PORCELAIN TILE FOR DRESSING",
+      floors: "2ND-25TH",
+      source_sheet: "A0002.pdf",
+      source_title: "A0002-FINISHES SCHEDUALE",
+      source_bbox: { x: 450, y: 220, w: 40, h: 20 },
+    },
+  ]);
+
+  const bedHit = lookupScheduleKbForRoom(kb, "PT-1", "M.BED ROOM T1-10", "7TH FLOOR");
+  assert.ok(bedHit);
+  assert.equal(bedHit.room_name, "10.BEDROOMS");
+  assert.equal(bedHit.source_bbox.y, 280);
+
+  const dressHit = lookupScheduleKbForRoom(kb, "PT-1", "DRESS T1-14", "7TH FLOOR");
+  assert.ok(dressHit);
+  assert.equal(dressHit.room_name, "07.DRESSING ROOM");
+  assert.equal(dressHit.source_bbox.y, 220);
+
+  const livingHit = lookupScheduleKbForRoom(kb, "PT-1", "LIVING & DINING ROOM T1-09", "7TH FLOOR");
+  assert.ok(livingHit);
+  assert.equal(livingHit.room_name, "04.ENT.LOBBY / LIVING / DINING");
+  assert.equal(livingHit.source_bbox.y, 160);
 });

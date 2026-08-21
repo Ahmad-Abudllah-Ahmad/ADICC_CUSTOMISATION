@@ -2,7 +2,7 @@
 // Directly addresses Client POC Feedback #1 (Priority 1).
 import React, { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { Icon } from "../brand/icons.jsx";
-import { buildSummaryTree } from "../lib/summaryTree.js";
+import { buildSummaryTree, resolveFloorLevel } from "../lib/summaryTree.js";
 import { PALETTE, NO_FILL } from "./hatches.jsx";
 import { csvEsc } from "../lib/csv.js";
 
@@ -70,6 +70,8 @@ export default function SummaryPanel({
   units = "imperial",
   boqLines = [],
   projectName = "",
+  activeSheetId = "",
+  activeFloor = "",
   onToggleHideIds,
   onPatchCondition,
   onShapeNavigate,
@@ -81,6 +83,22 @@ export default function SummaryPanel({
   const [colorPickerAnchor, setColorPickerAnchor] = useState(null); // { condId, rect, currentColor }
   const [editingCodeId, setEditingCodeId] = useState(null);
   const [draftCodeVal, setDraftCodeVal] = useState("");
+
+  const currentFloor = useMemo(() => {
+    if (activeFloor) return activeFloor;
+    if (activeSheetId) return resolveFloorLevel(activeSheetId, sheetLevels, sheetLabel);
+    return "";
+  }, [activeFloor, activeSheetId, sheetLevels, sheetLabel]);
+
+  // Default to current active canvas floor; allows switching in drawer
+  const [selectedFloor, setSelectedFloor] = useState(() => currentFloor || "");
+
+  // Dynamically sync default floor whenever active drawing changes on canvas
+  useEffect(() => {
+    if (currentFloor) {
+      setSelectedFloor(currentFloor);
+    }
+  }, [currentFloor]);
 
   const tree = useMemo(() => {
     return buildSummaryTree({
@@ -94,20 +112,40 @@ export default function SummaryPanel({
     });
   }, [shapes, conditions, sheetLevels, sheetLabel, hiddenShapeIds, units, boqLines]);
 
-  // Expand all floor and type nodes by default on first load
-  useEffect(() => {
-    if (!initExpanded && tree.length > 0) {
-      const exp = new Set();
-      for (const floor of tree) {
-        exp.add(floor.id);
-        for (const t of floor.children) {
-          exp.add(t.id);
-        }
-      }
-      setExpandedNodes(exp);
-      setInitExpanded(true);
+  const scopedTree = useMemo(() => {
+    if (!tree.length) return [];
+    if (selectedFloor === "all") return tree;
+    const target = selectedFloor || currentFloor;
+    if (!target) return tree;
+    const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const targetNorm = norm(target);
+    const match = tree.filter((f) => {
+      const fNorm = norm(f.level);
+      return fNorm === targetNorm || fNorm.includes(targetNorm) || targetNorm.includes(fNorm);
+    });
+    if (match.length) return match;
+    if (activeSheetId) {
+      const matchBySheet = tree.filter((f) => f.sheet_ids && f.sheet_ids.has(activeSheetId));
+      if (matchBySheet.length) return matchBySheet;
     }
-  }, [tree, initExpanded]);
+    return tree;
+  }, [tree, selectedFloor, currentFloor, activeSheetId]);
+
+  // Auto-expand all floor and type nodes so items are always visible
+  useEffect(() => {
+    if (scopedTree.length > 0) {
+      setExpandedNodes((prev) => {
+        const exp = new Set(prev);
+        for (const floor of scopedTree) {
+          exp.add(floor.id);
+          for (const t of floor.children) {
+            exp.add(t.id);
+          }
+        }
+        return exp;
+      });
+    }
+  }, [scopedTree]);
 
   const toggleExpand = useCallback((nodeId) => {
     setExpandedNodes((prev) => {
@@ -139,9 +177,9 @@ export default function SummaryPanel({
   // Filter tree by search query
   const filteredTree = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return tree;
+    if (!q) return scopedTree;
 
-    return tree
+    return scopedTree
       .map((floor) => {
         const floorMatch = floor.level.toLowerCase().includes(q);
         const filteredTypes = floor.children
@@ -165,7 +203,7 @@ export default function SummaryPanel({
         return null;
       })
       .filter(Boolean);
-  }, [tree, search]);
+  }, [scopedTree, search]);
 
   const grandTotal = useMemo(() => {
     let totalFloorSf = 0;
@@ -174,7 +212,7 @@ export default function SummaryPanel({
     let totalCount = 0;
     let shapesN = 0;
 
-    for (const floor of tree) {
+    for (const floor of scopedTree) {
       shapesN += floor.shapes_count;
       for (const t of floor.children) {
         if (t.typeKey === "floor") totalFloorSf += t.total_qty;
@@ -190,9 +228,9 @@ export default function SummaryPanel({
       totalLinearLf: num(totalLinearLf),
       totalCount: num(totalCount, 0),
       shapesN,
-      floorsN: tree.length,
+      floorsN: scopedTree.length,
     };
-  }, [tree]);
+  }, [scopedTree]);
 
   const exportCsv = useCallback(() => {
     const headers = ["Floor/Level", "Item Type", "Item Code", "Description", "Quantity", "Unit", "Shapes Count", "Color"];
@@ -419,6 +457,72 @@ export default function SummaryPanel({
           ) : null}
         </label>
       </div>
+
+      {/* Dynamic Floor Switcher Drawer Bar */}
+      {tree.length > 1 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 12px",
+            borderBottom: "1px solid var(--ink-faint)",
+            background: "rgba(0,0,0,0.02)",
+            fontSize: 11,
+          }}
+        >
+          <span style={{ fontWeight: 600, color: "var(--ink-muted)", fontSize: 10.5, flexShrink: 0 }}>Floor:</span>
+          <div style={{ display: "flex", gap: 4, flex: 1, overflowX: "auto", paddingBottom: 2 }}>
+            {tree.map((fl) => {
+              const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+              const isCurrent = currentFloor && norm(fl.level) === norm(currentFloor);
+              const isSelected = selectedFloor === "all"
+                ? false
+                : (selectedFloor ? norm(fl.level) === norm(selectedFloor) : isCurrent);
+              return (
+                <button
+                  key={fl.id}
+                  type="button"
+                  onClick={() => setSelectedFloor(fl.level)}
+                  style={{
+                    border: "1px solid",
+                    borderColor: isSelected ? "var(--cobalt)" : "var(--ink-faint)",
+                    background: isSelected ? "rgba(31,63,199,0.08)" : "transparent",
+                    color: isSelected ? "var(--cobalt)" : "var(--ink-muted)",
+                    fontWeight: isSelected ? 700 : 500,
+                    borderRadius: 4,
+                    padding: "2px 8px",
+                    fontSize: 10.5,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={isCurrent ? "Current active floor on canvas" : `Switch to ${fl.level}`}
+                >
+                  {fl.level} {isCurrent ? "★" : ""}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setSelectedFloor("all")}
+              style={{
+                border: "1px solid",
+                borderColor: selectedFloor === "all" ? "var(--cobalt)" : "var(--ink-faint)",
+                background: selectedFloor === "all" ? "rgba(31,63,199,0.08)" : "transparent",
+                color: selectedFloor === "all" ? "var(--cobalt)" : "var(--ink-muted)",
+                fontWeight: selectedFloor === "all" ? 700 : 500,
+                borderRadius: 4,
+                padding: "2px 8px",
+                fontSize: 10.5,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              All Floors ({tree.length})
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Metric totals readout */}
       <div

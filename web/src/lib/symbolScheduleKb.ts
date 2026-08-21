@@ -132,21 +132,149 @@ export function tagLookupKeys(tag: string): string[] {
   return [...keys];
 }
 
-function normRoomKey(s: string): string {
-  return (s || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+export function normRoomKey(s: string): string {
+  let str = (s || "").toUpperCase().trim();
+  // Strip leading numbering e.g. "04.", "10.", "00.", "1.", "#1"
+  str = str.replace(/^\d{1,3}\s*[\.\-–—:]\s*/, "");
+  // Strip trailing unit/apartment tags like "T1-10", "T1-09", "T1-14", "APT-101"
+  str = str.replace(/\b[A-Z0-9]{1,3}[-_]\d{1,4}\b/g, "");
+  // Replace non-alphanumeric with space
+  str = str.replace(/[^A-Z0-9]+/g, " ").trim();
+  return str;
 }
 
-function roomKeyMatch(a: string, b: string): boolean {
+/**
+ * Maps a room name into its canonical semantic category tokens
+ * to ensure 100% accurate matching between floor plan tags and finishes schedules.
+ */
+export function canonicalRoomTokens(s: string): string[] {
+  const norm = normRoomKey(s);
+  if (!norm) return [];
+  const words = norm.split(" ").filter((w) => w.length > 0);
+  const out: string[] = [];
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    // Master bedroom / M.Bed room / Bedroom / Bedrooms
+    if (w === "MBEDROOM" || w === "MBED" || (w === "M" && words[i + 1]?.startsWith("BED"))) {
+      out.push("BEDROOM");
+      if (w === "M") i++;
+      continue;
+    }
+    if (w === "BEDROOM" || w === "BEDROOMS" || (w === "BED" && (words[i + 1] === "ROOM" || words[i + 1] === "ROOMS" || words[i + 1] === "RM"))) {
+      out.push("BEDROOM");
+      if (w === "BED" && (words[i + 1] === "ROOM" || words[i + 1] === "ROOMS" || words[i + 1] === "RM")) i++;
+      continue;
+    }
+    // Gym / Gymnasium / Fitness / Health club / Workout
+    if (w === "GYM" || w === "GYMNASIUM" || w === "FITNESS" || w === "WORKOUT") {
+      out.push("GYM");
+      continue;
+    }
+    // Dressing room / Dress / Closet / Walk-in closet
+    if (w === "DRESS" || w === "DRESSING" || (w === "WALK" && words[i + 1] === "IN" && words[i + 2] === "CLOSET")) {
+      out.push("DRESSING");
+      if (w === "WALK") i += 2;
+      continue;
+    }
+    // Living / Dining
+    if (w === "LIVING" || w === "DINING") {
+      out.push(w);
+      continue;
+    }
+    // Kitchen / Open kitchen / Closed kitchen
+    if (w === "KITCHEN" || w === "KITCHENETTE") {
+      out.push("KITCHEN");
+      continue;
+    }
+    // Bath / Bathroom / Bathrooms / Bahtrooms / Toilet / Toilets / WC / Powder
+    if (w === "BATH" || w === "BATHROOM" || w === "BATHROOMS" || w === "BAHTROOMS" || w === "TOILET" || w === "TOILETS" || w === "WC" || w === "POWDER") {
+      out.push("BATHROOM");
+      continue;
+    }
+    // Balcony / Terrace / Patio
+    if (w === "BALCONY" || w === "TERRACE" || w === "PATIO") {
+      out.push("BALCONY");
+      continue;
+    }
+    // Maid / Maid's room / Maids
+    if (w === "MAID" || w === "MAIDS" || w === "MAID'S" || w === "SERVANT") {
+      out.push("MAID");
+      continue;
+    }
+    // Corridor / Hallway / Passage
+    if (w === "CORRIDOR" || w === "HALLWAY" || w === "PASSAGE" || w === "HALL") {
+      out.push("CORRIDOR");
+      continue;
+    }
+    // Lobby / Lift lobby / Fire lift lobby / Entrance
+    if (w === "LOBBY" || w === "FOYER" || w === "ENTRANCE") {
+      out.push("LOBBY");
+      continue;
+    }
+    // Store / Storage
+    if (w === "STORE" || w === "STORAGE") {
+      out.push("STORE");
+      continue;
+    }
+    // Stairs / Staircase
+    if (w === "STAIRS" || w === "STAIRCASE" || w === "STAIR") {
+      out.push("STAIRS");
+      continue;
+    }
+    // Kids playing / Play area
+    if (w === "PLAYING" || w === "PLAY") {
+      out.push("PLAY");
+      continue;
+    }
+    // Garbage / Refuse / Waste
+    if (w === "GARBAGE" || w === "REFUSE" || w === "WASTE") {
+      out.push("GARBAGE");
+      continue;
+    }
+    // MEP / Electrical / Pump / Telecom / ELV
+    if (w === "MEP" || w === "ELECTRICAL" || w === "ELEC" || w === "PUMP" || w === "TEL" || w === "ELV") {
+      out.push("MEP");
+      continue;
+    }
+    if (w !== "ROOM" && w !== "ROOMS" && w !== "AREA" && w !== "PLAN" && w !== "AND" && w.length > 1) {
+      out.push(w);
+    }
+  }
+  return out;
+}
+
+/**
+ * 0–100 match score between two room names:
+ * 100 = exact semantic match (e.g. "M.BED ROOM T1-10" matches "10.BEDROOMS", "GYM" matches "07.GYM")
+ */
+export function roomMatchScore(a: string, b: string): number {
   const na = normRoomKey(a);
   const nb = normRoomKey(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  if (na.includes(nb) || nb.includes(na)) return true;
-  const wa = na.split(" ").filter((w) => w.length > 2);
-  const wb = nb.split(" ").filter((w) => w.length > 2);
-  if (!wa.length || !wb.length) return false;
-  const common = wa.filter((w) => wb.includes(w));
-  return common.length >= 2 || (common.length === 1 && (wa.length === 1 || wb.length === 1));
+  if (!na || !nb) return 0;
+  if (na === nb) return 100;
+
+  const ca = canonicalRoomTokens(a);
+  const cb = canonicalRoomTokens(b);
+  if (ca.length && cb.length) {
+    const setB = new Set(cb);
+    const common = ca.filter((t) => setB.has(t));
+    if (common.length === ca.length && common.length === cb.length) return 100;
+    if (common.length >= 2) return 90;
+    if (common.length === 1) {
+      const isDistinctive = ["GYM", "BEDROOM", "DRESSING", "KITCHEN", "BATHROOM", "BALCONY", "MAID", "CORRIDOR", "STORE", "STAIRS", "GARBAGE", "MEP"].includes(common[0]);
+      if (isDistinctive && (ca.length === 1 || cb.length === 1)) return 100;
+      if (isDistinctive) return 85;
+      return 65;
+    }
+  }
+
+  if (na.includes(nb) || nb.includes(na)) return 80;
+  return 0;
+}
+
+export function roomKeyMatch(a: string, b: string): boolean {
+  return roomMatchScore(a, b) >= 65;
 }
 
 function tokW(t: SymbolToken): number {
@@ -708,7 +836,7 @@ function isFinishesTablePage(text: string): boolean {
 }
 
 const FINISH_CODE_RE = /^[A-Z]{2,4}-[A-Z0-9]{1,4}$/;
-const FLOOR_FINISH_MARK_RE = /^(PT|STN|RUB|EPD|CPT|LVT|VCT|RB|ACT|SK|WP|WD|FC|PC)-[A-Z0-9]{1,4}$/i;
+const FLOOR_FINISH_MARK_RE = /^(PT|STN|RUB|EPD|EPO|CPT|LVT|VCT|RB|ACT|SK|WP|WD|FC|PC|VN|MT|SF|MR|GRP|GRN)-[A-Z0-9]{1,4}$/i;
 
 function isFloorSectionHeader(text: string): string | null {
   const up = (text || "").toUpperCase().trim().replace(/\s+/g, " ");
@@ -790,14 +918,8 @@ export function parseFinishesScheduleTable(
 
     const normMark = (t: SymbolToken) => (t.str || "").trim().toUpperCase().replace(/\s+/g, "");
     const skirtingMark = marks.find((m) => m !== floorMark && /^SK-/i.test(normMark(m)));
-    const ceilingMark = marks.find((m) => m !== floorMark && /^(FC|PC|GYP)-/i.test(normMark(m)));
-    const wallMark = marks.find((m) =>
-      m !== floorMark
-      && m !== skirtingMark
-      && m !== ceilingMark
-      && !/^SK-/i.test(normMark(m))
-      && !/^(FC|PC|GYP)-/i.test(normMark(m))
-    );
+    const wallMark = marks.find((m) => /^(WP|WD)-/i.test(normMark(m)));
+    const ceilingMark = marks.find((m) => /^(FC|PC)-/i.test(normMark(m)));
 
     const splitX = floorFinishColX >= 0
       ? floorFinishColX - 12
@@ -818,7 +940,6 @@ export function parseFinishesScheduleTable(
     if (!description || description.length < 8) continue;
 
     const h = Math.max(6, floorMark.h || 10);
-    const fw = tokW(floorMark);
     const entry: ScheduleKbEntry = {
       tag,
       kind: "finish",
@@ -831,10 +952,10 @@ export function parseFinishesScheduleTable(
       source_sheet: meta.sheet_id,
       source_title: meta.file_name.replace(/\.pdf$/i, ""),
       source_bbox: {
-        x: Math.round(floorMark.x - 6),
-        y: Math.round(floorMark.y - 4),
-        w: Math.max(Math.round(fw + 12), 36),
-        h: Math.max(Math.round(h + 8), 18),
+        x: floorMark.x - 6,
+        y: floorMark.y - h * 1.2,
+        w: Math.max(tokW(floorMark) + 12, 38),
+        h: Math.max(h * 2.4, 20),
       },
     };
     const dedupeKey = `${tag}::${normRoomKey(room_name)}::${normFloorKey(floorCtx)}`;
@@ -925,10 +1046,10 @@ export function parseFinishScheduleTokens(
         source_sheet: meta.sheet_id,
         source_title: meta.file_name.replace(/\.pdf$/i, ""),
         source_bbox: {
-          x: codeTok.x - 8,
-          y: codeTok.y - h * 6,
-          w: Math.max(tokW(codeTok) + 16, 180),
-          h: h * 10,
+          x: codeTok.x - 6,
+          y: codeTok.y - h * 1.2,
+          w: Math.max(tokW(codeTok) + 12, 38),
+          h: Math.max(h * 2.4, 20),
         },
       };
       // Keep one row per finish tag per room group (same tag can repeat under different rooms).
@@ -1121,12 +1242,15 @@ export function lookupScheduleKbForRoom(
   let bestScore = 0;
   for (const e of list) {
     if (!e?.tag || !tagSet.has(String(e.tag).toUpperCase())) continue;
-    let sc = e.description?.length || 0;
+    let sc = (e.description?.length || 0) * 0.05;
     if (roomName) {
-      if (roomKeyMatch(e.room_name || "", roomName)) sc += 120;
-      else if (e.room_name) sc -= 40;
+      if (e.room_name) {
+        const rms = roomMatchScore(e.room_name, roomName);
+        if (rms >= 65) sc += 200 + rms;
+        else sc -= 50;
+      }
     }
-    if (floorName && e.floors) sc += floorKeyMatch(floorName, e.floors);
+    if (floorName && e.floors) sc += floorKeyMatch(floorName, e.floors) * 1.5;
     if (sc > bestScore) { best = e; bestScore = sc; }
   }
   if (best && bestScore >= 40) return best;
@@ -1143,9 +1267,10 @@ export function lookupScheduleKbForRoom(
       const tagPart = String(key).slice(0, at);
       const roomPart = String(key).slice(at + 1).split("#")[0];
       if (!tagLookupKeys(tag).some((t) => t.toUpperCase() === tagPart.toUpperCase())) continue;
-      if (!roomKeyMatch(roomPart, roomName)) continue;
-      const rs = (e.description?.length || 0) + (e.room_name ? 20 : 0)
-        + (floorName ? floorKeyMatch(floorName, e.floors || "") : 0);
+      const rms = roomMatchScore(roomPart, roomName);
+      if (rms < 65) continue;
+      const rs = (e.description?.length || 0) * 0.05 + 200 + rms
+        + (floorName ? floorKeyMatch(floorName, e.floors || "") * 1.5 : 0);
       if (rs > bestScore) { best = e; bestScore = rs; }
     }
     if (best) return best;

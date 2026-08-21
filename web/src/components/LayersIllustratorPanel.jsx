@@ -66,6 +66,8 @@ export default function LayersIllustratorPanel({
   selectedIds = [],
   units = "imperial",
   sheetMatch,
+  shapeMeta = {},
+  roomForShape = null,
   onSelectIds,
   onToggleHideIds,
   onToggleLockIds,
@@ -88,8 +90,10 @@ export default function LayersIllustratorPanel({
       lockedShapeIds,
       units,
       sheetMatch,
+      shapeMeta,
+      roomForShape,
     }),
-    [sheetKeys, sheetLabel, shapes, layerForest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch],
+    [sheetKeys, sheetLabel, shapes, layerForest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch, shapeMeta, roomForShape],
   );
 
   const [menu, setMenu] = useState(null);

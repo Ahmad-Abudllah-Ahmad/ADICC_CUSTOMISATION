@@ -9,7 +9,7 @@
 // attached as a match so hover can show "also on A-102". Schedule/condition
 // enrichment fills known fields; blanks stay editable via SymbolNotes.
 
-import { lookupScheduleKb, tagLookupKeys } from "./symbolScheduleKb";
+import { lookupScheduleKb, lookupScheduleKbForRoom, tagLookupKeys } from "./symbolScheduleKb";
 
 export type SymbolKind = "door" | "window" | "type" | "finish" | "detail";
 
@@ -477,12 +477,21 @@ export type KbRowLike = {
   source_bbox?: { x: number; y: number; w: number; h: number };
 };
 
-function kbForTag(kb: KbRowLike[] | Map<string, KbRowLike> | undefined, tag: string): KbRowLike | undefined {
+function kbForTag(
+  kb: KbRowLike[] | Map<string, KbRowLike> | undefined,
+  tag: string,
+  room?: string,
+  sheetFloor?: string,
+): KbRowLike | undefined {
   if (!kb || !tag) return undefined;
   // Same key variants as lookupScheduleKb (D01/D-1, CW-06/CW06, …) so hover
   // enrichment matches schedule-PDF rows the BOQ path already resolves.
   if (kb instanceof Map) {
-    return (lookupScheduleKb(kb, tag) as KbRowLike | null) || undefined;
+    if (room || sheetFloor) {
+      const roomHit = lookupScheduleKbForRoom(kb as any, tag, room, sheetFloor);
+      if (roomHit) return roomHit as KbRowLike;
+    }
+    return (lookupScheduleKb(kb as any, tag) as KbRowLike | null) || undefined;
   }
   for (const k of tagLookupKeys(tag)) {
     const hit = kb.find((e) => (e.tag || "").toUpperCase() === k.toUpperCase());
@@ -509,7 +518,7 @@ export function enrichSymbolsWithSchedule(
   return symbols.map((s) => {
     const row = rowBy.get(s.tag);
     const cond = condBy.get(s.tag);
-    const kb = kbForTag(opts.kb, s.tag);
+    const kb = kbForTag(opts.kb, s.tag, s.room_name, s.sheet_id);
     const mat0 = cond?.materials?.[0];
     const schedule: SymbolScheduleInfo = {
       finish_tag: row?.finish_tag || cond?.finish_tag || (s.kind === "finish" ? s.tag : undefined),

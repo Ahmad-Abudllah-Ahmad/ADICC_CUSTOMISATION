@@ -98,12 +98,27 @@ export function shapeIdsOnFocusSheet(shapes, focusSheetKey, sheetMatch, sheetKey
   return shapesOnSheet(shapes || [], key, sheetMatch).map((s) => s.id);
 }
 
-function leaf(shape, condById, hiddenShapeIds, lockedShapeIds, units) {
+function leaf(shape, condById, hiddenShapeIds, lockedShapeIds, units, shapeMeta = {}, roomForShape = null) {
   const cond = condById?.[shape.condition_id];
   const role = ROLE_LABEL[shape.measure_role] || shape.measure_role;
   const tag = cond?.finish_tag || "—";
   const kind = kindFromRole(shape.measure_role);
-  const name = shape.label ? String(shape.label) : `${tag} · ${role}`;
+  const detectedRoom = (typeof roomForShape === "function" ? roomForShape(shape) : "")
+    || shape.room
+    || shape.room_name
+    || shape.room_detected
+    || shapeMeta?.[shape.id]?.room
+    || "";
+  let name = shape.label ? String(shape.label) : "";
+  if (!name) {
+    if (detectedRoom && tag && tag !== "—") {
+      name = `${detectedRoom} · ${tag}`;
+    } else if (detectedRoom) {
+      name = `${detectedRoom} · ${role}`;
+    } else {
+      name = `${tag} · ${role}`;
+    }
+  }
   const sheetFlag = shape.sheet_id ? sheetNodeId(shape.sheet_id) : null;
   return {
     id: shape.id,
@@ -498,14 +513,14 @@ export function setGroupFlag(forest, id, flag, value) {
   return { ...forest, [id]: g };
 }
 
-function expandChild(id, forest, byId, hiddenShapeIds, lockedShapeIds, units, condById, visiting, ancestorLocked) {
+function expandChild(id, forest, byId, hiddenShapeIds, lockedShapeIds, units, condById, visiting, ancestorLocked, shapeMeta, roomForShape) {
   const g = forest[id];
   if (g) {
     if (visiting.has(id)) return null;
     visiting.add(id);
     const selfLocked = ancestorLocked || !!g.locked;
     const children = (g.children || [])
-      .map((cid) => expandChild(cid, forest, byId, hiddenShapeIds, lockedShapeIds, units, condById, visiting, selfLocked))
+      .map((cid) => expandChild(cid, forest, byId, hiddenShapeIds, lockedShapeIds, units, condById, visiting, selfLocked, shapeMeta, roomForShape))
       .filter(Boolean);
     visiting.delete(id);
     return {
@@ -521,12 +536,12 @@ function expandChild(id, forest, byId, hiddenShapeIds, lockedShapeIds, units, co
   }
   const s = byId.get(id);
   if (!s) return null;
-  const n = leaf(s, condById, hiddenShapeIds, lockedShapeIds, units);
+  const n = leaf(s, condById, hiddenShapeIds, lockedShapeIds, units, shapeMeta, roomForShape);
   if (ancestorLocked) n.locked = true;
   return n;
 }
 
-function sheetChildren(sheetKey, shapes, forest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch) {
+function sheetChildren(sheetKey, shapes, forest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch, shapeMeta, roomForShape) {
   const list = shapesOnSheet(shapes, sheetKey, sheetMatch);
   const byId = new Map(list.map((s) => [s.id, s]));
   const claimed = new Set();
@@ -542,9 +557,9 @@ function sheetChildren(sheetKey, shapes, forest, condById, hiddenShapeIds, locke
   }
   const visiting = new Set();
   const folders = roots
-    .map((g) => expandChild(g.id, forest, byId, hiddenShapeIds, lockedShapeIds, units, condById, visiting))
+    .map((g) => expandChild(g.id, forest, byId, hiddenShapeIds, lockedShapeIds, units, condById, visiting, false, shapeMeta, roomForShape))
     .filter(Boolean);
-  const ungrouped = list.filter((s) => !claimed.has(s.id)).map((s) => leaf(s, condById, hiddenShapeIds, lockedShapeIds, units));
+  const ungrouped = list.filter((s) => !claimed.has(s.id)).map((s) => leaf(s, condById, hiddenShapeIds, lockedShapeIds, units, shapeMeta, roomForShape));
   return [...folders, ...ungrouped];
 }
 
@@ -559,6 +574,8 @@ export function buildLayerTree({
   lockedShapeIds = {},
   units = "imperial",
   sheetMatch,
+  shapeMeta = {},
+  roomForShape = null,
 } = {}) {
   const forest = layerForest && typeof layerForest === "object"
     ? layerForest
@@ -566,10 +583,10 @@ export function buildLayerTree({
   const keys = sheetKeys.length ? sheetKeys : [...new Set(shapes.map((s) => s.sheet_id).filter(Boolean))];
   if (keys.length <= 1) {
     const key = keys[0];
-    return key ? sheetChildren(key, shapes, forest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch) : [];
+    return key ? sheetChildren(key, shapes, forest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch, shapeMeta, roomForShape) : [];
   }
   return keys.map((key) => {
-    const children = sheetChildren(key, shapes, forest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch);
+    const children = sheetChildren(key, shapes, forest, condById, hiddenShapeIds, lockedShapeIds, units, sheetMatch, shapeMeta, roomForShape);
     const sid = sheetNodeId(key);
     return {
       id: sid,

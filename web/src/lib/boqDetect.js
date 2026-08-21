@@ -4,30 +4,11 @@ import { areaUnit, lenUnit } from "./units";
 import { distToSeg, pointInPoly } from "./geometry.js";
 import { shapeLabelValue } from "./shapeLabels.js";
 import { resolveSymbolFields, symbolNoteKey } from "./planSymbols";
-import { lookupScheduleKb, lookupScheduleKbForRoom } from "./symbolScheduleKb";
+import { lookupScheduleKb, lookupScheduleKbForRoom, roomMatchScore, normRoomKey } from "./symbolScheduleKb";
 import { parseOpeningSize, openingsDeductSfLinear, openingsDeductSfFloorPerim } from "./wallOpenings.js";
 
 export function rowKey(shapeId) {
   return `shape::${shapeId}`;
-}
-
-function normRoom(s) {
-  return (s || "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
-}
-
-/** 0–100: how closely two room names match (strict — avoids LOUNGE matching every lounge). */
-function roomMatchScore(a, b) {
-  const na = normRoom(a), nb = normRoom(b);
-  if (!na || !nb) return 0;
-  if (na === nb) return 100;
-  if (na.includes(nb) || nb.includes(na)) return 85;
-  const wa = na.split(" ").filter((w) => w.length > 2);
-  const wb = nb.split(" ").filter((w) => w.length > 2);
-  if (!wa.length || !wb.length) return 0;
-  const common = wa.filter((w) => wb.includes(w));
-  if (common.length >= 2) return 75;
-  if (common.length === 1 && wa.length === 1 && wb.length === 1) return 65;
-  return 0;
 }
 
 function kbEntriesForRoomStrict(kb, roomName, minScore = 65) {
@@ -171,11 +152,12 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
   if (!description && !finishRef && !tag) return null;
 
   const kbEntry = scheduleKb ? lookupMaskFinish(scheduleKb, tag, room, sheetFloor) : null;
-  const skirtingTag = kbEntry?.skirting_tag || finishRef?.skirting_tag || "";
-  const wallTag = kbEntry?.wall_tag || finishRef?.wall_tag || "";
-  const ceilingTag = kbEntry?.ceiling_tag || finishRef?.ceiling_tag || "";
+  const effectiveRef = kbEntry || finishRef;
+  const skirtingTag = effectiveRef?.skirting_tag || "";
+  const wallTag = effectiveRef?.wall_tag || "";
+  const ceilingTag = effectiveRef?.ceiling_tag || "";
 
-  let floor_finish = (kbEntry?.description || description).trim();
+  let floor_finish = (effectiveRef?.description || description).trim();
   let skirting = descForFinishTag(scheduleKb, skirtingTag, room, sheetFloor);
   let wall_finishes = descForFinishTag(scheduleKb, wallTag, room, sheetFloor);
   let ceiling = descForFinishTag(scheduleKb, ceilingTag, room, sheetFloor);
@@ -190,30 +172,25 @@ export function resolveMaskFinishDetails(row, conditionDescription = "", schedul
     if (!ceiling && split.ceiling) ceiling = split.ceiling;
   }
 
-  const resolvedTag = finishRef?.tag || kbEntry?.tag || tag;
-  const resolvedBbox = finishRef?.source_bbox || kbEntry?.source_bbox || null;
-  const resolvedSource = finishRef?.source || finishRef?.source_title || kbEntry?.source_title || kbEntry?.source_sheet || "";
-  const resolvedSourceSheet = finishRef?.source_sheet || kbEntry?.source_sheet || "";
-
   return {
-    tag: resolvedTag,
-    room_name: row.room || row.room_detected || finishRef?.room_name || kbEntry?.room_name || "",
-    type: finishRef?.type || kbEntry?.type || "Finish code",
+    tag,
+    room_name: row.room || row.room_detected || effectiveRef?.room_name || "",
+    type: effectiveRef?.type || "Finish code",
     description,
     floor_finish,
     skirting,
     wall_finishes,
     ceiling,
-    size: finishRef?.size || kbEntry?.size || "",
-    fire_rating: finishRef?.fire_rating || kbEntry?.fire_rating || "",
-    floors: finishRef?.floors || kbEntry?.floors || sheetFloor || "",
-    manufacturer: finishRef?.manufacturer || kbEntry?.manufacturer || "",
-    style: finishRef?.style || kbEntry?.style || "",
-    color: finishRef?.color || kbEntry?.color || "",
-    remarks: finishRef?.remarks || kbEntry?.remarks || "",
-    source: resolvedSource,
-    source_sheet: resolvedSourceSheet,
-    source_bbox: resolvedBbox,
+    size: effectiveRef?.size || "",
+    fire_rating: effectiveRef?.fire_rating || "",
+    floors: effectiveRef?.floors || sheetFloor || "",
+    manufacturer: effectiveRef?.manufacturer || "",
+    style: effectiveRef?.style || "",
+    color: effectiveRef?.color || "",
+    remarks: effectiveRef?.remarks || "",
+    source: effectiveRef?.source || effectiveRef?.source_title || "",
+    source_sheet: effectiveRef?.source_sheet || "",
+    source_bbox: effectiveRef?.source_bbox || null,
   };
 }
 
@@ -481,14 +458,76 @@ function detectRoomFromFloorMasks(shape, allShapes, dims, ctx) {
 }
 
 export function detectRoomName(shape, ctx, allShapes = null) {
-  const assigned = shapeLabelValue(shape);
+  const assigned = shapeLabelValue(shape) || shape?.room || shape?.room_name || shape?.room_detected || "";
   if (assigned) return assigned;
 
-  // Panel bitmap may not be ready yet (shapes restored before sheets paint) —
-  // skip geometry lookup rather than crash BoqPanel on dims.w.
-  const dims = ctx?.panelImgs?.[shape.sheet_id];
-  if (!dims?.w || !dims?.h) return "";
+  const sheetMatch = (k1, k2) => {
+    if (!k1 || !k2) return false;
+    if (k1 === k2) return true;
+    const n1 = String(k1).replace(/#\d+$/, "").trim().toLowerCase();
+    const n2 = String(k2).replace(/#\d+$/, "").trim().toLowerCase();
+    return n1 === n2 || n1.includes(n2) || n2.includes(n1);
+  };
+
+  const dims = ctx?.panelImgs?.[shape.sheet_id]
+    || Object.entries(ctx?.panelImgs || {}).find(([k]) => sheetMatch(k, shape.sheet_id))?.[1]
+    || Object.values(ctx?.panelImgs || {})[0]
+    || { w: 3000, h: 2000 };
+
   const poly = shapePolyPx(shape, dims);
+
+  const { planSymbols = [], roomLabelsBySheet = {}, symbolNotes = {} } = ctx || {};
+  const roomLabels = roomLabelsBySheet[shape.sheet_id]
+    || Object.entries(roomLabelsBySheet).find(([k]) => sheetMatch(k, shape.sheet_id))?.[1]
+    || Object.values(roomLabelsBySheet).flat()
+    || [];
+  const syms = (planSymbols || []).filter((s) => !s.sheet_id || sheetMatch(s.sheet_id, shape.sheet_id));
+
+  // Line / Skirting / Wall line (2 vertices or linear/surface role)
+  if (poly.length === 2 || shape.measure_role === "linear" || shape.measure_role === "surface_area") {
+    const p0 = poly[0] || [0, 0];
+    const p1 = poly[poly.length - 1] || p0;
+    const mx = (p0[0] + p1[0]) / 2;
+    const my = (p0[1] + p1[1]) / 2;
+
+    // Check if line touches or sits inside any floor_area shape in allShapes
+    if (Array.isArray(allShapes)) {
+      for (const other of allShapes) {
+        if (other.id === shape.id || other.sheet_id !== shape.sheet_id || other.measure_role !== "floor_area") continue;
+        const op = shapePolyPx(other, dims);
+        if (op.length >= 3 && (pointInPoly(mx, my, op) || pointInPoly(p0[0], p0[1], op) || pointInPoly(p1[0], p1[1], op))) {
+          const r = detectRoomName(other, ctx, allShapes);
+          if (r) return r;
+        }
+      }
+    }
+
+    // Proximity to room labels
+    let bestDist = Infinity;
+    let bestTxt = "";
+    for (const lbl of roomLabels) {
+      const d = Math.hypot(lbl.x - mx, lbl.y - my);
+      if (d < bestDist && d < 220) {
+        bestDist = d;
+        bestTxt = lbl.text;
+      }
+    }
+    if (bestTxt) return bestTxt;
+
+    // Proximity to plan symbols
+    for (const sym of syms) {
+      const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+      const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
+      const room = fields.room_name;
+      if (!room) continue;
+      const d = Math.hypot(sym.x - mx, sym.y - my);
+      if (d < bestDist && d < 220) {
+        bestDist = d;
+        bestTxt = room;
+      }
+    }
+    if (bestTxt) return bestTxt;
+  }
 
   // Wall network: room names live inside holes (or on matching floor masks).
   if (shape.measure_role === "wall_area" && shape.holes_norm?.length) {
@@ -503,8 +542,6 @@ export function detectRoomName(shape, ctx, allShapes = null) {
   if (poly.length < 3) return "";
 
   const [cx, cy] = polyCentroid(poly);
-  const { planSymbols, roomLabelsBySheet, symbolNotes } = ctx;
-  const roomLabels = roomLabelsBySheet[shape.sheet_id] || [];
 
   let bestLabel = null;
   for (const lbl of roomLabels) {
@@ -515,7 +552,6 @@ export function detectRoomName(shape, ctx, allShapes = null) {
   }
   if (bestLabel) return bestLabel.text;
 
-  const syms = (planSymbols || []).filter((s) => s.sheet_id === shape.sheet_id);
   let bestSym = null;
   for (const sym of syms) {
     if (!pointInShapePx(sym.x, sym.y, shape, dims)) continue;
@@ -527,6 +563,31 @@ export function detectRoomName(shape, ctx, allShapes = null) {
     if (!bestSym || d < bestSym.d) bestSym = { room, d };
   }
   if (bestSym) return bestSym.room;
+
+  // Fallback: proximity to nearest room label within threshold
+  let nearDist = Infinity;
+  let nearTxt = "";
+  for (const lbl of roomLabels) {
+    const d = Math.hypot(lbl.x - cx, lbl.y - cy);
+    if (d < nearDist && d < 180) {
+      nearDist = d;
+      nearTxt = lbl.text;
+    }
+  }
+  if (nearTxt) return nearTxt;
+
+  for (const sym of syms) {
+    const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
+    const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
+    const room = fields.room_name;
+    if (!room) continue;
+    const d = Math.hypot(sym.x - cx, sym.y - cy);
+    if (d < nearDist && d < 180) {
+      nearDist = d;
+      nearTxt = room;
+    }
+  }
+  if (nearTxt) return nearTxt;
 
   return "";
 }

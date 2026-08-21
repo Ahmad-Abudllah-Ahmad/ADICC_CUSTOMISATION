@@ -2227,10 +2227,16 @@ export default function TakeoffCanvas() {
   const docFor = useCallback((file) => {
     let t = pdfDocsRef.current.get(file);
     if (!t) {
-      t = store.loadPdfData(file).then((data) => pdfjsLib.getDocument({ data }));
+      t = store.loadPdfData(file).then((data) => {
+        if (!data) throw new Error(`Missing PDF data for ${file}`);
+        return pdfjsLib.getDocument({ data });
+      });
       pdfDocsRef.current.set(file, t);
     }
-    return t.then((task) => task.promise);
+    return t.then((task) => task.promise).catch((err) => {
+      pdfDocsRef.current.delete(file);
+      throw err;
+    });
   }, []);
 
   // dark toggle: flip the pixels of every rendered canvas in place — instant,
@@ -2267,7 +2273,21 @@ export default function TakeoffCanvas() {
   // no cache wipe). Only missing keys raster; the full overlay is for a group
   // with nothing painted yet (first open or a true jump to an uncached sheet).
   useEffect(() => {
-    if (!openTabs.length) return;
+    if (!openTabs.length) {
+      if (sheets.length > 0 && active) {
+        setOpenTabs([active]);
+        return;
+      }
+      if (sheets.length > 0) {
+        setOpenTabs([sheets[0].name]);
+        setActive(sheets[0].name);
+        return;
+      }
+      if (statusRef.current === "loading" || statusRef.current === "rendering") {
+        setStatus(sheets.length ? "ready" : "empty");
+      }
+      return;
+    }
     // Tabs restored before `active` is set → groupKeys is empty and we used to
     // return while status stayed "loading" forever. Land on the first tab.
     if (!groupKeys.length) {
@@ -2425,7 +2445,11 @@ export default function TakeoffCanvas() {
         canvas.style.visibility = darkModeRef.current ? "hidden" : "";
         const rt = m.pageObj.render({ canvasContext: canvas.getContext("2d"), viewport: m.viewport });
         renderTasksRef.current.set(m.key, rt);
-        await rt.promise; if (stale()) return;
+        try {
+          await rt.promise;
+        } catch (e) {
+          if (e?.name !== "RenderingCancelledException") console.warn("[render]", e);
+        }
         if (darkModeRef.current) invertCanvasPixels(canvas);   // negative view baked into pixels
         canvas.style.visibility = "";
         // Strict Mode / panel remount can swap the <canvas> mid-render — copy
@@ -2451,13 +2475,6 @@ export default function TakeoffCanvas() {
           sheetStatsRef.current.set(m.key, { segCount: segs.length >> 2, imageFrac: Math.min(1, imageArea / (m.w * m.h)) });
         }).catch(() => {
           if (stale()) return;
-          // A rejected op-list (corrupt embedded JBIG2/CCITT — exactly the class of
-          // scanned PDFs this feature serves) must not leave stats permanently
-          // unset: with no sentinel, rasterEligible and vectorViable both read
-          // false forever and oneClickAt is stuck on the vector branch showing
-          // "try again in a second" for the sheet's whole lifetime. A sentinel that
-          // reads as image-dominant/segment-empty lets the raster fallback engage
-          // instead (rasterEligible true, vectorViable false).
           sheetStatsRef.current.set(m.key, { segCount: 0, imageFrac: 1 });
         });
         // read the drawn scale note off this panel's page text (best-effort)
@@ -2518,7 +2535,7 @@ export default function TakeoffCanvas() {
         })();
       }
     })().catch((e) => {
-      if (stale() || e?.name === "RenderingCancelledException") return;
+      if (e?.name === "RenderingCancelledException") return;
       setErr(String(e.message || e));
       if (blank) setStatus("error");
     });
@@ -2535,6 +2552,22 @@ export default function TakeoffCanvas() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupSig, hiResKeys.join(" ")]);
+
+  // Liveness watchdog: if status is stuck in "loading" or "rendering", transition to "ready"
+  useEffect(() => {
+    if (status === "loading" || status === "rendering") {
+      const timer = setTimeout(() => {
+        if (statusRef.current === "loading" || statusRef.current === "rendering") {
+          const groupKeys = sheetGroup.length ? sheetGroup : (active ? [active] : []);
+          const anyPainted = groupKeys.some((k) => sheetPainted(k) || panelCanvasRefs.current.has(k));
+          if (anyPainted || sheets.length > 0) {
+            setStatus("ready");
+          }
+        }
+      }, 1800);
+      return () => clearTimeout(timer);
+    }
+  }, [status, active, sheets.length, sheetGroup]);
 
   // Rebuild the enriched plan-symbol index whenever extracts, conditions, or
   // the project schedule knowledge-base change.
@@ -7398,6 +7431,7 @@ export default function TakeoffCanvas() {
       selectShape(shapeIds[0], picks);
       setFocusKey(sk || focusKey);
       setTool("select");
+      flyToShape(shapeIds[0]);
     } else {
       selectShape(null);
     }
@@ -7411,10 +7445,15 @@ export default function TakeoffCanvas() {
   }
   function toggleHideIds(ids, hidden) {
     const { shapeIds, groupIds, sheetIds } = expandLayerIds(ids);
+    let shouldHide = typeof hidden === "boolean" ? hidden : undefined;
     setHiddenShapeIds((h) => {
       const next = { ...h };
-      for (const id of [...shapeIds, ...sheetIds]) {
-        if (hidden) next[id] = true;
+      if (shouldHide === undefined) {
+        const allHidden = shapeIds.length > 0 && shapeIds.every((id) => h[id]);
+        shouldHide = !allHidden;
+      }
+      for (const id of [...ids, ...shapeIds, ...sheetIds]) {
+        if (shouldHide) next[id] = true;
         else delete next[id];
       }
       return next;
@@ -7422,17 +7461,23 @@ export default function TakeoffCanvas() {
     if (groupIds.length) {
       setLayerForest((g) => {
         let next = g;
-        for (const id of groupIds) next = setGroupFlag(next, id, "hidden", hidden);
+        const flag = shouldHide !== undefined ? shouldHide : (typeof hidden === "boolean" ? hidden : true);
+        for (const id of groupIds) next = setGroupFlag(next, id, "hidden", flag);
         return next;
       });
     }
   }
   function toggleLockIds(ids, locked) {
     const { shapeIds, groupIds, sheetIds } = expandLayerIds(ids);
+    let shouldLock = typeof locked === "boolean" ? locked : undefined;
     setLockedShapeIds((h) => {
       const next = { ...h };
-      for (const id of [...shapeIds, ...sheetIds]) {
-        if (locked) next[id] = true;
+      if (shouldLock === undefined) {
+        const allLocked = shapeIds.length > 0 && shapeIds.every((id) => h[id]);
+        shouldLock = !allLocked;
+      }
+      for (const id of [...ids, ...shapeIds, ...sheetIds]) {
+        if (shouldLock) next[id] = true;
         else delete next[id];
       }
       return next;
@@ -7440,7 +7485,8 @@ export default function TakeoffCanvas() {
     if (groupIds.length) {
       setLayerForest((g) => {
         let next = g;
-        for (const id of groupIds) next = setGroupFlag(next, id, "locked", locked);
+        const flag = shouldLock !== undefined ? shouldLock : (typeof locked === "boolean" ? locked : true);
+        for (const id of groupIds) next = setGroupFlag(next, id, "locked", flag);
         return next;
       });
     }
@@ -9478,6 +9524,7 @@ export default function TakeoffCanvas() {
       selectedIds={selectedLayerIds}
       units={units}
       sheetMatch={aiFloorSheetKeysMatch}
+      roomForShape={(s) => detectRoomName(s, boqDetectCtx, shapes) || s.room_detected || s.room || ""}
       onSelectIds={selectLayerIds}
       onToggleHideIds={toggleHideIds}
       onToggleLockIds={toggleLockIds}
@@ -10083,6 +10130,7 @@ export default function TakeoffCanvas() {
              >
              {deskTab === "summary" && (
                 <SummaryPanel
+                  docked={true}
                   shapes={shapes}
                   conditions={conditions}
                   sheetLevels={sheetLevels}
@@ -10091,6 +10139,7 @@ export default function TakeoffCanvas() {
                   units={units}
                   boqLines={boqLines}
                   projectName={projectName}
+                  activeSheetId={focusKey || sheetKey}
                   onToggleHideIds={toggleHideIds}
                   onPatchCondition={updateCondById}
                   onShapeNavigate={flyToShape}
@@ -12222,6 +12271,7 @@ export default function TakeoffCanvas() {
               units={units}
               boqLines={boqLines}
               projectName={projectName}
+              activeSheetId={focusKey || sheetKey}
               onToggleHideIds={toggleHideIds}
               onPatchCondition={updateCondById}
               onShapeNavigate={flyToShape}

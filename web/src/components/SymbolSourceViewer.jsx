@@ -53,24 +53,22 @@ export default function SymbolSourceViewer({ sheetId, title, bbox, getDoc, onClo
         await task.promise;
         if (cancelled) return;
         setStatus("ready");
-        // Scroll the highlighted region into center view
+        // Scroll the highlighted region into view
         const sc = wrapRef.current;
         if (sc && bbox) {
           const sx = (bbox.x / RENDER_SCALE) * scale;
           const sy = (bbox.y / RENDER_SCALE) * scale;
           const sw = (bbox.w / RENDER_SCALE) * scale;
           const sh = (bbox.h / RENDER_SCALE) * scale;
-          const targetLeft = Math.max(0, sx - (sc.clientWidth / 2) + (sw / 2));
-          const targetTop = Math.max(0, sy - (sc.clientHeight / 2) + (sh / 2));
-          sc.scrollLeft = targetLeft;
-          sc.scrollTop = targetTop;
+          sc.scrollLeft = Math.max(0, sx - 40);
+          sc.scrollTop = Math.max(0, sy - 40);
           // Draw highlight overlay on a second pass
           ctx.save();
           ctx.strokeStyle = "#1f3fc7";
           ctx.lineWidth = 2.5;
           ctx.setLineDash([6, 4]);
           ctx.strokeRect(sx, sy, Math.max(sw, 24), Math.max(sh, 24));
-          ctx.fillStyle = "rgba(31,63,199,.12)";
+          ctx.fillStyle = "rgba(31,63,199,.08)";
           ctx.fillRect(sx, sy, Math.max(sw, 24), Math.max(sh, 24));
           ctx.restore();
         }
