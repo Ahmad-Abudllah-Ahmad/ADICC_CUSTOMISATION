@@ -610,7 +610,7 @@ function mergeOpeningsForBoq(stored = [], nearby = []) {
   return out;
 }
 
-/** Floor + wall face for BOQ hover — wall deducts doors inside/on the trace. */
+/** Floor + wall face for BOQ hover & panel — includes complete client architectural breakdown. */
 export function boqWallFaceMetrics(shape, condition, detectCtx) {
   const cp = shape.computed || {};
   const role = shape.measure_role;
@@ -618,55 +618,90 @@ export function boqWallFaceMetrics(shape, condition, detectCtx) {
   const nearby = openingsFromNearbyDoors(shape, detectCtx);
   const stored = shape.openings || [];
 
-  if (role === "surface_area") {
-    const lf = cp.perimeter_lf || 0;
-    const gross = cp.gross_face_sf || +(lf * h).toFixed(2);
-    const openings = mergeOpeningsForBoq(stored, nearby);
-    const opening_sf = openingsDeductSfLinear(openings, lf, h);
-    const wall_sf = +Math.max(0, gross - opening_sf).toFixed(2);
-    return { floor_sf: 0, wall_sf, gross_wall_sf: gross, opening_sf, lf };
-  }
+  const openings = mergeOpeningsForBoq(stored, nearby);
+  const detailOpenings = openings.map((o) => {
+    const isUnnamed = !o.tag || /^(unnamed|door|window|opening)$/i.test(String(o.tag).trim());
+    const isWindow = o.kind === "window" || /^(W|WIN|GL)/i.test(String(o.tag || ""));
+    const kind = isWindow ? "window" : (o.kind || "door");
+    return {
+      tag: !isUnnamed ? o.tag : `Unnamed ${kind}`,
+      kind,
+      unnamed: isUnnamed,
+      width_ft: Number(o.width_ft) || (kind === "window" ? 4 : 3),
+      height_ft: Number(o.height_ft) || (kind === "window" ? 4 : 7),
+      sf: +(Math.max(0, Number(o.width_ft) || (kind === "window" ? 4 : 3)) * Math.max(0, Number(o.height_ft) || (kind === "window" ? 4 : 7))).toFixed(2),
+    };
+  });
 
-  if (role === "wall_area") {
-    const openings = mergeOpeningsForBoq(stored, nearby);
-    const gross = cp.gross_face_sf || cp.wall_face_sf || 0;
-    const lf = cp.perimeter_lf || 0;
-    const opening_sf = openings.length
+  const doors = detailOpenings.filter((o) => o.kind === "door");
+  const windows = detailOpenings.filter((o) => o.kind === "window");
+  const doors_deduct_sf = doors.reduce((acc, d) => acc + (d.sf || 0), 0);
+  const windows_deduct_sf = windows.reduce((acc, w) => acc + (w.sf || 0), 0);
+
+  const lf = cp.perimeter_lf || 0;
+  const skirting_gross_lf = lf;
+  const skirting_door_deduct_lf = doors.reduce((acc, d) => acc + (Number(d.width_ft) || 3), 0);
+  const skirting_net_lf = Math.max(0, skirting_gross_lf - skirting_door_deduct_lf);
+
+  let floor_net_sf = 0;
+  let floor_openings_sf = 0;
+  let floor_gross_sf = 0;
+  let gross_wall = 0;
+  let wall_sf = 0;
+  let opening_sf = 0;
+
+  if (role === "surface_area") {
+    gross_wall = cp.gross_face_sf || +(lf * h).toFixed(2);
+    opening_sf = openingsDeductSfLinear(openings, lf, h);
+    wall_sf = +Math.max(0, gross_wall - opening_sf).toFixed(2);
+  } else if (role === "wall_area") {
+    gross_wall = cp.gross_face_sf || cp.wall_face_sf || 0;
+    opening_sf = openings.length
       ? openingsDeductSfLinear(openings, lf || 1, h)
       : (cp.opening_sf || 0);
-    const wall_sf = cp.wall_face_sf != null && !stored.length && !nearby.length
+    wall_sf = cp.wall_face_sf != null && !stored.length && !nearby.length
       ? (cp.wall_face_sf || cp.area_sf || 0)
-      : +Math.max(0, gross - opening_sf).toFixed(2);
-    return {
-      floor_sf: 0,
-      wall_sf,
-      gross_wall_sf: gross,
-      opening_sf: stored.length || nearby.length ? opening_sf : (cp.opening_sf || 0),
-      lf,
-    };
+      : +Math.max(0, gross_wall - opening_sf).toFixed(2);
+  } else if (role === "floor_area") {
+    floor_net_sf = cp.area_sf || 0;
+    floor_openings_sf = cp.holes_area_sf || (shape.holes_norm?.length ? (cp.gross_area_sf ? Math.max(0, cp.gross_area_sf - floor_net_sf) : 0) : 0);
+    floor_gross_sf = cp.gross_area_sf || (floor_net_sf + floor_openings_sf);
+
+    gross_wall = +(lf * h).toFixed(2);
+    opening_sf = openingsDeductSfFloorPerim(openings, lf, h);
+    wall_sf = +Math.max(0, gross_wall - opening_sf).toFixed(2);
+  } else {
+    floor_net_sf = cp.area_sf || 0;
+    floor_gross_sf = floor_net_sf;
+    wall_sf = cp.wall_face_sf || cp.area_sf || 0;
+    gross_wall = cp.gross_face_sf || 0;
+    opening_sf = cp.opening_sf || 0;
   }
 
-  if (role === "floor_area") {
-    const lf = cp.perimeter_lf || 0;
-    const gross = +(lf * h).toFixed(2);
-    const openings = mergeOpeningsForBoq(stored, nearby);
-    const opening_sf = openingsDeductSfFloorPerim(openings, lf, h);
-    const wall_sf = +Math.max(0, gross - opening_sf).toFixed(2);
-    return {
-      floor_sf: cp.area_sf || 0,
-      wall_sf,
-      gross_wall_sf: gross,
-      opening_sf,
-      lf,
-    };
-  }
+  const ceiling_gross_sf = floor_gross_sf;
+  const ceiling_openings_sf = floor_openings_sf;
+  const ceiling_net_sf = floor_net_sf;
 
   return {
-    floor_sf: cp.area_sf || 0,
-    wall_sf: cp.wall_face_sf || cp.area_sf || 0,
-    gross_wall_sf: cp.gross_face_sf || 0,
-    opening_sf: cp.opening_sf || 0,
-    lf: cp.perimeter_lf || 0,
+    floor_sf: floor_net_sf,
+    floor_gross_sf,
+    floor_openings_sf,
+    floor_net_sf,
+    wall_sf,
+    gross_wall_sf: gross_wall,
+    opening_sf,
+    doors_deduct_sf,
+    windows_deduct_sf,
+    ceiling_gross_sf,
+    ceiling_openings_sf,
+    ceiling_net_sf,
+    doors,
+    windows,
+    skirting_gross_lf,
+    skirting_door_deduct_lf,
+    skirting_net_lf,
+    lf,
+    openings: detailOpenings,
   };
 }
 
@@ -692,7 +727,18 @@ export function buildShapeRows(shapes, conditions, detectCtx) {
     .map((s) => {
       const cond = byId.get(s.condition_id);
       const qty = shapeQuantities(s);
+      const face = boqWallFaceMetrics(s, cond, detectCtx);
       const room_detected = detectRoomName(s, detectCtx, shapes);
+      const schedule_refs = gatherShapeScheduleRefs(s, cond, detectCtx, room_detected);
+      let needs_review = false;
+      let review_reason = "";
+      if (!cond?.finish_tag && !s.finish_tag && !schedule_refs.length) {
+        needs_review = true;
+        review_reason = "No finish schedule tag assigned";
+      } else if (!room_detected && s.measure_role === "floor_area") {
+        needs_review = true;
+        review_reason = "Room name not detected on drawing";
+      }
       return {
         shape_id: s.id,
         sheet_id: s.sheet_id,
@@ -700,8 +746,29 @@ export function buildShapeRows(shapes, conditions, detectCtx) {
         finish_tag: cond?.finish_tag || "",
         color: cond?.color,
         room_detected,
-        schedule_refs: gatherShapeScheduleRefs(s, cond, detectCtx, room_detected),
+        schedule_refs,
+        needs_review,
+        review_reason,
         ...qty,
+        wall_sf: face.wall_sf ?? qty.wall_sf,
+        floor_sf: face.floor_sf ?? qty.floor_sf,
+        floor_gross_sf: face.floor_gross_sf || face.floor_sf || qty.floor_sf,
+        floor_openings_sf: face.floor_openings_sf || 0,
+        floor_net_sf: face.floor_net_sf || face.floor_sf || qty.floor_sf,
+        ceiling_gross_sf: face.ceiling_gross_sf || face.floor_sf || qty.floor_sf,
+        ceiling_openings_sf: face.ceiling_openings_sf || 0,
+        ceiling_net_sf: face.ceiling_net_sf || face.floor_sf || qty.floor_sf,
+        lf: face.lf ?? qty.lf,
+        gross_wall_sf: face.gross_wall_sf || 0,
+        opening_sf: face.opening_sf || 0,
+        doors_deduct_sf: face.doors_deduct_sf || 0,
+        windows_deduct_sf: face.windows_deduct_sf || 0,
+        doors: face.doors || [],
+        windows: face.windows || [],
+        skirting_gross_lf: face.skirting_gross_lf || face.lf || qty.lf,
+        skirting_door_deduct_lf: face.skirting_door_deduct_lf || 0,
+        skirting_net_lf: face.skirting_net_lf || face.lf || qty.lf,
+        openings: face.openings || [],
       };
     });
 }
@@ -736,29 +803,54 @@ export function resolveShapeBoq(shape, conditions, detectCtx, boqLines = [], uni
     });
   }
 
+  const needs_review = r.needs_review || (!meta.room && !r.room_detected && shape.measure_role === "floor_area");
+  const review_reason = r.review_reason || (needs_review ? "Please review room / finish details" : "");
+
+  const manualRate = meta.rate != null && meta.rate !== "" ? Number(meta.rate) : null;
+  const splitRate = meta.rate_material != null
+    ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0) + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
+    : null;
+  const rate = manualRate != null ? manualRate : (splitRate != null ? splitRate : (pricing.rate ?? null));
+  const amount = meta.amount != null && meta.amount !== ""
+    ? Number(meta.amount)
+    : (rate != null ? +(qty * rate).toFixed(2) : (pricing.amount ?? null));
+
   return {
     ...r,
     ...displayRow,
+    ...face,
     role: r.role || shape.measure_role,
     gross_wall_sf: face.gross_wall_sf || 0,
     opening_sf: face.opening_sf || 0,
+    openings: face.openings || [],
+    doors: face.doors || [],
+    windows: face.windows || [],
+    skirting_gross_lf: face.skirting_gross_lf || 0,
+    skirting_door_deduct_lf: face.skirting_door_deduct_lf || 0,
+    skirting_net_lf: face.skirting_net_lf || 0,
+    floor_gross_sf: face.floor_gross_sf || 0,
+    floor_openings_sf: face.floor_openings_sf || 0,
+    floor_net_sf: face.floor_net_sf || 0,
+    ceiling_gross_sf: face.ceiling_gross_sf || 0,
+    ceiling_openings_sf: face.ceiling_openings_sf || 0,
+    ceiling_net_sf: face.ceiling_net_sf || 0,
     room: meta.room || r.room_detected || "",
     qty,
     unit: meta.unit || pq.unit,
     description: meta.description || autoDesc,
     schedule_refs: r.schedule_refs || [],
+    needs_review,
+    review_reason,
     finish_details: resolveMaskFinishDetails({
       ...r,
       ...displayRow,
       room: meta.room || r.room_detected || "",
       description: meta.description || autoDesc,
     }, cond?.description || "", detectCtx?.scheduleKb),
-    rate: meta.rate_material != null
-      ? (Number(meta.rate_material) || 0) + (Number(meta.rate_labour) || 0) + (Number(meta.rate_equipment) || 0) + (Number(meta.rate_sub) || 0)
-      : (pricing.rate ?? null),
-    amount: meta.amount != null ? Number(meta.amount) : (pricing.amount ?? null),
+    rate,
+    amount,
     currency: pricing.currency || pricingCtx?.currency || "AED",
-    priced_from: pricing.priced_from || null,
+    priced_from: pricing.priced_from || (manualRate != null ? "Manual input" : null),
     material_rate_id: meta.material_rate_id || pricing.material_rate_id || null,
   };
 }

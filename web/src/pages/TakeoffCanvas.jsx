@@ -69,6 +69,7 @@ import RfiPanel from "../components/RfiPanel.jsx";
 import StampPanel from "../components/StampPanel.jsx";
 import ImportSchedulePanel from "../components/ImportSchedulePanel.jsx";
 import BoqPanel from "../components/BoqPanel.jsx";
+import SummaryPanel from "../components/SummaryPanel.jsx";
 import LayersIllustratorPanel from "../components/LayersIllustratorPanel.jsx";
 import {
   addEmptyGroup,
@@ -127,6 +128,7 @@ import { aiConfig, isAiConfigured } from "../lib/ai.js";
 import { useGoogleAuth } from "../lib/google/AuthContext.jsx";
 import { projectHomeFolderId } from "../lib/projectHome.js";
 import ThemeToggle from "../components/ThemeToggle.jsx";
+import ProjectSwitcherDropdown from "../components/ProjectSwitcherDropdown.jsx";
 // Pure data constants (render/zoom budgets, snap tuning, tool descriptors,
 // flooring starter conditions) live in lib/canvasConstants.js; the pure
 // module-scope helpers (autoRenderScale, invertCanvasPixels, uid, clamp,
@@ -667,6 +669,8 @@ export default function TakeoffCanvas() {
   const [shapeCtxMenu, setShapeCtxMenu] = useState(null); // { x, y, shapeId } canvas-local right-click menu
   const shapeCtxMenuRef = useRef(null);
   shapeCtxMenuRef.current = shapeCtxMenu;
+  const [selectMarquee, setSelectMarquee] = useState(null); // { x0, y0, x1, y1 } box selection
+  const boxSelectRef = useRef(null);
   const [selVert, setSelVert] = useState(null);         // selected vertex index of the selected shape — Delete removes just that point
   const [wallSegmentFocus, setWallSegmentFocus] = useState(null); // surface_area segment index highlighted from panel
   const [selHole, setSelHole] = useState(null);       // selected trim hole index (holes_norm), null = outer ring
@@ -923,6 +927,7 @@ export default function TakeoffCanvas() {
   }, [commitMsgState]);
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
   const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
+  const [showSummary, setShowSummary] = useState(false); // Summary table — hierarchical floor -> type -> code -> qty
   // AI Detection — ONLY A1105–A1109 floor plans. Keep mask DATA intact;
   // those sheets show no masks until the nav button runs, then reveal one-by-one.
   // All other PDFs keep normal always-visible masks + hover (untouched).
@@ -1115,6 +1120,11 @@ export default function TakeoffCanvas() {
     try { return { color: HL_INKS[0], size: 14, tip: "chisel", ...JSON.parse(localStorage.getItem("opentakeoff_hl_style") || "{}") }; }
     catch { return { color: HL_INKS[0], size: 14, tip: "chisel" }; }
   });
+  const [showHlPopover, setShowHlPopover] = useState(false);
+  useEffect(() => {
+    if (tool === "highlighter") setShowHlPopover(true);
+    else setShowHlPopover(false);
+  }, [tool]);
   useEffect(() => { try { localStorage.setItem("opentakeoff_hl_style", JSON.stringify(hlStyle)); } catch { /* private mode */ } }, [hlStyle]);
   const snapRef = useRef(null);        // current snapped image point (or null)
   const snapGridsRef = useRef(new Map()); // sheetKey → {cell, map} spatial hash of vector endpoints
@@ -3128,14 +3138,27 @@ export default function TakeoffCanvas() {
       const lower = e.key.toLowerCase();
       if (viewRef.current === "gallery") return;
       if (lower === "g") { setLeftTab(null); setView("gallery"); return; }
-      if (e.shiftKey && SHIFT_LETTER_TO_TOOL[e.key]) { setTool(SHIFT_LETTER_TO_TOOL[e.key]); return; }
+      if (lower === "b") {
+        if (selectedId) {
+          e.preventDefault();
+          openBoqForShape(selectedId);
+          return;
+        } else {
+          e.preventDefault();
+          setShowBoq((v) => !v);
+          return;
+        }
+      }
+      if (e.shiftKey && SHIFT_LETTER_TO_TOOL[e.key]) { e.preventDefault(); setTool(SHIFT_LETTER_TO_TOOL[e.key]); return; }
+      if (lower === "h" || lower === "p") { e.preventDefault(); setTool("pan"); return; }
+      if (lower === "v") { e.preventDefault(); setTool("select"); return; }
       const t = LETTER_TO_TOOL[lower];
-      if (t) setTool(t);
+      if (t) { e.preventDefault(); setTool(t); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, poly, proposal, agentProposals, activeCond, sheetGroup, sheetKey, shapes, scales]);
+  }, [tool, poly, proposal, agentProposals, activeCond, sheetGroup, sheetKey, shapes, scales, selectedId]);
   // ^ shapes/scales joined the deps with the agent accept path (the delete-handler
   //   precedent): ⏎ accept dispatches an `add` against the CURRENT array, so a
   //   shapes change with no other dep change must re-subscribe this handler.
@@ -3188,7 +3211,7 @@ export default function TakeoffCanvas() {
         // tool's points, on-screen or hidden
         else if (tool === "calibrate") { setCalib((c) => c.slice(0, -1)); }
         else if (tool === "check") { setCheck((c) => c.slice(0, -1)); }
-      } else if (e.key === "Escape") { e.preventDefault(); setWallCutoutFocus(null); if (wallCutoutFocusTimerRef.current) { clearTimeout(wallCutoutFocusTimerRef.current); wallCutoutFocusTimerRef.current = null; } if (overlapPrompt) { resolveOverlapPrompt("cancel"); } else if (wallCutoutDraftRef.current) { setWallCutoutDraft(null); if (rubberRef.current) rubberRef.current.style.display = "none"; setCommitMsg("Custom cutout cancelled."); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (tool === "oneclick" && ocSel) { setOcSel(null); } else if (tool === "select" && selVert != null) { setSelVert(null); setSelHole(null); } else { hideCrosshair(); setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; setTool("select"); } }
+      } else if (e.key === "Escape") { e.preventDefault(); if (showHlPopover) { setShowHlPopover(false); return; } setWallCutoutFocus(null); if (wallCutoutFocusTimerRef.current) { clearTimeout(wallCutoutFocusTimerRef.current); wallCutoutFocusTimerRef.current = null; } if (overlapPrompt) { resolveOverlapPrompt("cancel"); } else if (wallCutoutDraftRef.current) { setWallCutoutDraft(null); if (rubberRef.current) rubberRef.current.style.display = "none"; setCommitMsg("Custom cutout cancelled."); } else if (shapeCtxMenuRef.current) { setShapeCtxMenu(null); } else if (agentOfferFnsRef.current?.pending()) { agentOfferFnsRef.current.dismiss(); } else if (symbolSourceViewRef.current) { setSymbolSourceView(null); } else if (symbolFocus) { setSymbolFocus(null); } else if (tool === "oneclick" && ocSel) { setOcSel(null); } else if (tool === "select" && selVert != null) { setSelVert(null); setSelHole(null); } else { hideCrosshair(); setPoly([]); setCalib([]); setCheck([]); setCheckStated(""); setScaleGuide(null); selectShape(null); setSelectedCutoutIds(new Set()); setMarkupDraft(null); setProposal(null); setWallProposal(null); setArmedStamp(null); setScheduleAnchor(null); resetZone(); hlRef.current = null; if (hlPathRef.current) hlPathRef.current.style.display = "none"; setTool("select"); } }
       // ⌘Z: the drawing context wins — mid-trace it still pops the last placed
       // point (with or without ⇧, matching the old behavior byte-for-byte);
       // only with no trace in progress does the command stack engage
@@ -3698,10 +3721,14 @@ export default function TakeoffCanvas() {
       }
       setSymbolFocus(null);
     }
-    // 5. open canvas — drag the paper to PAN (the instinct everyone brings from
-    // desktop takeoff tools; no need to reach for the Pan tool). The plain
-    // click (no drag) already cleared the selection above, so a stationary
-    // press costs nothing.
+    // 5. open canvas — Shift+drag draws a selection marquee; otherwise drag to pan.
+    if (tool === "select" && e.shiftKey) {
+      panRef.current = null;
+      boxSelectRef.current = { start: p, sx: e.clientX, sy: e.clientY };
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
+    boxSelectRef.current = { start: p, sx: e.clientX, sy: e.clientY };
     panRef.current = { sx: e.clientX, sy: e.clientY, ox: tfRef.current.x, oy: tfRef.current.y };
     e.currentTarget.setPointerCapture(e.pointerId);
     if (containerRef.current) containerRef.current.style.cursor = "grabbing";
@@ -4215,6 +4242,12 @@ export default function TakeoffCanvas() {
       }
       return;
     }
+    if (boxSelectRef.current && (e.shiftKey || !panRef.current)) {
+      const cur = toImage(e.clientX, e.clientY);
+      if (Math.hypot(e.clientX - boxSelectRef.current.sx, e.clientY - boxSelectRef.current.sy) > 6) {
+        setSelectMarquee({ x0: boxSelectRef.current.start[0], y0: boxSelectRef.current.start[1], x1: cur[0], y1: cur[1] });
+      }
+    }
     moveCrosshair(e);                 // full-page aim guide (draw modes), always tracks hover
     // a held draw-click that moves becomes a pan (point placement waits for up)
     if (pendingClickRef.current && !panRef.current) {
@@ -4535,6 +4568,34 @@ export default function TakeoffCanvas() {
       try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
       return;
     }
+    if (selectMarquee) {
+      const minX = Math.min(selectMarquee.x0, selectMarquee.x1);
+      const maxX = Math.max(selectMarquee.x0, selectMarquee.x1);
+      const minY = Math.min(selectMarquee.y0, selectMarquee.y1);
+      const maxY = Math.max(selectMarquee.y0, selectMarquee.y1);
+      const boxedIds = [];
+      for (const s of visibleShapes) {
+        const sp = panelByKey(s.sheet_id);
+        if (!sp?.img?.w || !Array.isArray(s.verts_norm)) continue;
+        const pts = s.verts_norm.map(([nx, ny]) => [nx * sp.img.w + sp.xOffset, ny * sp.img.h]);
+        const sMinX = Math.min(...pts.map((pt) => pt[0]));
+        const sMaxX = Math.max(...pts.map((pt) => pt[0]));
+        const sMinY = Math.min(...pts.map((pt) => pt[1]));
+        const sMaxY = Math.max(...pts.map((pt) => pt[1]));
+        if (sMinX <= maxX && sMaxX >= minX && sMinY <= maxY && sMaxY >= minY) {
+          boxedIds.push(s.id);
+        }
+      }
+      if (boxedIds.length) {
+        const picks = Object.fromEntries(boxedIds.map((id) => [id, true]));
+        selectShape(boxedIds[0], picks);
+      }
+      setSelectMarquee(null);
+      boxSelectRef.current = null;
+      try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
+      return;
+    }
+    boxSelectRef.current = null;
     if (panRef.current) {
       panRef.current = null;
       setTf({ ...tfRef.current });   // sync once at end
@@ -6367,10 +6428,13 @@ export default function TakeoffCanvas() {
     setCommitMsg(`Pasted ${made.length} takeoff${made.length === 1 ? "" : "s"}${cross ? ` onto ${labelFor(tp)}` : ""} — drag to position.`);
   }
   function duplicateSelected() {
-    if (shapeIsLocked(selectedId)) return;
-    const sel = shapes.find((s) => s.id === selectedId);
-    if (!sel) { setCommitMsg("Select a takeoff to duplicate."); return; }
-    clipRef.current = [clipEntry(sel)];
+    const live = shapesRef.current;
+    const picks = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+    const targetIds = picks.length > 0 ? picks : (selectedId ? [selectedId] : []);
+    const validIds = targetIds.filter((id) => !shapeIsLocked(id));
+    if (!validIds.length) { setCommitMsg("Select a takeoff to duplicate."); return; }
+    const targets = live.filter((s) => validIds.includes(s.id));
+    clipRef.current = targets.map((s) => clipEntry(s));
     pasteClipboard();
   }
   // Mirror the selected shape about its own bbox center — an isometry, so SF/LF
@@ -6386,6 +6450,53 @@ export default function TakeoffCanvas() {
       type: "geom", id: sel.id, editKind: "vertex",
       verts_norm: vn, computed: recomputeShape({ ...sel, verts_norm: vn }), prev: geomSnapshot(sel),
     });
+  }
+  function subtractSelectedShapes() {
+    const live = shapesRef.current;
+    const picks = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+    const targetIds = picks.length > 1 ? picks : (selectedId ? [selectedId] : []);
+    if (targetIds.length < 2) {
+      setCommitMsg("Select at least 2 overlapping shapes to subtract.");
+      return;
+    }
+    const selected = live.filter((s) => targetIds.includes(s.id) && !shapeIsLocked(s.id));
+    if (selected.length < 2) return;
+
+    // Sort by area descending — base is the largest polygon, cutters are the smaller ones
+    const sorted = [...selected].sort((a, b) => (b.computed?.area_sf || 0) - (a.computed?.area_sf || 0));
+    const base = sorted[0];
+    const cutters = sorted.slice(1);
+
+    const sp = panelByKey(base.sheet_id);
+    if (!sp?.img?.w || !sp?.img?.h) return;
+
+    let holes_norm = base.holes_norm ? base.holes_norm.map((h) => h.map((v) => [...v])) : [];
+    const toDeleteIds = [];
+
+    for (const cutter of cutters) {
+      if (cutter.sheet_id !== base.sheet_id) continue;
+      // Add cutter ring to base's holes
+      holes_norm.push(cutter.verts_norm.map((v) => [...v]));
+      toDeleteIds.push(cutter.id);
+    }
+
+    if (toDeleteIds.length) {
+      // 1. Update base shape with holes
+      dispatchShape({
+        type: "geom",
+        id: base.id,
+        editKind: "vertex",
+        verts_norm: base.verts_norm,
+        holes_norm,
+        computed: recomputeShape({ ...base, holes_norm }),
+        prev: geomSnapshot(base),
+      });
+      // 2. Delete the cutter shapes
+      dispatchShape({ type: "delete", ids: toDeleteIds });
+      // 3. Keep base shape selected
+      selectShape(base.id);
+      setCommitMsg(`Subtracted ${toDeleteIds.length} void${toDeleteIds.length === 1 ? "" : "s"} from ${base.room || "area"}`);
+    }
   }
   // ── markup (cloud / callout / text) — annotations, not measurements ─────────
   // markupDraft holds STAGE px (so the live preview spans panels); a markup
@@ -6686,42 +6797,54 @@ export default function TakeoffCanvas() {
   // centers once the panel has non-zero img.w. If already open, center inline.
   function centerOnMarkup(m) {
     const sp = panelByKey(m.sheet_id);
-    if (!sp || !sp.img.w) return false;
+    if (!sp || !sp.img || !sp.img.w || !sp.img.h) return false;
     let anchor;
     if (m.type === "highlight" && Array.isArray(m.pts) && m.pts.length) anchor = m.pts[Math.floor((m.pts.length - 1) / 2)];
     else if ((m.type === "cloud" || m.type === "highlight") && m.rect) anchor = [(m.rect[0][0] + m.rect[1][0]) / 2, (m.rect[0][1] + m.rect[1][1]) / 2];
     else if (m.type === "callout") anchor = m.at || m.target;
     else if (m.type === "arrow" && m.from && m.to) anchor = [(m.from[0] + m.to[0]) / 2, (m.from[1] + m.to[1]) / 2];
     else anchor = m.at;   // text + bubble
-    if (!anchor) return false;
+    if (!anchor || !Number.isFinite(anchor[0]) || !Number.isFinite(anchor[1])) return false;
     const el = containerRef.current;
     if (!el) return false;
     const r = el.getBoundingClientRect();
-    const scale = tfRef.current.scale;
+    if (!r.width || !r.height) return false;
+    const curScale = Number.isFinite(tfRef.current.scale) ? tfRef.current.scale : 1;
     const sx = anchor[0] * sp.img.w + sp.xOffset, sy = anchor[1] * sp.img.h;
-    setTfNow({ x: r.width / 2 - sx * scale, y: r.height / 2 - sy * scale, scale });
+    const nextX = r.width / 2 - sx * curScale;
+    const nextY = r.height / 2 - sy * curScale;
+    if (!Number.isFinite(nextX) || !Number.isFinite(nextY) || !Number.isFinite(curScale)) return false;
+    setTfNow({ x: nextX, y: nextY, scale: curScale });
     selectMarkup(m.id);
     return true;
   }
   function centerOnShape(s) {
     const sp = panelByKey(s.sheet_id);
-    if (!sp || !sp.img.w) return false;
+    if (!sp || !sp.img || !sp.img.w || !sp.img.h) return false;
     const verts = s.verts_norm || [];
     if (!verts.length) return false;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const [nx, ny] of verts) {
+      if (typeof nx !== "number" || typeof ny !== "number" || isNaN(nx) || isNaN(ny)) continue;
       const x = nx * sp.img.w + sp.xOffset, y = ny * sp.img.h;
       x0 = Math.min(x0, x); y0 = Math.min(y0, y);
       x1 = Math.max(x1, x); y1 = Math.max(y1, y);
     }
+    if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) return false;
     const el = containerRef.current;
     if (!el) return false;
     const r = el.getBoundingClientRect();
-    const minSpan = s.measure_role === "count" ? 48 : 1;
-    const w = Math.max(x1 - x0, minSpan), h = Math.max(y1 - y0, minSpan);
+    if (!r.width || !r.height) return false;
+    const minSpan = s.measure_role === "count" ? 48 : 10;
+    const w = Math.max(x1 - x0, minSpan);
+    const h = Math.max(y1 - y0, minSpan);
     const pad = 72;
-    const scale = clamp(Math.min((r.width - pad) / w, (r.height - pad) / h, 2.25));
-    setTfNow({ x: (r.width - w * scale) / 2 - x0 * scale, y: (r.height - h * scale) / 2 - y0 * scale, scale });
+    const rawScale = Math.min((r.width - pad) / w, (r.height - pad) / h, 2.25);
+    const scale = Number.isFinite(rawScale) && rawScale > 0 ? clamp(rawScale) : 1;
+    const nextX = (r.width - w * scale) / 2 - x0 * scale;
+    const nextY = (r.height - h * scale) / 2 - y0 * scale;
+    if (!Number.isFinite(nextX) || !Number.isFinite(nextY) || !Number.isFinite(scale)) return false;
+    setTfNow({ x: nextX, y: nextY, scale });
     selectShape(s.id);
     revealSheetInFilesSidebar(s.sheet_id);
     return true;
@@ -6871,13 +6994,48 @@ export default function TakeoffCanvas() {
     setShapeBoqHover((h) => (h?.id === shapeId ? null : h));
     shapeBoqHoverStickyRef.current = false;
   }
+  function setShapeManualRate(shapeId, rateVal) {
+    const key = rowKey(shapeId);
+    const s = shapes.find((x) => x.id === shapeId);
+    setBoqLines((prev) => {
+      const i = prev.findIndex((l) => l.id === key);
+      if (i >= 0) {
+        const next = prev.slice();
+        next[i] = { ...next[i], rate: rateVal };
+        return next;
+      }
+      return [
+        ...prev,
+        {
+          id: key,
+          manual: false,
+          sheet_id: s?.sheet_id || "",
+          condition_id: s?.condition_id || "",
+          shape_id: shapeId,
+          room: "",
+          description: "",
+          notes: "",
+          unit: "",
+          qty_override: "",
+          rate: rateVal,
+        },
+      ];
+    });
+  }
   function openBoqForShape(shapeId) {
     const s = shapes.find((x) => x.id === shapeId);
     setShowBoq(true);
     setBoqFocusShapeId(shapeId);
     setShapeBoqFocus(null);
     shapeBoqPinPosRef.current = null;
-    if (s) centerOnShape(s);
+    if (s) {
+      if (!panelKeySet.has(s.sheet_id)) {
+        pendingFlyShapeRef.current = shapeId;
+        openSheets([s.sheet_id], false);
+      } else {
+        centerOnShape(s);
+      }
+    }
     setShapeBoqHover(null);
     shapeBoqHoverStickyRef.current = false;
   }
@@ -6917,23 +7075,21 @@ export default function TakeoffCanvas() {
     setPoly([]);
   }
   function deleteSelected() {
+    const live = shapesRef.current;
+    const picks = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+    const targetIds = picks.length > 0 ? picks : (selectedId ? [selectedId] : []);
     const cutIds = [...selectedCutoutIds].filter((id) => !shapeIsLocked(id));
-    if (cutIds.length > 1) {
-      dispatchShape({ type: "delete", ids: cutIds });
+    const allToDelete = [...new Set([...cutIds, ...targetIds])].filter((id) => !shapeIsLocked(id));
+    if (allToDelete.length > 0) {
+      dispatchShape({ type: "delete", ids: allToDelete });
       setSelectedCutoutIds(new Set());
+      setLayerPickIds({});
       setSelectedId(null);
       setCutoutChecks((m) => {
         const next = { ...m };
-        for (const id of cutIds) delete next[id];
+        for (const id of allToDelete) delete next[id];
         return next;
       });
-      return;
-    }
-    if (selectedId && !shapeIsLocked(selectedId)) {
-      dispatchShape({ type: "delete", ids: [selectedId] });
-      setSelectedCutoutIds((prev) => { const n = new Set(prev); n.delete(selectedId); return n; });
-      setCutoutChecks((m) => { const n = { ...m }; delete n[selectedId]; return n; });
-      setSelectedId(null);
     }
   }
   // Wall cutout → openings[] face deduct (W × H). Floor cutouts still punch holes_norm.
@@ -7145,6 +7301,22 @@ export default function TakeoffCanvas() {
   }
   function reassignSelected(condId) { if (selectedId && !shapeIsLocked(selectedId)) dispatchShape({ type: "reassign", ids: [selectedId], condition_id: condId }); }
   function reassignSelectedLabel(value) { if (selectedId && !shapeIsLocked(selectedId)) dispatchShape({ type: "label", ids: [selectedId], value }); }   // Select-tool single-shape re-label (#111) — value "" / null clears it; label commands never stamp
+  function setShapeHeightFt(shapeId, hFt) {
+    const s = shapesRef.current.find((x) => x.id === shapeId);
+    if (!s || shapeIsLocked(shapeId)) return;
+    const height_ft = Number(hFt) || 0;
+    const computed = recomputeShape({ ...s, height_ft, height_override: true });
+    dispatchShape({
+      type: "geom",
+      id: shapeId,
+      editKind: "vertex",
+      height_ft,
+      height_override: true,
+      verts_norm: s.verts_norm,
+      computed,
+      prev: geomSnapshot(s),
+    });
+  }
   function layerGroupIdsFor(shapeId) {
     if (!shapeId) return [];
     const p = parentOf(layerForest, shapeId);
@@ -9346,6 +9518,17 @@ export default function TakeoffCanvas() {
           {/* Tools — icon row + Auto-Takeoff / Takeoff Tool Palette */}
           <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "center", overflow: "visible", borderRadius: 14, padding: "4px 10px", gap: 8, whiteSpace: "nowrap" }}>
             
+            {/* Project Switcher */}
+            {isSupabaseConfigured() && (
+              <>
+                <ProjectSwitcherDropdown
+                  currentProjectName={projectName}
+                  onProjectNameChange={setProjectName}
+                />
+                <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
+              </>
+            )}
+
             {/* Mode */}
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
               <button type="button" onClick={() => setTool("select")} data-tip="Select · V" aria-label="Select · V"
@@ -9366,20 +9549,56 @@ export default function TakeoffCanvas() {
                 <ToolMenu variant="palette" tiles circleTrigger title="Cut Out — subtract voids/columns" active={CUT_TOOLS.some((t) => t.id === tool)} accent="danger" onOpenChange={onMenuDepth} face={<Icon name="cutOut" size={15} />} items={CUT_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, short: t.short, title: `${t.label} — ${t.shortcut}`, shortcut: t.shortcut, active: tool === t.id, onSelect: () => setTool(t.id) }))} />
                 <span style={{ position: "relative", display: "inline-flex" }}>
                   <ToolMenu variant="palette" tiles circleTrigger title="Markup — annotations, not measurements" active={MARKUP_IDS.includes(tool)} onOpenChange={onMenuDepth} face={<Icon name="markup" size={15} />} items={MARKUP_TOOLS.map((t) => ({ id: t.id, icon: t.icon, label: t.label, short: t.short, title: t.shortcut ? `${t.label} — ${t.shortcut}` : t.label, shortcut: t.shortcut, active: tool === t.id, onSelect: () => { setTool(t.id); setMarkupDraft(null); } }))} />
-                  {tool === "highlighter" && (
-                    <div className="toolbar-glass-popover" style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, borderRadius: 0, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+                  {tool === "highlighter" && showHlPopover && (
+                    <div
+                      className="toolbar-glass-popover"
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 6px)",
+                        left: 0,
+                        zIndex: 30,
+                        borderRadius: "var(--radius-sm, 6px)",
+                        padding: "8px 10px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 7,
+                        boxShadow: "var(--shadow-2)",
+                        background: "var(--paper-bright)",
+                        border: "1px solid var(--ink)",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)" }}>Highlighter</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowHlPopover(false)}
+                          title="Close settings"
+                          style={{
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--ink)",
+                            fontSize: 16,
+                            cursor: "pointer",
+                            padding: "0 2px",
+                            lineHeight: 1,
+                            fontWeight: 700,
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
                       <div style={{ display: "flex", gap: 6 }} data-tip="Ink">
                         {HL_INKS.map((c) => (
-                          <button key={c} onClick={() => setHlStyle((st) => ({ ...st, color: c }))} style={{ width: 16, height: 16, padding: 0, background: c, border: hlStyle.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer" }} />
+                          <button key={c} onClick={() => setHlStyle((st) => ({ ...st, color: c }))} style={{ width: 16, height: 16, padding: 0, background: c, border: hlStyle.color === c ? "2px solid var(--ink)" : "1px solid var(--ink-faint)", cursor: "pointer", borderRadius: 3 }} />
                         ))}
                       </div>
                       <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         {HL_SIZES.map(([lbl, px]) => (
-                          <button key={lbl} onClick={() => setHlStyle((st) => ({ ...st, size: px }))} data-tip={`${lbl === "F" ? "Fine" : lbl === "M" ? "Medium" : "Broad"} tip`} aria-label={`${lbl === "F" ? "Fine" : lbl === "M" ? "Medium" : "Broad"} tip`} style={{ width: 22, height: 20, padding: 0, fontFamily: "var(--f-mono)", fontSize: 10, cursor: "pointer", border: hlStyle.size === px ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: hlStyle.size === px ? "var(--ink)" : "transparent", color: hlStyle.size === px ? "var(--paper-bright)" : "var(--ink)" }}>{lbl}</button>
+                          <button key={lbl} onClick={() => setHlStyle((st) => ({ ...st, size: px }))} data-tip={`${lbl === "F" ? "Fine" : lbl === "M" ? "Medium" : "Broad"} tip`} aria-label={`${lbl === "F" ? "Fine" : lbl === "M" ? "Medium" : "Broad"} tip`} style={{ width: 22, height: 20, padding: 0, fontFamily: "var(--f-mono)", fontSize: 10, cursor: "pointer", border: hlStyle.size === px ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: hlStyle.size === px ? "var(--ink)" : "transparent", color: hlStyle.size === px ? "var(--paper-bright)" : "var(--ink)", borderRadius: 3 }}>{lbl}</button>
                         ))}
                         <span style={{ width: 1, alignSelf: "stretch", background: "var(--ink-faint)" }} />
                         {[["chisel", "M4 16 L14 6 L18 10 L8 20 Z"], ["round", "M5 17 Q12 3 19 13"]].map(([tip, d]) => (
-                          <button key={tip} onClick={() => setHlStyle((st) => ({ ...st, tip }))} data-tip={`${tip} tip`} aria-label={`${tip} tip`} style={{ width: 24, height: 20, padding: 1, cursor: "pointer", border: hlStyle.tip === tip ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: "transparent" }}>
+                          <button key={tip} onClick={() => setHlStyle((st) => ({ ...st, tip }))} data-tip={`${tip} tip`} aria-label={`${tip} tip`} style={{ width: 24, height: 20, padding: 1, cursor: "pointer", border: hlStyle.tip === tip ? "1px solid var(--ink)" : "1px solid var(--ink-faint)", background: "transparent", borderRadius: 3 }}>
                             <svg viewBox="0 0 24 24" width="18" height="14">{tip === "chisel" ? <path d={d} fill="currentColor" stroke="none" /> : <path d={d} fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />}</svg>
                           </button>
                         ))}
@@ -9499,6 +9718,18 @@ export default function TakeoffCanvas() {
                   <div className="takeoff-sticky-panel-shell">
                     <div className="takeoff-sticky-panel" role="menu">
                       <div className="takeoff-sticky-panel-inner">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={`takeoff-sticky-opt${leftTab === "summary" || showSummary ? " is-active" : ""}`}
+                        onClick={() => {
+                          lastLeftTabRef.current = "summary";
+                          setLeftTab("summary");
+                          setPaletteOpen(false);
+                        }}
+                      >
+                        <Icon name="sheets" size={15} /> Summary
+                      </button>
                       <button
                         type="button"
                         role="menuitem"
@@ -9703,7 +9934,11 @@ export default function TakeoffCanvas() {
            onDoubleClick={(e) => e.stopPropagation()}
          >
            <div className="canvas-glass-cluster">
-             {railBtn(toggleLeftDesk, leftTab ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, sheets, markups, stamps, RFIs", !!leftTab)}
+             {railBtn(() => {
+                lastLeftTabRef.current = "summary";
+                setLeftTab((cur) => (cur === "summary" ? null : "summary"));
+              }, <Icon name="sheets" size={16} />, "Summary table — hierarchical takeoff", leftTab === "summary")}
+             {railBtn(toggleLeftDesk, leftTab && leftTab !== "summary" ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, sheets, markups, stamps, RFIs", !!leftTab && leftTab !== "summary")}
              {railBtn(() => {
                setIllLayersOpen((v) => !v);
              }, <Icon name="layers" size={16} />, "Layers panel", illLayersOpen)}
@@ -9811,7 +10046,7 @@ export default function TakeoffCanvas() {
                  lpTabsSkipClickRef.current = false;
                }}
              >
-             {[{ id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
+             {[{ id: "summary", label: "Summary", n: shapes.length }, { id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
                <button
                  key={t.id}
                  type="button"
@@ -9849,6 +10084,22 @@ export default function TakeoffCanvas() {
                key={deskTab}
                className={`lp-tab-pane${lpTabMotionRef.current.animate ? (lpTabMotionRef.current.dir < 0 ? " is-back" : " is-fwd") : ""}`}
              >
+             {deskTab === "summary" && (
+                <SummaryPanel
+                  shapes={shapes}
+                  conditions={conditions}
+                  sheetLevels={sheetLevels}
+                  sheetLabel={tabLabel}
+                  hiddenShapeIds={hiddenShapeIds}
+                  units={units}
+                  boqLines={boqLines}
+                  projectName={projectName}
+                  onToggleHideIds={toggleHideIds}
+                  onPatchCondition={updateCondById}
+                  onShapeNavigate={flyToShape}
+                  onClose={() => setLeftTab(null)}
+                />
+              )}
              {deskTab === "files" && (
                <div>
                  <div className="left-panel-glass-actions">
@@ -10276,16 +10527,20 @@ export default function TakeoffCanvas() {
               return sp && hitShapeC(s, p[0] - sp.xOffset, p[1], sp.img.w, sp.img.h, thr);
             });
             if (!hit) { setShapeCtxMenu(null); return; }
-            if (hit.measure_role === "deduct") {
+            const live = shapesRef.current;
+            const curPicks = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+            if (curPicks.includes(hit.id) && curPicks.length > 1) {
+              // Preserve multi-selection
+            } else if (hit.measure_role === "deduct") {
               setSelectedCutoutIds((prev) => (prev.has(hit.id) ? prev : new Set([hit.id])));
               setSelectedId(hit.id);
             } else {
               setSelectedCutoutIds(new Set());
-              selectShape(hit.id);
+              selectShape(hit.id, { [hit.id]: true });
             }
             setShapeCtxMenu({
-              x: Math.min(e.clientX - r.left, r.width - 180),
-              y: Math.min(e.clientY - r.top, r.height - 120),
+              x: Math.min(e.clientX - r.left, r.width - 240),
+              y: Math.min(e.clientY - r.top, r.height - 280),
               shapeId: hit.id,
             });
           }}
@@ -10414,6 +10669,8 @@ export default function TakeoffCanvas() {
                   setSymbolFocus(sid);
                 }}
                 onDeductDoor={(ref) => deductDoorOnWall(s.id, ref)}
+                onUpdateHeight={(hFt) => setShapeHeightFt(s.id, hFt)}
+                onUpdateRate={(rVal) => setShapeManualRate(s.id, rVal)}
                 onMove={(nx, ny) => {
                   const cw = containerRef.current?.clientWidth || 1200;
                   const ch = containerRef.current?.clientHeight || 800;
@@ -11201,6 +11458,19 @@ export default function TakeoffCanvas() {
               <path ref={snapMarkRef} fill="#1f6b4a" stroke="#fff" strokeWidth={1 / tf.scale} style={{ display: "none" }} />
               {/* markup draft marker (first click of cloud/callout) */}
               {markupDraft && <path d={starPath(markupDraft[0], markupDraft[1], 5 / tf.scale)} fill="#1f3fc7" />}
+              {/* marquee box selection */}
+              {selectMarquee && (
+                <rect
+                  x={Math.min(selectMarquee.x0, selectMarquee.x1)}
+                  y={Math.min(selectMarquee.y0, selectMarquee.y1)}
+                  width={Math.abs(selectMarquee.x1 - selectMarquee.x0)}
+                  height={Math.abs(selectMarquee.y1 - selectMarquee.y0)}
+                  fill="rgba(31, 63, 199, 0.12)"
+                  stroke="#1f3fc7"
+                  strokeWidth={1.5 / tf.scale}
+                  strokeDasharray={`${5 / tf.scale} ${3 / tf.scale}`}
+                />
+              )}
             </svg>
           </div>
 
@@ -11405,59 +11675,98 @@ export default function TakeoffCanvas() {
           );
         })()}
 
-        {/* Right-click menu — cutout apply/remove, or remove parent mask */}
+        {/* Right-click menu — cutout apply/remove, selection totals, duplicate, group, hide, delete */}
         {shapeCtxMenu && (() => {
           const hit = shapes.find((s) => s.id === shapeCtxMenu.shapeId);
           if (!hit) return null;
+          const live = shapesRef.current;
+          const curPicks = Object.keys(layerPickIds).filter((id) => live.some((s) => s.id === id));
+          const isMulti = curPicks.includes(hit.id) && curPicks.length > 1;
+          const targetIds = isMulti ? curPicks : [hit.id];
+          const selShapes = shapes.filter((s) => targetIds.includes(s.id));
           const isCut = hit.measure_role === "deduct";
-          const item = (label, onClick, danger = false) => (
+
+          const totFloor = selShapes.reduce((sum, s) => sum + (Number(s.computed?.area_sf) || (s.measure_role === "floor_area" ? Number(s.computed?.floor_sf) || 0 : 0)), 0);
+          const totWall = selShapes.reduce((sum, s) => sum + (Number(s.computed?.gross_face_sf) || Number(s.computed?.wall_face_sf) || 0), 0);
+          const totPerim = selShapes.reduce((sum, s) => sum + (Number(s.computed?.perimeter_lf) || 0), 0);
+          const totLinear = selShapes.reduce((sum, s) => sum + (s.measure_role === "linear" ? Number(s.computed?.length_lf || s.computed?.perimeter_lf || 0) : 0), 0);
+          const totCount = selShapes.reduce((sum, s) => sum + (s.measure_role === "count" ? Number(s.computed?.count || 1) : 0), 0);
+
+          const aU = areaUnit(units);
+          const lU = lenUnit(units);
+
+          const item = (label, onClick, danger = false, shortcut = null) => (
             <button
               key={label}
               type="button"
               onClick={() => { onClick(); setShapeCtxMenu(null); }}
               style={{
-                display: "block", width: "100%", textAlign: "left", padding: "8px 12px",
-                border: "none", background: "transparent", cursor: "pointer",
-                fontSize: 12.5, fontWeight: 600, color: danger ? "var(--c-danger)" : "var(--ink)",
+                display: "flex", width: "100%", textAlign: "left", alignItems: "center", justifyContent: "space-between",
+                padding: "6px 12px", border: "none", background: "transparent", cursor: "pointer",
+                fontSize: 12, fontWeight: 600, color: danger ? "var(--c-danger)" : "var(--ink)",
                 fontFamily: "var(--f-body)",
               }}
               onMouseEnter={(e) => { e.currentTarget.style.background = "var(--paper-cream)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
-              {label}
+              <span>{label}</span>
+              {shortcut && <span style={{ fontSize: 10, color: "var(--ink-muted)", fontFamily: "var(--f-mono)" }}>{shortcut}</span>}
             </button>
           );
+
           return (
             <div
               role="menu"
               onPointerDown={(e) => e.stopPropagation()}
               style={{
                 position: "absolute", left: shapeCtxMenu.x, top: shapeCtxMenu.y, zIndex: 20,
-                minWidth: 168, background: "var(--paper-bright)", border: "1px solid var(--ink)",
-                boxShadow: "var(--shadow-2)", padding: "4px 0",
+                minWidth: 200, background: "var(--paper-bright)", border: "1px solid var(--ink)",
+                boxShadow: "var(--shadow-2)", padding: "0 0 4px", borderRadius: "var(--radius-sm)",
+                overflow: "hidden",
               }}
             >
-              {isCut ? (
-                <>
-                  {item("Apply cutout to parent", () => applyCutoutsToParents(
-                    selectedCutoutIds.has(hit.id) && selectedCutoutIds.size ? [...selectedCutoutIds] : [hit.id],
-                  ))}
-                  {item("Remove cutout", () => {
-                    const ids = (selectedCutoutIds.has(hit.id) && selectedCutoutIds.size > 1 ? [...selectedCutoutIds] : [hit.id])
-                      .filter((id) => !shapeIsLocked(id));
-                    if (!ids.length) return;
-                    dispatchShape({ type: "delete", ids });
-                    setSelectedCutoutIds(new Set());
-                    setSelectedId(null);
-                  }, true)}
-                </>
-              ) : (
-                item("Remove mask", () => {
-                  if (shapeIsLocked(hit.id)) return;
-                  dispatchShape({ type: "delete", ids: [hit.id] });
-                  setSelectedId(null);
-                }, true)
-              )}
+              {/* Totals Summary Card */}
+              <div style={{ padding: "8px 12px 6px", background: "var(--paper-cream)", borderBottom: "1px solid var(--ink-faint)" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--cobalt)", marginBottom: 4 }}>
+                  {isMulti ? `Selection (${selShapes.length} shapes)` : (hit.room ? `${hit.room}` : `Shape · ${hit.measure_role}`)}
+                </div>
+                <div style={{ display: "grid", gap: 3, fontSize: 11, fontFamily: "var(--f-mono)", color: "var(--ink)" }}>
+                  {totFloor > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Floor:</span><b>{num(areaVal(totFloor, units))} {aU}</b></div>}
+                  {totWall > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Wall (gross):</span><b>{num(areaVal(totWall, units))} {aU}</b></div>}
+                  {totPerim > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Perimeter:</span><b>{num(lenVal(totPerim, units))} {lU}</b></div>}
+                  {totLinear > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Linear:</span><b>{num(lenVal(totLinear, units))} {lU}</b></div>}
+                  {totCount > 0 && <div style={{ display: "flex", justifyContent: "space-between" }}><span>Count:</span><b>{num(totCount, 0)} EA</b></div>}
+                </div>
+              </div>
+
+              {/* Action items */}
+              <div style={{ paddingTop: 4 }}>
+                {isCut ? (
+                  <>
+                    {item("Apply cutout to parent", () => applyCutoutsToParents(
+                      selectedCutoutIds.has(hit.id) && selectedCutoutIds.size ? [...selectedCutoutIds] : [hit.id],
+                    ))}
+                    {item("Remove cutout", () => {
+                      const ids = (selectedCutoutIds.has(hit.id) && selectedCutoutIds.size > 1 ? [...selectedCutoutIds] : [hit.id])
+                        .filter((id) => !shapeIsLocked(id));
+                      if (!ids.length) return;
+                      dispatchShape({ type: "delete", ids });
+                      setSelectedCutoutIds(new Set());
+                      setSelectedId(null);
+                    }, true)}
+                  </>
+                ) : (
+                  <>
+                    {item("Open in BOQ", () => openBoqForShape(hit.id), false, "B")}
+                    {item("Duplicate", duplicateSelected, false, "Ctrl+D")}
+                    {isMulti && targetIds.length >= 2 && item("Subtract (Cut out void)", subtractSelectedShapes, false, "Shift+X")}
+                    {isMulti && item("Group", groupLayerSelection, false, "Ctrl+G")}
+                    {isMulti && item("Ungroup", ungroupLayerSelection, false, "Ctrl+Shift+U")}
+                    {item(targetIds.some((id) => hiddenShapeIds[id]) ? "Show" : "Hide", () => toggleHideIds(targetIds), false)}
+                    {item("Delete", deleteSelected, true, "Del")}
+                  </>
+                )}
+              </div>
             </div>
           );
         })()}
@@ -11892,9 +12201,34 @@ export default function TakeoffCanvas() {
               onShapeDelete={deleteShapeFromBoq}
               onClearFocus={() => setBoqFocusShapeId(null)}
               onOpenRates={() => setShowRates(true)}
+              onOpenSummary={() => setShowSummary(true)}
               materialRates={materialRates}
               projectSettings={projectSettings}
               pricingCtx={pricingCtx}
+            />
+          </FloatingWindow>
+        )}
+
+        {/* Summary Table — hierarchical floor -> type -> code -> qty floating window */}
+        {showSummary && (
+          <FloatingWindow
+            defaultRect={{ x: Math.max(16, (typeof window !== "undefined" ? window.innerWidth : 1280) - 520), y: 72, w: 480, h: Math.min(740, (typeof window !== "undefined" ? window.innerHeight : 800) - 96) }}
+            minW={380}
+            minH={320}
+          >
+            <SummaryPanel
+              shapes={shapes}
+              conditions={conditions}
+              sheetLevels={sheetLevels}
+              sheetLabel={tabLabel}
+              hiddenShapeIds={hiddenShapeIds}
+              units={units}
+              boqLines={boqLines}
+              projectName={projectName}
+              onToggleHideIds={toggleHideIds}
+              onPatchCondition={updateCondById}
+              onShapeNavigate={flyToShape}
+              onClose={() => setShowSummary(false)}
             />
           </FloatingWindow>
         )}

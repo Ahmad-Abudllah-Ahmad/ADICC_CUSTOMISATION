@@ -102,6 +102,7 @@ export const icons = {
   // chrome theme — orthogonal to the canvas ☾ sheet invert
   sun: (s) => <I size={s}><circle cx="12" cy="12" r="4" /><path d="M12 2.8 V 5.2 M12 18.8 V 21.2 M2.8 12 H 5.2 M18.8 12 H 21.2 M5.2 5.2 L 6.9 6.9 M17.1 17.1 L 18.8 18.8 M18.8 5.2 L 17.1 6.9 M6.9 17.1 L 5.2 18.8" /></I>,
   moon: (s) => <I size={s}><path d="M16 3.8 A 8.4 8.4 0 1 0 20.2 15.2 A 6.5 6.5 0 0 1 16 3.8 Z" fill="currentColor" stroke="none" /></I>,
+  printer: (s) => <I size={s}><path d="M6 9 V 4 H 18 V 9" /><rect x="4" y="9" width="16" height="8" rx="1" /><path d="M6 14 V 20 H 18 V 14" /><line x1="15" y1="12" x2="17" y2="12" /></I>,
 };
 
 export function Icon({ name, size = 18 }) {

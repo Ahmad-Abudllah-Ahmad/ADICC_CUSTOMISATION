@@ -3,7 +3,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PastProjectsPanel from "./PastProjectsPanel.jsx";
-import ThemeToggle from "./ThemeToggle.jsx";
 import { createSupabaseRecents, browserStorage } from "../lib/supabaseRecents.js";
 import { stashPendingIngest } from "../lib/pendingIngest.js";
 import { projectNameFromFiles } from "../lib/projectNaming.js";
@@ -59,9 +58,6 @@ export default function SupabaseHome() {
       "--f-mono": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       boxSizing: "border-box",
     }}>
-      <div style={{ position: "absolute", top: 16, right: 16, zIndex: 8 }}>
-        <ThemeToggle />
-      </div>
       <div className="home-projects-scroll" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 16px 24px", display: "flex", flexDirection: "column", background: "var(--stage)" }}>
         <div style={{ width: "100%", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 14, boxSizing: "border-box" }}>
           <input name="home-sheet-file" ref={fileRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }}

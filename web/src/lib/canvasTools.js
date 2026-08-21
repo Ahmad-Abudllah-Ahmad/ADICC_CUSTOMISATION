@@ -8,8 +8,9 @@
 
 import { kindFromRole } from "./layerTree.js";
 
-/** Letter-key → tool id. Shift D/Q are in SHIFT_LETTER_TO_TOOL, not here. */
+/** Letter-key → tool id. Shift D/Q/H are in SHIFT_LETTER_TO_TOOL, not here. */
 export const LETTER_TO_TOOL = {
+  h: "pan",
   p: "pan",
   v: "select",
   a: "area",
@@ -23,13 +24,13 @@ export const LETTER_TO_TOOL = {
   w: "walltrace",
   u: "wallarea",
   k: "check",
-  h: "highlighter",
 };
 
-/** Shift + this `e.key` (uppercase) arms the cut-out variants. */
+/** Shift + this `e.key` (uppercase) arms the cut-out / markup variants. */
 export const SHIFT_LETTER_TO_TOOL = {
   D: "deduct-rect",
   Q: "deduct-curve",
+  H: "highlighter",
 };
 
 function shape(fields) {
