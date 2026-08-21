@@ -477,7 +477,7 @@ export default function PastProjectsPanel({
             minHeight: 0,
             overflow: "auto",
           }}>
-            {rows.map((p, i) => {
+            {rows.filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii")).map((p, i) => {
               const active = p.id === currentProjectId;
               const renaming = renamingId === p.id;
               const busy = busyId === p.id;
@@ -595,7 +595,7 @@ export default function PastProjectsPanel({
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflow: "auto" }}>
-          {rows.map((p) => {
+          {rows.filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii")).map((p) => {
             const active = p.id === currentProjectId;
             const renaming = renamingId === p.id;
             const busy = busyId === p.id;

@@ -548,7 +548,7 @@ export default function BoqPanel({
                   gap: 3,
                 }}
               >
-                ⚠ Please review
+                Please review
               </span>
             </div>
           )}
@@ -696,7 +696,7 @@ export default function BoqPanel({
                       borderRadius: 3,
                     }}
                   >
-                    {o.unnamed ? "⚠ " : ""}{o.tag}: −{num(o.sf)} {areaUnit(units)}
+                    {o.unnamed ? "" : ""}{o.tag}: −{num(o.sf)} {areaUnit(units)}
                   </span>
                 ))}
               </div>
@@ -856,7 +856,6 @@ export default function BoqPanel({
             fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
           }}
         >
-          <span>📌</span>
           <span>Room Blueprint</span>
         </button>
         <button
@@ -871,7 +870,6 @@ export default function BoqPanel({
             fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
           }}
         >
-          <span>🏢</span>
           <span>Per Floor</span>
         </button>
         <button
@@ -886,7 +884,6 @@ export default function BoqPanel({
             fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
           }}
         >
-          <span>🌐</span>
           <span>Project Rollup</span>
         </button>
       </div>
@@ -995,25 +992,25 @@ export default function BoqPanel({
                         border: "1px solid var(--ink-faint)", borderRadius: 4, background: "var(--paper-bright)", color: "var(--ink)",
                       }}
                     >
-                      <option value="project">🌐 Complete Project (Whole Building Rollup)</option>
-                      <optgroup label="🏢 Complete Floors">
+                      <option value="project">Complete Project (Whole Building Rollup)</option>
+                      <optgroup label="Complete Floors">
                         {bySheet.map((g) => {
                           const flr = sheetLevels?.[g.sheet_id] || "";
                           const sht = typeof sheetLabel === "function" ? sheetLabel(g.sheet_id) : (sheetLabel || g.sheet_id || "");
                           return (
                             <option key={`floor:${g.sheet_id}`} value={`floor:${g.sheet_id}`}>
-                              🏢 {flr ? `${flr} · ` : ""}{sht} ({g.shapeRows.length} rooms)
+                              {flr ? `${flr} · ` : ""}{sht} ({g.shapeRows.length} rooms)
                             </option>
                           );
                         })}
                       </optgroup>
-                      <optgroup label="📌 Individual Rooms / Annotations">
+                      <optgroup label="Individual Rooms / Annotations">
                         {shapeRows.map((s) => {
                           const smeta = lineForKey(boqLines, rowKey(s.shape_id));
                           const sRoom = smeta?.room || s.room_detected || "Room";
                           return (
                             <option key={s.shape_id} value={s.shape_id}>
-                              📌 {sRoom} · {s.finish_tag || "SPEC"} ({num(s.floor_sf || s.wall_sf)} {aU})
+                              {sRoom} · {s.finish_tag || "SPEC"} ({num(s.floor_sf || s.wall_sf)} {aU})
                             </option>
                           );
                         })}
@@ -1260,13 +1257,13 @@ export default function BoqPanel({
                     border: "1px solid var(--ink-faint)", borderRadius: 4, background: "var(--paper-bright)", color: "var(--ink)",
                   }}
                 >
-                  <option value="all">🌐 All Floors (Complete Project)</option>
+                  <option value="all">All Floors (Complete Project)</option>
                   {bySheet.map((g) => {
                     const flr = sheetLevels?.[g.sheet_id] || "";
                     const sht = typeof sheetLabel === "function" ? sheetLabel(g.sheet_id) : (sheetLabel || g.sheet_id || "");
                     return (
                       <option key={g.sheet_id} value={g.sheet_id}>
-                        🏢 {flr ? `${flr} · ` : ""}{sht}
+                        {flr ? `${flr} · ` : ""}{sht}
                       </option>
                     );
                   })}

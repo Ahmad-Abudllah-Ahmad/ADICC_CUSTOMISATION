@@ -66,7 +66,7 @@ export async function listProjectSummaries({ search = "", limit = 48 } = {}) {
     ({ data, error } = await query);
   }
   if (error) throw error;
-  return (data || []).map(summarizeRow);
+  return (data || []).map(summarizeRow).filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii"));
 }
 
 export { deleteSupabaseProject, renameSupabaseProject } from "./persist.js";

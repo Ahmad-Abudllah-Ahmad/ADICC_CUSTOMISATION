@@ -8989,8 +8989,7 @@ export default function TakeoffCanvas() {
 
   const RAIL_ICO = { size: 15, strokeWidth: 1.5 };
   const railBtn = (onClick, icon, label, isOn, extraClass = "") => (
-    <button type="button" className={`canvas-circle-btn${isOn ? " is-on" : ""}${extraClass ? ` ${extraClass}` : ""}`} onClick={onClick} data-tip={label} aria-label={label}
-      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "inherit", cursor: "pointer", flexShrink: 0, boxShadow: "none" }}>
+    <button type="button" className={`canvas-circle-btn${isOn ? " is-on" : ""}${extraClass ? ` ${extraClass}` : ""}`} onClick={onClick} data-tip={label} aria-label={label}>
       {icon}
     </button>
   );
@@ -9004,7 +9003,6 @@ export default function TakeoffCanvas() {
       onClick={() => setTool(t.id)}
       data-tip={`${t.label} · ${t.shortcut}`}
       aria-label={`${t.label} (${t.shortcut})`}
-      style={{ position: "relative", display: "inline-flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, minWidth: 32, minHeight: 32, padding: 0, border: "none", background: "transparent", color: "inherit", cursor: "pointer", flexShrink: 0, boxShadow: "none" }}
     >
       <Icon name={t.icon} size={17} />
       <span className="canvas-rail-kbd" aria-hidden="true">{t.shortcut}</span>
@@ -9539,7 +9537,6 @@ export default function TakeoffCanvas() {
                 className={`mode-circle-btn${tool === "pan" ? " is-on" : ""}`}>
                 <Icon name="pan" size={15} />
               </button>
-              <ThemeToggle className="mode-circle-btn" />
             </div>
 
             <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />

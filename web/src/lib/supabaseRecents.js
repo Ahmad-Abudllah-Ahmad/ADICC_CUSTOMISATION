@@ -83,5 +83,5 @@ export function mergeProjectLists(fromDb, recents, needle = "") {
       return bo.localeCompare(ao);
     });
 
-  return [...ordered, ...rest];
+  return [...ordered, ...rest].filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii"));
 }

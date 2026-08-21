@@ -182,7 +182,7 @@ export default function ShapeBoqHoverCard({
                   padding: "1px 4px",
                 }}
               >
-                ⚠ Review
+                Review
               </span>
             )}
           </div>
