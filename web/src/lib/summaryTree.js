@@ -209,7 +209,8 @@ export function buildSummaryTree({
         const q = computeShapeQty(s, units);
         const boqMeta = boqMetaMap.get(`shape::${s.id}`);
         const detectedRoom = typeof roomForShape === "function" ? roomForShape(s) : "";
-        const roomName = (boqMeta?.room || detectedRoom || s.room || s.room_name || s.room_detected || s.label || "").trim();
+        const rawRoom = (boqMeta?.room || detectedRoom || s.room || s.room_name || s.room_detected || "").trim();
+        const roomName = /^DETAIL\s+\d/i.test(rawRoom) ? "" : rawRoom;
 
         codeMap.get(key).shapes.push({
           id: s.id,

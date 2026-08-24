@@ -215,8 +215,17 @@ export function canonicalRoomTokens(s: string): string[] {
       out.push("CORRIDOR");
       continue;
     }
+    // Lift / Lifts / Elevator lobby
+    if (w === "LIFT" || w === "LIFTS" || w === "ELEVATOR" || w === "ELEVATORS" || w === "ELEV") {
+      out.push("LIFT");
+      continue;
+    }
     // Lobby / Lift lobby / Fire lift lobby / Entrance
-    if (w === "LOBBY" || w === "FOYER" || w === "ENTRANCE") {
+    if (w === "ENT" || w === "ENTRANCE") {
+      out.push("LOBBY");
+      continue;
+    }
+    if (w === "LOBBY" || w === "FOYER") {
       out.push("LOBBY");
       continue;
     }
@@ -252,11 +261,50 @@ export function canonicalRoomTokens(s: string): string[] {
   return out;
 }
 
-/**
- * 0–100 match score between two room names:
- * 100 = exact semantic match (e.g. "M.BED ROOM T1-10" matches "10.BEDROOMS", "GYM" matches "07.GYM")
- */
-export function roomMatchScore(a: string, b: string): number {
+const DISTINCTIVE_ROOM_TOKENS = [
+  "GYM", "BEDROOM", "DRESSING", "KITCHEN", "BATHROOM", "BALCONY", "MAID",
+  "CORRIDOR", "STORE", "STAIRS", "GARBAGE", "MEP", "LOBBY", "LIVING", "DINING", "LIFT",
+];
+
+/** Tokens too broad to match on alone when both names have other words (e.g. LOBBY). */
+const GENERIC_ROOM_TOKENS = new Set(["LOBBY", "CORRIDOR", "ROOM", "ROOMS", "AREA", "HALL", "PLAN"]);
+
+function stemRoomWord(w: string): string {
+  if (w.length > 4 && w.endsWith("S")) return w.slice(0, -1);
+  if (w.length > 3 && w.endsWith("S")) return w.slice(0, -1);
+  return w;
+}
+
+/** Word-level overlap with plural stems — catches LIFTS↔LIFT when canonical tokens differ. */
+function roomWordOverlapScore(na: string, nb: string): number {
+  const wa = na.split(" ").filter((w) => w.length > 1 && !GENERIC_ROOM_TOKENS.has(w));
+  const wb = nb.split(" ").filter((w) => w.length > 1 && !GENERIC_ROOM_TOKENS.has(w));
+  const ga = na.split(" ").filter((w) => GENERIC_ROOM_TOKENS.has(w));
+  const gb = nb.split(" ").filter((w) => GENERIC_ROOM_TOKENS.has(w));
+  const contentWa = wa.length ? wa : na.split(" ").filter((w) => w.length > 1);
+  const contentWb = wb.length ? wb : nb.split(" ").filter((w) => w.length > 1);
+  if (!contentWa.length || !contentWb.length) return 0;
+  let matched = 0;
+  for (const a of contentWa) {
+    const sa = stemRoomWord(a);
+    const hit = contentWb.some((b) => {
+      const sb = stemRoomWord(b);
+      return a === b || sa === sb || sa === b || sb === a
+        || (sa.length >= 4 && sb.length >= 4 && (sa.includes(sb) || sb.includes(sa)));
+    });
+    if (hit) matched++;
+  }
+  const genericMatch = ga.some((g) => gb.includes(g)) ? 1 : 0;
+  const contentRatio = matched / Math.max(contentWa.length, contentWb.length);
+  const score = contentRatio * 88 + genericMatch * 12;
+  return Math.round(Math.min(100, score));
+}
+
+/** Minimum score to accept a fuzzy finishes-schedule room match. */
+export const ROOM_MATCH_FUZZY_MIN = 50;
+
+/** Core room-name match (no slash-separated segment expansion). */
+function roomMatchScoreCore(a: string, b: string): number {
   const na = normRoomKey(a);
   const nb = normRoomKey(b);
   if (!na || !nb) return 0;
@@ -270,7 +318,12 @@ export function roomMatchScore(a: string, b: string): number {
     if (common.length === ca.length && common.length === cb.length) return 100;
     if (common.length >= 2) return 90;
     if (common.length === 1) {
-      const isDistinctive = ["GYM", "BEDROOM", "DRESSING", "KITCHEN", "BATHROOM", "BALCONY", "MAID", "CORRIDOR", "STORE", "STAIRS", "GARBAGE", "MEP"].includes(common[0]);
+      const token = common[0];
+      const isDistinctive = DISTINCTIVE_ROOM_TOKENS.includes(token);
+      const isGeneric = GENERIC_ROOM_TOKENS.has(token);
+      if (ca.length > 1 && cb.length > 1 && isGeneric) {
+        return roomWordOverlapScore(na, nb);
+      }
       if (isDistinctive && (ca.length === 1 || cb.length === 1)) return 100;
       if (isDistinctive) return 85;
       return 65;
@@ -278,11 +331,39 @@ export function roomMatchScore(a: string, b: string): number {
   }
 
   if (na.includes(nb) || nb.includes(na)) return 80;
-  return 0;
+  return roomWordOverlapScore(na, nb);
+}
+
+/**
+ * 0–100 match score between two room names:
+ * 100 = exact semantic match (e.g. "M.BED ROOM T1-10" matches "10.BEDROOMS", "GYM" matches "07.GYM")
+ */
+export function roomMatchScore(a: string, b: string): number {
+  const direct = roomMatchScoreCore(a, b);
+  if (direct >= 65) return direct;
+
+  // Finishes schedules often group rooms: "04.ENT.LOBBY / LIVING / DINING"
+  const segments = (s: string) => (s || "").split("/").map((p) => p.trim()).filter(Boolean);
+  const partsA = segments(a);
+  const partsB = segments(b);
+  if (partsA.length <= 1 && partsB.length <= 1) return direct;
+
+  let best = direct;
+  for (const seg of partsA) best = Math.max(best, roomMatchScoreCore(seg, b));
+  for (const seg of partsB) best = Math.max(best, roomMatchScoreCore(a, seg));
+  for (const sa of partsA) {
+    for (const sb of partsB) best = Math.max(best, roomMatchScoreCore(sa, sb));
+  }
+  return best;
 }
 
 export function roomKeyMatch(a: string, b: string): boolean {
   return roomMatchScore(a, b) >= 65;
+}
+
+/** Pick the single best schedule row name for a plan room (exact or closest similar). */
+export function bestScheduleRoomMatchScore(planRoom: string, scheduleRoom: string): number {
+  return roomMatchScore(scheduleRoom, planRoom);
 }
 
 function tokW(t: SymbolToken): number {
@@ -1294,6 +1375,46 @@ export function finishesLegendEntries(
     return a.tag.localeCompare(b.tag);
   });
   return out;
+}
+
+function scheduleSheetKeyMatch(sheetId: string, entry: ScheduleKbEntry): boolean {
+  if (!sheetId) return true;
+  const want = sheetId.trim().toLowerCase().replace(/#\d+$/, "");
+  const sid = (entry.source_sheet || "").trim().toLowerCase().replace(/#\d+$/, "");
+  const st = (entry.source_title || "").trim().toLowerCase();
+  const base = want.replace(/\.pdf$/i, "");
+  const sidBase = sid.replace(/\.pdf$/i, "");
+  return sid === want || sid.includes(base) || base.includes(sidBase)
+    || st.includes(base) || base.includes(st.replace(/\.pdf$/i, ""));
+}
+
+/**
+ * Best finish-schedule row for a detected plan room — used to highlight the space
+ * name on the source PDF in the floating reference viewer.
+ */
+export function lookupScheduleRoomHighlight(
+  kb: Map<string, ScheduleKbEntry> | Record<string, ScheduleKbEntry> | null | undefined,
+  room: string,
+  opts?: { sheetId?: string; tag?: string; sheetFloor?: string },
+): ScheduleKbEntry | null {
+  if (!kb || !room?.trim()) return null;
+  const roomName = room.trim();
+  const tag = (opts?.tag || "").trim().toUpperCase();
+  const sheetFloor = (opts?.sheetFloor || "").trim();
+  const list: ScheduleKbEntry[] = kb instanceof Map ? [...kb.values()] : Object.values(kb || {});
+
+  let best: ScheduleKbEntry | null = null;
+  let bestScore = 0;
+  for (const e of list) {
+    if (e.kind !== "finish" || !e.room_name?.trim()) continue;
+    if (!scheduleSheetKeyMatch(opts?.sheetId || "", e)) continue;
+    let sc = roomMatchScore(e.room_name, roomName);
+    if (tag && e.tag?.toUpperCase() === tag) sc += 12;
+    if (sheetFloor && e.floors) sc += floorKeyMatch(sheetFloor, e.floors) * 0.35;
+    if (e.space_bbox) sc += 8;
+    if (sc > bestScore) { best = e; bestScore = sc; }
+  }
+  return bestScore >= ROOM_MATCH_FUZZY_MIN ? best : null;
 }
 
 /** Room + floor scoped schedule lookup — prefers finish rows for the detected room/plan sheet. */

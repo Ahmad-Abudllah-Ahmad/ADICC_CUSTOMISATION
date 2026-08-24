@@ -15,6 +15,7 @@ import {
   lookupScheduleKb,
   lookupScheduleKbForRoom,
   roomMatchScore,
+  ROOM_MATCH_FUZZY_MIN,
   extractDetailSheetTag,
   canonDetailSheetTag,
 } from "../src/lib/symbolScheduleKb.ts";
@@ -368,6 +369,9 @@ test("roomMatchScore matches synonyms: M.BED ROOM -> 10.BEDROOMS, GYM -> GYM, DR
   assert.equal(roomMatchScore("DRESS T1-14", "07.DRESSING ROOM"), 100);
   assert.equal(roomMatchScore("LIVING & DINING ROOM T1-09", "04.ENT.LOBBY / LIVING / DINING"), 90);
   assert.equal(roomMatchScore("M.BED ROOM T1-10", "04.ENT.LOBBY / LIVING / DINING"), 0);
+  assert.equal(roomMatchScore("LIFTS LOBBY", "01.LIFT LOBBY"), 100);
+  assert.ok(roomMatchScore("LIFTS LOBBY", "+ AIR LOCK LOBBY") < ROOM_MATCH_FUZZY_MIN);
+  assert.ok(roomMatchScore("LIFTS LOBBY", "AIR LOCK LOBBY") < ROOM_MATCH_FUZZY_MIN);
 });
 
 test("lookupScheduleKbForRoom picks accurate room row when multiple rooms share same tag PT-1", () => {

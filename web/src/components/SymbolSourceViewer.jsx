@@ -4,6 +4,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { RENDER_SCALE, parseSheetKey } from "../lib/sheets";
+import { lookupScheduleRoomHighlight } from "../lib/symbolScheduleKb";
 
 /**
  * @param {{
@@ -13,11 +14,16 @@ import { RENDER_SCALE, parseSheetKey } from "../lib/sheets";
  *   spaceBbox?: { x: number, y: number, w: number, h: number } | null,
  *   markBbox?: { x: number, y: number, w: number, h: number } | null,
  *   room?: string,
+ *   tag?: string,
+ *   sheetFloor?: string,
+ *   scheduleKb?: Map<string, unknown> | Record<string, unknown> | null,
  *   getDoc: (file: string) => Promise<any>,
  *   onClose: () => void,
  * }} props
  */
-export default function SymbolSourceViewer({ sheetId, title, bbox, spaceBbox, markBbox, room, getDoc, onClose }) {
+export default function SymbolSourceViewer({
+  sheetId, title, bbox, spaceBbox, markBbox, room, tag, sheetFloor, scheduleKb, getDoc, onClose,
+}) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -57,7 +63,11 @@ export default function SymbolSourceViewer({ sheetId, title, bbox, spaceBbox, ma
         if (cancelled) return;
         setStatus("ready");
 
-        const targetBbox = spaceBbox || bbox;
+        const roomHit = (scheduleKb && room?.trim())
+          ? lookupScheduleRoomHighlight(scheduleKb, room, { sheetId, tag, sheetFloor })
+          : null;
+        const targetBbox = roomHit?.space_bbox || spaceBbox || bbox;
+
         // Scroll the highlighted region into view
         const sc = wrapRef.current;
         if (sc && targetBbox) {
@@ -97,7 +107,7 @@ export default function SymbolSourceViewer({ sheetId, title, bbox, spaceBbox, ma
       cancelled = true;
       try { task?.cancel(); } catch { /* done */ }
     };
-  }, [sheetId, bbox, spaceBbox, markBbox, room, getDoc]);
+  }, [sheetId, bbox, spaceBbox, markBbox, room, tag, sheetFloor, scheduleKb, getDoc]);
 
   useEffect(() => {
     const sc = wrapRef.current;

@@ -1,7 +1,7 @@
 // Finishes Schedule — tabular view from parsed A0002-style schedule KB (floating window).
 import React, { useMemo } from "react";
 import { Icon } from "../brand/icons.jsx";
-import { finishesLegendEntries, roomKeyMatch } from "../lib/symbolScheduleKb";
+import { finishesLegendEntries, roomMatchScore, ROOM_MATCH_FUZZY_MIN } from "../lib/symbolScheduleKb";
 
 const th = {
   padding: "6px 8px",
@@ -119,6 +119,22 @@ export default function FinishesSchedulePanel({ open, onClose, scheduleKb, sourc
   const rows = useMemo(() => (open ? resolveFinishesRows(scheduleKb) : []), [open, scheduleKb]);
   const legend = useMemo(() => (open ? finishesLegendEntries(scheduleKb) : []), [open, scheduleKb]);
   const groups = useMemo(() => groupRowsByFloor(rows), [rows]);
+  const bestHighlightKey = useMemo(() => {
+    if (!highlightRoom?.trim() || !rows.length) return "";
+    let bestKey = "";
+    let bestSc = 0;
+    for (const row of rows) {
+      const sc = Math.max(
+        roomMatchScore(row.spaceName, highlightRoom),
+        roomMatchScore(row.room_name, highlightRoom),
+      );
+      if (sc > bestSc) {
+        bestSc = sc;
+        bestKey = `${row.room_name}::${row.tag}`;
+      }
+    }
+    return bestSc >= ROOM_MATCH_FUZZY_MIN ? bestKey : "";
+  }, [rows, highlightRoom]);
 
   const sheetLabel = sourceTitle || rows[0]?.source_title || rows[0]?.source_sheet || "";
 
@@ -166,7 +182,8 @@ export default function FinishesSchedulePanel({ open, onClose, scheduleKb, sourc
                   </thead>
                   <tbody>
                     {g.rows.map((row) => {
-                      const isMatch = !!(highlightRoom && (roomKeyMatch(row.spaceName, highlightRoom) || roomKeyMatch(row.room_name, highlightRoom)));
+                      const rowKey = `${row.room_name}::${row.tag}`;
+                      const isMatch = !!(bestHighlightKey && rowKey === bestHighlightKey);
                       return (
                         <tr key={`${g.floor}-${row.room_name}-${row.tag}`} style={{ background: isMatch ? "rgba(31, 63, 199, 0.10)" : band.rowTint }}>
                           <td style={{ ...td, fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 10.5, color: isMatch ? "var(--cobalt)" : band.text, textAlign: "center", background: isMatch ? "rgba(31, 63, 199, 0.15)" : band.bg }}>{row.roomNo}</td>

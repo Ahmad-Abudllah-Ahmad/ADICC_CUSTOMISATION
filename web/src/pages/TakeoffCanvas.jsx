@@ -45,7 +45,7 @@ import {
   resolveSymbolFields, hitPlanSymbol, symbolNoteKey, SYMBOL_KIND_LABEL,
 } from "../lib/planSymbols";
 import {
-  classifySheetByName, extractScheduleKbFromSheet, buildScheduleKb,
+  classifySheetByName, extractScheduleKbFromSheet, buildScheduleKb, lookupScheduleRoomHighlight,
 } from "../lib/symbolScheduleKb";
 import SymbolSourceViewer from "../components/SymbolSourceViewer.jsx";
 import { isGoogleConfigured, isSignedIn, isAllowedDomain, getAccessToken, orgDomainHint } from "../lib/google/auth.js";
@@ -107,7 +107,7 @@ import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
 import { segmentHeightsForShape, grossFaceFromSegments, wallSegmentRows, withSegmentHeights, concatSegmentHeightsForMerge, defaultWallHeightFt } from "../lib/wallSegmentHeights.js";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
-import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty } from "../lib/boqDetect.js";
+import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty, floorLabelFromSheetId } from "../lib/boqDetect.js";
 import { parseOpeningSize, openingsDeductSf, openingsDeductSfLinear, netWallFaceSf, openingDimsFromCutoutPx, bboxIntersectRing } from "../lib/wallOpenings.js";
 import { queryChat, finishForRoom, sheetKeyForCitation, buildProjectChatContext, buildLiveCountsSummary, answerFromLiveDetections, resolveChatAnswer } from "../lib/rag.js";
 import { priceMaskRow, pricedGrandTotals, pricedConditionTotals } from "../lib/pricing.js";
@@ -329,22 +329,19 @@ function EstimateValueSpark({ series, currency }) {
 function useOpenMotion(open, durationMs = 280) {
   const [shown, setShown] = useState(() => !!open);
   const [entered, setEntered] = useState(() => !!open);
+  // Re-open before the close animation finishes — keep the shell visible so rapid
+  // Summary / Files toggles never flash an empty opacity-0 panel (blank screen).
+  useLayoutEffect(() => {
+    if (open) {
+      setShown(true);
+      setEntered(true);
+    }
+  }, [open]);
   useEffect(() => {
     const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (open) {
-      setShown(true);
-      if (reduce || shown) {
-        setEntered(true);
-        return undefined;
-      }
-      let raf2 = 0;
-      const raf1 = window.requestAnimationFrame(() => {
-        raf2 = window.requestAnimationFrame(() => setEntered(true));
-      });
-      return () => {
-        window.cancelAnimationFrame(raf1);
-        window.cancelAnimationFrame(raf2);
-      };
+      if (reduce) setEntered(true);
+      return undefined;
     }
     setEntered(false);
     const id = window.setTimeout(() => setShown(false), reduce ? 0 : durationMs);
@@ -715,6 +712,10 @@ export default function TakeoffCanvas() {
   const redoStackRef = useRef([]);
   const shapesRef = useRef(shapes);
   shapesRef.current = shapes;
+  const scalesRef = useRef(scales);
+  scalesRef.current = scales;
+  const scaleSourcesRef = useRef(scaleSources);
+  scaleSourcesRef.current = scaleSources;
   function dispatchShape(cmd, { record = true, reset = false, baseShapes = null } = {}) {
     // Stamp floating-Edit draw appearance onto newly committed shapes only.
     let applied = cmd;
@@ -1257,6 +1258,11 @@ export default function TakeoffCanvas() {
 
   // page 1 keeps the bare file name (pre-paging takeoffs still load); pages 2+ → "name#page"
   const sheetKey = page > 1 ? `${active}#${page}` : active;
+  // Single-sheet mode: scale chip/calibrate always target the file on screen.
+  useEffect(() => {
+    if (sheetGroup.length || !sheetKey) return;
+    setFocusKey((fk) => (fk === sheetKey ? fk : sheetKey));
+  }, [sheetKey, sheetGroup.length]);
   // toggle a sheet in/out of the side-by-side group; first toggle from single
   // mode seeds the group with the sheet currently on screen
   const toggleInGroup = (key) => {
@@ -2633,6 +2639,38 @@ export default function TakeoffCanvas() {
     // docFor is stable (useCallback []); sheetsSig drives the scan
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetsSig]);
+
+  // Room-label index for Auto-Takeoff floor plans — summary names must resolve even
+  // when no sheet is open on the canvas (empty-canvas default).
+  useEffect(() => {
+    if (!sheets.length) return;
+    let cancelled = false;
+    (async () => {
+      for (const { name } of sheets) {
+        if (!isAiDetectFloorPlan(name)) continue;
+        try {
+          const pdf = await docFor(name);
+          const nPages = pdf.numPages || 1;
+          for (let n = 1; n <= nPages; n++) {
+            if (cancelled) return;
+            const key = n > 1 ? `${name}#${n}` : name;
+            const page = await pdf.getPage(n);
+            const tc = await page.getTextContent();
+            const vp = page.getViewport({ scale: RENDER_SCALE });
+            setPanelImgs((prev) => (prev[key]?.w ? prev : { ...prev, [key]: { w: vp.width, h: vp.height } }));
+            if (roomLabelsRawRef.current[key]?.length) continue;
+            try {
+              const tokens = extractRegionText(tc, vp, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
+              roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [key]: extractRoomLabels(tokens) };
+              setSymbolEpoch((e) => e + 1);
+            } catch { /* best-effort */ }
+          }
+        } catch { /* best-effort */ }
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheets, isAiDetectFloorPlan]);
 
   // ── detail view: re-render the visible region at the current zoom ───────────
   // The base panel bitmap is the fast first paint and the zoomed-out view. Once
@@ -4741,7 +4779,14 @@ export default function TakeoffCanvas() {
     showScaleGuide(pv.key, pv.upp, STANDARD_SCALES.find((x) => Math.abs(x.upp - pv.upp) < 1e-9)?.label || pv.source);
   }
 
-  async function applyAutoscale(key) {
+  async function applyAutoscale(key, { force = false } = {}) {
+    const mayApply = () => {
+      if (force) return true;
+      if (scalesRef.current[key] != null) return false;
+      const src = scaleSourcesRef.current[key];
+      return !(src === "standard" || src === "calibrated" || src === "detected");
+    };
+    if (!mayApply()) return;
     let det = detectedScales[key];
     if (!det) {
       const pageObj = pageObjsRef.current.get(key);
@@ -4755,6 +4800,7 @@ export default function TakeoffCanvas() {
         } catch { /* best-effort */ }
       }
     }
+    if (!mayApply()) return;
     if (det) {
       rescaleSheet(key, det.upp);
       setScaleSources((s) => ({ ...s, [key]: "autoscale" }));
@@ -4765,6 +4811,7 @@ export default function TakeoffCanvas() {
     const fbLabel = units === "metric" ? "1:100" : '1/8" = 1\'-0"';
     const fb = STANDARD_SCALES.find((s) => s.label === fbLabel);
     if (fb) {
+      if (!mayApply()) return;
       rescaleSheet(key, fb.upp);
       setScaleSources((s) => ({ ...s, [key]: "autoscale" }));
       showScaleGuide(key, fb.upp, fb.label);
@@ -4779,9 +4826,11 @@ export default function TakeoffCanvas() {
     if (status !== "ready" || !focusPanel?.key) return;
     const key = focusPanel.key;
     if (scales[key] != null || autoscaleTriedRef.current.has(key)) return;
+    const src = scaleSources[key];
+    if (src === "standard" || src === "calibrated" || src === "detected") return;
     autoscaleTriedRef.current.add(key);
     void applyAutoscale(key);
-  }, [status, focusPanel?.key, scales]);
+  }, [status, focusPanel?.key, scales, scaleSources]);
 
   function applyCalibration() {
     const feet = calInputToFeet(parseFloat(pendingLen), units);   // metric users type meters; stored scale stays feet
@@ -9515,7 +9564,7 @@ export default function TakeoffCanvas() {
     label: "Autoscale",
     active: autoscaleOn || !unitsPerPx,
     title: "Detect the scale from the plan title block and apply it automatically. You can change it anytime from Standard or Calibrate.",
-    onSelect: () => { void applyAutoscale(focusPanel.key); },
+    onSelect: () => { void applyAutoscale(focusPanel.key, { force: true }); },
   });
   scaleItems.push("divider");
   if (prevScale && prevScale.key === focusPanel.key && scales[focusPanel.key] !== prevScale.upp) {
@@ -10169,7 +10218,7 @@ export default function TakeoffCanvas() {
                  lpTabsSkipClickRef.current = false;
                }}
              >
-             {[{ id: "summary", label: "Summary", n: shapes.length }, { id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
+             {[{ id: "summary", label: "Summary", n: boqShapes.length }, { id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
                <button
                  key={t.id}
                  type="button"
@@ -10210,7 +10259,7 @@ export default function TakeoffCanvas() {
              {deskTab === "summary" && (
                 <SummaryPanel
                   docked={true}
-                  shapes={shapes}
+                  shapes={boqShapes}
                   conditions={conditions}
                   sheetLevels={sheetLevels}
                   sheetLabel={tabLabel}
@@ -10809,14 +10858,26 @@ export default function TakeoffCanvas() {
                 onClose={() => { setShapeBoqFocus(null); setShapeBoqHover(null); shapeBoqPinPosRef.current = null; shapeBoqHoverStickyRef.current = false; }}
                 onOpenFinishSource={(fd) => {
                   if (!fd?.source_sheet) return;
+                  const roomName = fd.room_name || data.room || "";
+                  const sheetFloor = fd.floors || floorLabelFromSheetId(s.sheet_id) || "";
+                  const finishTag = fd.tag || data.finish_tag || "";
+                  const roomHit = scheduleKb && roomName
+                    ? lookupScheduleRoomHighlight(scheduleKb, roomName, {
+                      sheetId: fd.source_sheet,
+                      tag: finishTag,
+                      sheetFloor,
+                    })
+                    : null;
+                  const spaceBbox = roomHit?.space_bbox || fd.space_bbox || null;
                   setSymbolSourceView({
                     sheetId: fd.source_sheet,
                     title: fd.source || fd.source_sheet,
-                    bbox: fd.space_bbox || fd.source_bbox || null,
-                    spaceBbox: fd.space_bbox || null,
+                    bbox: spaceBbox || fd.source_bbox || null,
+                    spaceBbox,
                     markBbox: fd.source_bbox || null,
-                    tag: fd.tag || data.finish_tag || "",
-                    room: fd.room_name || data.room || "",
+                    tag: finishTag,
+                    room: roomName,
+                    sheetFloor,
                   });
                 }}
                 onPointerEnter={() => { shapeBoqHoverStickyRef.current = true; }}
@@ -11022,6 +11083,9 @@ export default function TakeoffCanvas() {
               spaceBbox={symbolSourceView.spaceBbox}
               markBbox={symbolSourceView.markBbox}
               room={symbolSourceView.room}
+              tag={symbolSourceView.tag}
+              sheetFloor={symbolSourceView.sheetFloor}
+              scheduleKb={scheduleKb}
               getDoc={docFor}
               onClose={() => setSymbolSourceView(null)}
             />
@@ -12386,7 +12450,7 @@ export default function TakeoffCanvas() {
             minH={320}
           >
             <SummaryPanel
-              shapes={shapes}
+              shapes={boqShapes}
               conditions={conditions}
               sheetLevels={sheetLevels}
               sheetLabel={tabLabel}

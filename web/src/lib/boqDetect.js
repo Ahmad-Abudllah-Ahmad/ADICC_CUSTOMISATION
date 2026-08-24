@@ -459,9 +459,12 @@ function detectRoomFromFloorMasks(shape, allShapes, dims, ctx) {
   return "";
 }
 
+const DETAIL_TAG_RE = /^DETAIL\s+\d/i;
+const isDetailTag = (t) => DETAIL_TAG_RE.test(String(t || "").trim());
+
 export function detectRoomName(shape, ctx, allShapes = null) {
   const assigned = shapeLabelValue(shape) || shape?.room || shape?.room_name || shape?.room_detected || "";
-  if (assigned) return assigned;
+  if (assigned && !isDetailTag(assigned)) return assigned;
 
   const sheetMatch = (k1, k2) => {
     if (!k1 || !k2) return false;
@@ -473,16 +476,15 @@ export function detectRoomName(shape, ctx, allShapes = null) {
 
   const dims = ctx?.panelImgs?.[shape.sheet_id]
     || Object.entries(ctx?.panelImgs || {}).find(([k]) => sheetMatch(k, shape.sheet_id))?.[1]
-    || Object.values(ctx?.panelImgs || {})[0]
-    || { w: 3000, h: 2000 };
+    || null;
+  if (!(dims?.w > 0 && dims?.h > 0)) return "";
 
   const poly = shapePolyPx(shape, dims);
 
   const { planSymbols = [], roomLabelsBySheet = {}, symbolNotes = {} } = ctx || {};
-  const roomLabels = roomLabelsBySheet[shape.sheet_id]
+  const roomLabels = (roomLabelsBySheet[shape.sheet_id]
     || Object.entries(roomLabelsBySheet).find(([k]) => sheetMatch(k, shape.sheet_id))?.[1]
-    || Object.values(roomLabelsBySheet).flat()
-    || [];
+    || []).filter((lbl) => !isDetailTag(lbl.text));
   const syms = (planSymbols || []).filter((s) => !s.sheet_id || sheetMatch(s.sheet_id, shape.sheet_id));
 
   // Line / Skirting / Wall line (2 vertices or linear/surface role)
@@ -514,21 +516,22 @@ export function detectRoomName(shape, ctx, allShapes = null) {
         bestTxt = lbl.text;
       }
     }
-    if (bestTxt) return bestTxt;
+    if (bestTxt && !isDetailTag(bestTxt)) return bestTxt;
 
     // Proximity to plan symbols
     for (const sym of syms) {
+      if (sym.kind === "detail") continue;
       const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
       const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
       const room = fields.room_name;
-      if (!room) continue;
+      if (!room || isDetailTag(room)) continue;
       const d = Math.hypot(sym.x - mx, sym.y - my);
       if (d < bestDist && d < 220) {
         bestDist = d;
         bestTxt = room;
       }
     }
-    if (bestTxt) return bestTxt;
+    if (bestTxt && !isDetailTag(bestTxt)) return bestTxt;
   }
 
   // Wall network: room names live inside holes (or on matching floor masks).
@@ -552,15 +555,16 @@ export function detectRoomName(shape, ctx, allShapes = null) {
     const score = d - lbl.h * 0.15;
     if (!bestLabel || score < bestLabel.score) bestLabel = { text: lbl.text, score };
   }
-  if (bestLabel) return bestLabel.text;
+  if (bestLabel && !isDetailTag(bestLabel.text)) return bestLabel.text;
 
   let bestSym = null;
   for (const sym of syms) {
+    if (sym.kind === "detail") continue;
     if (!pointInShapePx(sym.x, sym.y, shape, dims)) continue;
     const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
     const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
     const room = fields.room_name;
-    if (!room) continue;
+    if (!room || isDetailTag(room)) continue;
     const d = Math.hypot(sym.x - cx, sym.y - cy);
     if (!bestSym || d < bestSym.d) bestSym = { room, d };
   }
@@ -576,20 +580,21 @@ export function detectRoomName(shape, ctx, allShapes = null) {
       nearTxt = lbl.text;
     }
   }
-  if (nearTxt) return nearTxt;
+  if (nearTxt && !isDetailTag(nearTxt)) return nearTxt;
 
   for (const sym of syms) {
+    if (sym.kind === "detail") continue;
     const noteKey = symbolNoteKey(sym.sheet_id, sym.tag, sym.x, sym.y);
     const fields = resolveSymbolFields(sym.schedule, symbolNotes[noteKey], sym.room_name);
     const room = fields.room_name;
-    if (!room) continue;
+    if (!room || isDetailTag(room)) continue;
     const d = Math.hypot(sym.x - cx, sym.y - cy);
     if (d < nearDist && d < 180) {
       nearDist = d;
       nearTxt = room;
     }
   }
-  if (nearTxt) return nearTxt;
+  if (nearTxt && !isDetailTag(nearTxt)) return nearTxt;
 
   return "";
 }
