@@ -76,6 +76,7 @@ export default function SummaryPanel({
   onPatchCondition,
   onShapeNavigate,
   onClose,
+  roomForShape = null,
 }) {
   const [search, setSearch] = useState("");
   const [expandedNodes, setExpandedNodes] = useState(() => new Set());
@@ -109,8 +110,9 @@ export default function SummaryPanel({
       hiddenShapeIds,
       units,
       boqLines,
+      roomForShape,
     });
-  }, [shapes, conditions, sheetLevels, sheetLabel, hiddenShapeIds, units, boqLines]);
+  }, [shapes, conditions, sheetLevels, sheetLabel, hiddenShapeIds, units, boqLines, roomForShape]);
 
   const scopedTree = useMemo(() => {
     if (!tree.length) return [];
@@ -359,12 +361,11 @@ export default function SummaryPanel({
       style={{
         display: "flex",
         flexDirection: "column",
-        height: "100%",
+        ...(docked ? {} : { height: "100%", overflow: "hidden" }),
         background: "var(--paper-bright)",
         color: "var(--ink)",
         fontFamily: "var(--f-body)",
         fontSize: 12,
-        overflow: "hidden",
       }}
     >
       {/* Floating Header Bar (when not docked in left sidebar) */}
@@ -545,7 +546,7 @@ export default function SummaryPanel({
       </div>
 
       {/* Tree Content */}
-      <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+      <div style={docked ? undefined : { flex: 1, overflowY: "auto", minHeight: 0 }}>
         {filteredTree.length === 0 ? (
           <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--ink-muted)" }}>
             {shapes.length === 0 ? "No measurements on canvas yet." : "No results match the filter."}
@@ -810,7 +811,7 @@ export default function SummaryPanel({
                                               }}
                                             >
                                               <span style={{ fontWeight: 500 }}>
-                                                {s.room ? `${s.room}` : `Item #${idx + 1}`}
+                                                {s.room || "Unnamed area"}
                                               </span>
                                             </button>
                                             <span style={{ fontFamily: "var(--f-mono)", color: "var(--ink-muted)" }}>

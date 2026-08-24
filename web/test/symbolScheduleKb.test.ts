@@ -15,6 +15,8 @@ import {
   lookupScheduleKb,
   lookupScheduleKbForRoom,
   roomMatchScore,
+  extractDetailSheetTag,
+  canonDetailSheetTag,
 } from "../src/lib/symbolScheduleKb.ts";
 import { enrichSymbolsWithSchedule, buildPlanSymbolIndex, resolveSymbolFields } from "../src/lib/planSymbols.ts";
 
@@ -416,4 +418,34 @@ test("lookupScheduleKbForRoom picks accurate room row when multiple rooms share 
   assert.ok(livingHit);
   assert.equal(livingHit.room_name, "04.ENT.LOBBY / LIVING / DINING");
   assert.equal(livingHit.source_bbox.y, 160);
+});
+
+test("extractDetailSheetTag: filename and title-block A-codes", () => {
+  assert.equal(extractDetailSheetTag("A4101-WALL SECTION.pdf", []), "A4101");
+  assert.equal(
+    extractDetailSheetTag("detail.pdf", [
+      { str: "4", x: 200, y: 180, h: 16 },
+      { str: "A4301", x: 900, y: 650, h: 14 },
+      { str: "NOTE", x: 100, y: 100, h: 10 },
+    ]),
+    "A4301",
+  );
+});
+
+test("extractScheduleKbFromSheet: indexes A4101 detail target from filename", () => {
+  const rows = extractScheduleKbFromSheet([], {
+    sheet_id: "A4101-WALL SECTION.pdf",
+    file_name: "A4101-WALL SECTION.pdf",
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].tag, "A4101");
+  assert.equal(rows[0].source_sheet, "A4101-WALL SECTION.pdf");
+  const kb = buildScheduleKb(rows);
+  assert.ok(lookupScheduleKb(kb, "A4101"));
+});
+
+test("tagLookupKeys: A4101 hyphen variants", () => {
+  const keys = tagLookupKeys("A4101");
+  assert.ok(keys.includes("A4101"));
+  assert.ok(keys.includes("A-4101"));
 });

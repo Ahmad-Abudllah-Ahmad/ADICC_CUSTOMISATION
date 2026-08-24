@@ -557,8 +557,8 @@ export default function BoqPanel({
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 10, height: 10, borderRadius: 2, background: r.color, flexShrink: 0 }} />
             <span style={{ fontFamily: "var(--f-mono)", fontWeight: 700, fontSize: 12, color: "var(--cobalt)", background: "rgba(31, 63, 199, 0.08)", padding: "1px 6px", borderRadius: 3 }}>
-              {r.finish_tag || dash}
-            </span>
+            {r.finish_tag || dash}
+          </span>
           </div>
           {displayDesc && (
             <div style={{ fontSize: 10.5, color: "var(--ink)", fontWeight: 400, marginTop: 3, lineHeight: 1.35, maxWidth: 160 }}
@@ -885,8 +885,8 @@ export default function BoqPanel({
           }}
         >
           <span>Project Rollup</span>
-        </button>
-      </div>
+          </button>
+        </div>
 
       {/* Overview Stat Bar */}
       <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--ink-faint)", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", background: "var(--paper-cream)", flexShrink: 0 }}>
@@ -914,7 +914,7 @@ export default function BoqPanel({
             }}
           >
             Summary Hierarchy →
-          </button>
+        </button>
         )}
         <ToolMenu
           title="Export bill of quantities"
@@ -1241,11 +1241,11 @@ export default function BoqPanel({
         {/* MODE 2: PER FLOOR SHEET BREAKDOWN TABLE */}
         {viewMode === "floor" && (
           !bySheet.length && !manualLines.length ? (
-            <div style={{ padding: "20px 14px", color: "var(--ink-muted)", fontSize: 13, lineHeight: 1.5 }}>
+          <div style={{ padding: "20px 14px", color: "var(--ink-muted)", fontSize: 13, lineHeight: 1.5 }}>
               No masked takeoff yet. Trace rooms (One-Click) or walls (Wall Trace) — quantities and rates will calculate automatically.
-            </div>
-          ) : (
-            <>
+          </div>
+        ) : (
+          <>
               {/* Floor Filter Bar */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--paper-cream)", borderBottom: "1px solid var(--ink-faint)", flexShrink: 0 }}>
                 <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: "var(--ink-muted)" }}>Show Floor:</span>
@@ -1258,7 +1258,7 @@ export default function BoqPanel({
                   }}
                 >
                   <option value="all">All Floors (Complete Project)</option>
-                  {bySheet.map((g) => {
+            {bySheet.map((g) => {
                     const flr = sheetLevels?.[g.sheet_id] || "";
                     const sht = typeof sheetLabel === "function" ? sheetLabel(g.sheet_id) : (sheetLabel || g.sheet_id || "");
                     return (
@@ -1282,72 +1282,72 @@ export default function BoqPanel({
               {bySheet.filter((g) => floorFilter === "all" || g.sheet_id === floorFilter).map((g) => {
                 const floor = sheetLevels?.[g.sheet_id] || "";
                 const sheet = typeof sheetLabel === "function" ? sheetLabel(g.sheet_id) : (sheetLabel || g.sheet_id || "");
-                const floorTotal = sheetFloorTotal(g.shapeRows);
-                const rooms = roomSubtotals(g.shapeRows.map((r) => {
-                  const key = rowKey(r.shape_id);
-                  const meta = lineForKey(boqLines, key);
-                  return { ...r, room_detected: meta?.room || r.room_detected };
-                }));
-                return (
-                  <section key={g.sheet_id} style={{ borderBottom: "1px solid var(--ink-faint)" }}>
-                    <div style={{ padding: "8px 12px", background: "var(--paper-shadow)", display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: 700, fontSize: 12.5 }}>{floor ? `${floor} · ` : ""}{sheet}</span>
-                      <span style={{ fontSize: 10.5, fontFamily: "var(--f-mono)", color: "var(--ink-muted)" }}>
+              const floorTotal = sheetFloorTotal(g.shapeRows);
+              const rooms = roomSubtotals(g.shapeRows.map((r) => {
+                const key = rowKey(r.shape_id);
+                const meta = lineForKey(boqLines, key);
+                return { ...r, room_detected: meta?.room || r.room_detected };
+              }));
+              return (
+                <section key={g.sheet_id} style={{ borderBottom: "1px solid var(--ink-faint)" }}>
+                  <div style={{ padding: "8px 12px", background: "var(--paper-shadow)", display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, fontSize: 12.5 }}>{floor ? `${floor} · ` : ""}{sheet}</span>
+                    <span style={{ fontSize: 10.5, fontFamily: "var(--f-mono)", color: "var(--ink-muted)" }}>
                         {num(floorTotal)} {areaUnit(units)} masked · {g.shapeRows.length} item{g.shapeRows.length === 1 ? "" : "s"} · {rooms.length} room{rooms.length === 1 ? "" : "s"}
-                      </span>
-                      {!focusShapeId && (
-                        <button type="button" onClick={() => addManualRow(g.sheet_id)} title="Add a manual BOQ line for this sheet"
-                          style={{ marginLeft: "auto", padding: "3px 8px", border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 11 }}>
-                          + manual line
-                        </button>
-                      )}
-                    </div>
-                    <div style={{ overflowX: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
-                        <thead>
-                          <tr>
-                            <th style={th}>Room</th>
-                            <th style={th}>Finish</th>
-                            <th style={{ ...th, textAlign: "right" }}>Floor</th>
-                            <th style={{ ...th, textAlign: "right" }}>Wall</th>
-                            <th style={{ ...th, textAlign: "right" }}>LF</th>
-                            <th style={{ ...th, textAlign: "right" }}>EA</th>
-                            <th style={th}>Qty</th>
-                            <th style={th}>Unit</th>
-                            <th style={th}>Rate</th>
-                            <th style={{ ...th, textAlign: "right" }}>Amt</th>
-                            <th style={th}>Notes</th>
-                            {onShapeDelete && <th style={{ ...th, width: 32, textAlign: "center", padding: "6px 4px" }} aria-label="Delete" />}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {g.shapeRows.map((r) => renderDataRow(g, r))}
-                          {!focusShapeId && manualLines.filter((m) => m.sheet_id === g.sheet_id).map((m) => {
-                            const qty = Number(m.qty_override) || 0;
-                            const rate = Number(m.rate) || 0;
-                            return (
-                              <tr key={m.id}>
-                                <td style={td}><input style={inp} value={m.room || ""} onChange={(e) => upsertLine(m.id, { room: e.target.value })} /></td>
-                                <td style={{ ...td, color: "var(--ink-muted)", fontSize: 11 }}>Manual</td>
-                                <td style={td} colSpan={4}><input style={inp} value={m.description || ""} placeholder="Description"
-                                  onChange={(e) => upsertLine(m.id, { description: e.target.value })} /></td>
-                                <td style={td}><input style={{ ...inp, width: 64, textAlign: "right" }} type="number" step="any" value={m.qty_override ?? ""} onChange={(e) => upsertLine(m.id, { qty_override: e.target.value })} /></td>
-                                <td style={td}><input style={{ ...inp, width: 48 }} value={m.unit || ""} onChange={(e) => upsertLine(m.id, { unit: e.target.value })} /></td>
-                                <td style={td}><input style={{ ...inp, width: 72, textAlign: "right" }} type="number" step="any" value={m.rate ?? ""} onChange={(e) => upsertLine(m.id, { rate: e.target.value })} /></td>
-                                <td style={{ ...td, fontFamily: "var(--f-mono)", textAlign: "right" }}>{round2(qty * rate) ? num(round2(qty * rate)) : dash}</td>
-                                <td style={td}>
-                                  <div style={{ display: "flex", gap: 4 }}>
-                                    <input style={{ ...inp, flex: 1 }} value={m.notes || ""} onChange={(e) => upsertLine(m.id, { notes: e.target.value })} />
-                                    <button type="button" onClick={() => removeLine(m.id)} title="Remove manual line" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-danger)", fontSize: 14 }}>×</button>
-                                  </div>
-                                </td>
-                                {onShapeDelete && <td style={td} />}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
+                    </span>
+                    {!focusShapeId && (
+                      <button type="button" onClick={() => addManualRow(g.sheet_id)} title="Add a manual BOQ line for this sheet"
+                        style={{ marginLeft: "auto", padding: "3px 8px", border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 11 }}>
+                        + manual line
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+                      <thead>
+                        <tr>
+                          <th style={th}>Room</th>
+                          <th style={th}>Finish</th>
+                          <th style={{ ...th, textAlign: "right" }}>Floor</th>
+                          <th style={{ ...th, textAlign: "right" }}>Wall</th>
+                          <th style={{ ...th, textAlign: "right" }}>LF</th>
+                          <th style={{ ...th, textAlign: "right" }}>EA</th>
+                          <th style={th}>Qty</th>
+                          <th style={th}>Unit</th>
+                          <th style={th}>Rate</th>
+                          <th style={{ ...th, textAlign: "right" }}>Amt</th>
+                          <th style={th}>Notes</th>
+                          {onShapeDelete && <th style={{ ...th, width: 32, textAlign: "center", padding: "6px 4px" }} aria-label="Delete" />}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.shapeRows.map((r) => renderDataRow(g, r))}
+                        {!focusShapeId && manualLines.filter((m) => m.sheet_id === g.sheet_id).map((m) => {
+                          const qty = Number(m.qty_override) || 0;
+                          const rate = Number(m.rate) || 0;
+                          return (
+                            <tr key={m.id}>
+                              <td style={td}><input style={inp} value={m.room || ""} onChange={(e) => upsertLine(m.id, { room: e.target.value })} /></td>
+                              <td style={{ ...td, color: "var(--ink-muted)", fontSize: 11 }}>Manual</td>
+                              <td style={td} colSpan={4}><input style={inp} value={m.description || ""} placeholder="Description"
+                                onChange={(e) => upsertLine(m.id, { description: e.target.value })} /></td>
+                              <td style={td}><input style={{ ...inp, width: 64, textAlign: "right" }} type="number" step="any" value={m.qty_override ?? ""} onChange={(e) => upsertLine(m.id, { qty_override: e.target.value })} /></td>
+                              <td style={td}><input style={{ ...inp, width: 48 }} value={m.unit || ""} onChange={(e) => upsertLine(m.id, { unit: e.target.value })} /></td>
+                              <td style={td}><input style={{ ...inp, width: 72, textAlign: "right" }} type="number" step="any" value={m.rate ?? ""} onChange={(e) => upsertLine(m.id, { rate: e.target.value })} /></td>
+                              <td style={{ ...td, fontFamily: "var(--f-mono)", textAlign: "right" }}>{round2(qty * rate) ? num(round2(qty * rate)) : dash}</td>
+                              <td style={td}>
+                                <div style={{ display: "flex", gap: 4 }}>
+                                  <input style={{ ...inp, flex: 1 }} value={m.notes || ""} onChange={(e) => upsertLine(m.id, { notes: e.target.value })} />
+                                  <button type="button" onClick={() => removeLine(m.id)} title="Remove manual line" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--c-danger)", fontSize: 14 }}>×</button>
+                                </div>
+                              </td>
+                              {onShapeDelete && <td style={td} />}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                   </section>
                 );
               })}
@@ -1362,11 +1362,11 @@ export default function BoqPanel({
               <div style={{ background: "var(--paper-cream)", padding: "10px", borderRadius: 6, border: "1px solid var(--ink-faint)" }}>
                 <div style={{ fontSize: 10, color: "var(--ink-muted)", textTransform: "uppercase", fontWeight: 700 }}>Total Floor</div>
                 <div style={{ fontFamily: "var(--f-mono)", fontSize: 15, fontWeight: 700, color: "var(--ink)", marginTop: 2 }}>{num(grand.floor)} {areaUnit(units)}</div>
-              </div>
+                      </div>
               <div style={{ background: "var(--paper-cream)", padding: "10px", borderRadius: 6, border: "1px solid var(--ink-faint)" }}>
                 <div style={{ fontSize: 10, color: "var(--ink-muted)", textTransform: "uppercase", fontWeight: 700 }}>Total Wall</div>
                 <div style={{ fontFamily: "var(--f-mono)", fontSize: 15, fontWeight: 700, color: "var(--ink)", marginTop: 2 }}>{num(grand.wall)} {areaUnit(units)}</div>
-              </div>
+                          </div>
               <div style={{ background: "var(--paper-cream)", padding: "10px", borderRadius: 6, border: "1px solid var(--ink-faint)" }}>
                 <div style={{ fontSize: 10, color: "var(--ink-muted)", textTransform: "uppercase", fontWeight: 700 }}>Total Skirting</div>
                 <div style={{ fontFamily: "var(--f-mono)", fontSize: 15, fontWeight: 700, color: "var(--ink)", marginTop: 2 }}>{num(grand.lf)} {lenUnit(units)}</div>
@@ -1404,8 +1404,8 @@ export default function BoqPanel({
                   ))}
                 </tbody>
               </table>
-            </div>
-          </div>
+                      </div>
+                    </div>
         )}
       </div>
 

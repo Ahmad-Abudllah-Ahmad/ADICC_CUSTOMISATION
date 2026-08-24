@@ -130,6 +130,13 @@ export function tagLookupKeys(tag: string): string[] {
       keys.add(`${fm[1]}-${fm[2]}`);
     }
   }
+  // Detail / enlarged-plan sheet numbers (callout bubble targets): A4101, A-4101
+  const am = n.match(/^([A-Z])(\d{4,5})$/);
+  if (am) {
+    keys.add(`${am[1]}${am[2]}`);
+    keys.add(`${am[1]}-${am[2]}`);
+    keys.add(`${am[1]}.${am[2]}`);
+  }
   return [...keys];
 }
 
@@ -284,6 +291,74 @@ function tokW(t: SymbolToken): number {
 
 function pageTextOf(tokens: SymbolToken[]): string {
   return tokens.map((t) => t.str || "").join(" ");
+}
+
+const DETAIL_SHEET_TAG_RE = /^[A-Z]\d{4,5}$/;
+
+/** Normalize detail-sheet ids (A4101, A-4101) for callout ↔ sheet matching. */
+export function canonDetailSheetTag(raw: string): string | null {
+  const t = (raw || "").trim().toUpperCase().replace(/[\s.-]/g, "");
+  return DETAIL_SHEET_TAG_RE.test(t) ? t : null;
+}
+
+/** Read a detail-sheet number from the filename or title-block tokens (lower-right). */
+export function extractDetailSheetTag(fileName: string, tokens: SymbolToken[]): string | null {
+  const fn = (fileName || "").toUpperCase();
+  const fm = fn.match(/\b([A-Z]\d{4,5})\b/);
+  if (fm) return fm[1];
+  let best: string | null = null, bestScore = 0;
+  for (const t of tokens || []) {
+    const tag = canonDetailSheetTag(t.str || "");
+    if (!tag) continue;
+    const h = Math.max(6, t.h || 10);
+    const x = t.x || 0, y = t.y || 0;
+    // Title block sits lower-right — prefer larger glyphs there.
+    const score = h * 2 + x * 0.002 + y * 0.002;
+    if (score > bestScore) { bestScore = score; best = tag; }
+  }
+  return best;
+}
+
+function shouldIndexOwnSheetNumber(baseName: string, cls: SheetClass): boolean {
+  const fn = (baseName || "").toUpperCase();
+  if (cls === "detail" || cls === "door_schedule" || cls === "window_schedule" || cls === "finish_schedule") {
+    return true;
+  }
+  // Skip floor plans / elevations — their A1105-style numbers are not callout targets.
+  if (/\b(PLAN|ELEVATION|LAYOUT|SITE|SCHEMATIC|OVERALL)\b/.test(fn)) return false;
+  // Detail / enlarged sheets named A4101-… even without "DETAIL" in the filename.
+  return /^[A-Z]\d{4,5}\b/.test(fn);
+}
+
+function sheetOwnNumberEntry(
+  meta: SheetMeta,
+  tokens: SymbolToken[],
+  cls: SheetClass,
+): ScheduleKbEntry | null {
+  const baseName = (meta.file_name || "").replace(/\\/g, "/").split("/").pop() || meta.file_name;
+  if (!shouldIndexOwnSheetNumber(baseName, cls)) return null;
+  const tag = extractDetailSheetTag(baseName, tokens);
+  if (!tag) return null;
+  return {
+    tag,
+    kind: "detail",
+    description: baseName.replace(/\.pdf$/i, ""),
+    type: cls === "detail" ? "Detail sheet" : "Drawing sheet",
+    source_sheet: meta.sheet_id,
+    source_title: baseName.replace(/\.pdf$/i, ""),
+    source_bbox: { x: 0, y: 0, w: 400, h: 300 },
+  };
+}
+
+function appendOwnSheetNumber(
+  entries: ScheduleKbEntry[],
+  meta: SheetMeta,
+  tokens: SymbolToken[],
+  cls: SheetClass,
+): ScheduleKbEntry[] {
+  const own = sheetOwnNumberEntry(meta, tokens, cls);
+  if (own && !entries.some((e) => canonDetailSheetTag(e.tag || "") === own.tag)) entries.push(own);
+  return entries;
 }
 
 /**
@@ -1113,38 +1188,26 @@ export function extractScheduleKbFromSheet(
     const steel = parseSteelDoorFrameSchedule(tokens, meta);
     // Prefer steel parser results on pressed-steel sheets; merge both otherwise
     if (/PRESSED\s+STEEL|STEEL\s+DOOR/i.test(meta.file_name) || /DOOR\s*&\s*FRAME\s+SCHED/i.test(pageSlice)) {
-      return steel.length ? steel : wooden;
+      return appendOwnSheetNumber(steel.length ? steel : wooden, meta, tokens, cls);
     }
-    return [...wooden, ...steel];
+    return appendOwnSheetNumber([...wooden, ...steel], meta, tokens, cls);
   }
   if (cls === "window_schedule") {
     const elev = parseElevationTypeTables(tokens, meta);
-    if (elev.length) return elev;
+    if (elev.length) return appendOwnSheetNumber(elev, meta, tokens, cls);
     // Fallback for window sheets that use wooden-style cards
-    return parseDoorScheduleTokens(tokens, meta).map((e) => ({
+    return appendOwnSheetNumber(parseDoorScheduleTokens(tokens, meta).map((e) => ({
       ...e,
       kind: "window" as const,
       type: (e.type || "").replace(/^Door/, "Window").replace(/Door /, "Window "),
       description: (e.description || "").replace(/\bDoor\b/g, "Window"),
-    }));
+    })), meta, tokens, cls);
   }
-  if (cls === "finish_schedule") return parseFinishScheduleTokens(tokens, meta);
-  // Filename says "detail" — index sheet number as a detail target
-  if (cls === "detail") {
-    const m = meta.file_name.toUpperCase().match(/\b([A-Z]\d{4,5})\b/);
-    if (m) {
-      return [{
-        tag: m[1],
-        kind: "detail",
-        description: meta.file_name.replace(/\.pdf$/i, ""),
-        type: "Detail sheet",
-        source_sheet: meta.sheet_id,
-        source_title: meta.file_name.replace(/\.pdf$/i, ""),
-        source_bbox: { x: 0, y: 0, w: 400, h: 300 },
-      }];
-    }
+  if (cls === "finish_schedule") {
+    return appendOwnSheetNumber(parseFinishScheduleTokens(tokens, meta), meta, tokens, cls);
   }
-  return [];
+  const own = sheetOwnNumberEntry(meta, tokens, cls);
+  return own ? [own] : [];
 }
 
 /** Merge many sheet extracts into a tag → entry map (richest + best source wins). */

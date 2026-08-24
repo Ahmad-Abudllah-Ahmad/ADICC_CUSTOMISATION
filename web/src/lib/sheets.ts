@@ -81,21 +81,25 @@ export const STANDARD_SCALES: Scale[] = [
   { label: "1:500", upp: metric(500) },
 ];
 
-// Pull the drawing's sheet number (e.g. A003, A-101, S1.1) from the title block —
+// Pull the drawing's sheet number (e.g. A003, A-101, A4101, S1.1) from the title block —
 // the largest sheet-number-shaped token in the lower-right region of the page.
-const SHEET_NO_RE = /^[A-Z]{1,3}[-. ]?\d{1,3}(\.\d{1,2})?[A-Z]?$/;
+const SHEET_NO_SHORT = /^[A-Z]{1,3}[-. ]?\d{1,3}(\.\d{1,2})?[A-Z]?$/;
+const SHEET_NO_LONG = /^[A-Z]\d{4,5}$/;
 export function extractSheetNumber(textContent: TextContentLike, viewport: Viewport): string | null {
   const W = viewport.width, H = viewport.height;
   let best: string | null = null, bestH = 0;
   for (const it of textContent.items || []) {
     const raw = (it.str || "").trim().toUpperCase().replace(/\s+/g, "");
-    if (raw.length < 2 || raw.length > 8 || !SHEET_NO_RE.test(raw)) continue;
+    const rawCanon = raw.replace(/[-.]/g, "");
+    const isShort = raw.length >= 2 && raw.length <= 8 && SHEET_NO_SHORT.test(raw);
+    const isLong = SHEET_NO_LONG.test(rawCanon);
+    if (!isShort && !isLong) continue;
     const t = pdfjsLib.Util.transform(viewport.transform, it.transform);
     const x = t[4], y = t[5], h = Math.hypot(t[2], t[3]) || it.height || 0;
     // title block lives lower-right; require it there and prefer the biggest text
     if (x < W * 0.60 || y < H * 0.55) continue;
     const score = h + (x / W) * 4 + (y / H) * 4; // bigger + further to lower-right wins
-    if (score > bestH) { bestH = score; best = raw; }
+    if (score > bestH) { bestH = score; best = isLong ? rawCanon : raw; }
   }
   return best;
 }

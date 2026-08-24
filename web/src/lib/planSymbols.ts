@@ -9,7 +9,8 @@
 // attached as a match so hover can show "also on A-102". Schedule/condition
 // enrichment fills known fields; blanks stay editable via SymbolNotes.
 
-import { lookupScheduleKb, lookupScheduleKbForRoom, tagLookupKeys } from "./symbolScheduleKb";
+import { lookupScheduleKb, lookupScheduleKbForRoom, tagLookupKeys, canonDetailSheetTag } from "./symbolScheduleKb";
+import { parseSheetKey, compareSheetKeys, sheetExportName } from "./sheetKey";
 
 export type SymbolKind = "door" | "window" | "type" | "finish" | "detail";
 
@@ -70,11 +71,16 @@ export type SymbolNotes = {
   floors?: string;
 };
 
+/** Uploaded detail sheet that matches a plan callout tag (A4101, …). */
+export type DetailSheetLink = { sheet_id: string; title: string };
+
 export interface PlanSymbol extends RawPlanSymbol {
   id: string;
   sheet_id: string;
   matches: SymbolMatchRef[];
   schedule: SymbolScheduleInfo;
+  /** Matched project files whose title block or filename carries this callout tag. */
+  detail_links?: DetailSheetLink[];
 }
 
 // Door / window marks (circular tags on plans): D06, D03, W12, SD12 (sliding door)
@@ -307,6 +313,7 @@ function attachRoomNames(syms: RawPlanSymbol[], tokens: SymbolToken[]): RawPlanS
   // Also merge stacked name lines (GENERAL + STORE-04 → GENERAL STORE-04)
   // when two name tokens sit on consecutive lines above the same x band.
   const mergedNames = mergeStackedRoomNames(names);
+  const usedDetailIdx = new Set<number>();
 
   return syms.map((s) => {
     let best: { text: string; score: number } | null = null;
@@ -324,16 +331,21 @@ function attachRoomNames(syms: RawPlanSymbol[], tokens: SymbolToken[]): RawPlanS
     if (best) return { ...s, room_name: best.text };
     // Detail callout: pair sheet id (A4103) with the number in the top half
     if (s.kind === "detail") {
-      let bestNo: { text: string; score: number } | null = null;
-      for (const n of detailNos) {
+      let bestNo: { text: string; score: number; idx: number } | null = null;
+      for (let idx = 0; idx < detailNos.length; idx++) {
+        if (usedDetailIdx.has(idx)) continue;
+        const n = detailNos[idx];
         const dy = s.y - n.y;
         if (dy < s.h * 0.05 || dy > s.h * 2.8) continue;
         const dx = Math.abs(s.x - n.x);
-        if (dx > s.w * 0.75) continue;
+        if (dx > Math.max(s.w * 0.55, n.w * 0.65)) continue;
         const score = dy + dx * 0.5;
-        if (!bestNo || score < bestNo.score) bestNo = { text: n.text, score };
+        if (!bestNo || score < bestNo.score) bestNo = { text: n.text, score, idx };
       }
-      if (bestNo) return { ...s, room_name: `DETAIL ${bestNo.text}` };
+      if (bestNo) {
+        usedDetailIdx.add(bestNo.idx);
+        return { ...s, room_name: `DETAIL ${bestNo.text}` };
+      }
     }
     return s;
   });
@@ -477,6 +489,69 @@ export type KbRowLike = {
   source_bbox?: { x: number; y: number; w: number; h: number };
 };
 
+function canonSheetRef(s: string): string {
+  return (s || "").toUpperCase().replace(/[\s.-]/g, "");
+}
+
+/**
+ * Find every uploaded sheet whose filename or title-block label matches a detail
+ * callout tag (A4101, A4301, …) — used to show openable file links on hover.
+ */
+export function resolveDetailSheetLinks(
+  tag: string,
+  opts: {
+    sheetNames?: string[];
+    galleryLabels?: Record<string, string>;
+    kb?: KbRowLike[] | Map<string, KbRowLike>;
+  } = {},
+): DetailSheetLink[] {
+  const canon = canonDetailSheetTag(tag) || canonSheetRef(tag);
+  if (!canon || !DETAIL_RE.test(canon)) return [];
+
+  const seen = new Set<string>();
+  const scored: Array<{ sheet_id: string; title: string; score: number }> = [];
+  const add = (sheet_id: string, title: string, score: number) => {
+    const id = (sheet_id || "").trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    scored.push({ sheet_id: id, title: (title || "").trim() || sheetExportName(id), score });
+  };
+
+  const kb = opts.kb;
+  if (kb) {
+    for (const k of tagLookupKeys(tag)) {
+      const hit = kb instanceof Map
+        ? (kb.get(k) || null)
+        : (kb.find((e) => (e.tag || "").toUpperCase() === k.toUpperCase()) || null);
+      if (hit?.source_sheet) {
+        add(hit.source_sheet, hit.source_title || hit.description || "", 100);
+      }
+    }
+  }
+
+  const names = opts.sheetNames || [];
+  const nameSet = new Set(names);
+
+  for (const [key, label] of Object.entries(opts.galleryLabels || {})) {
+    const lbl = canonSheetRef(label);
+    if (lbl !== canon && !lbl.includes(canon) && !canon.includes(lbl)) continue;
+    const { file } = parseSheetKey(key);
+    if (!nameSet.has(file)) continue;
+    add(key, label || sheetExportName(key), lbl === canon ? 90 : 70);
+  }
+
+  for (const name of names) {
+    const base = (name.split("/").pop() || "").replace(/\.pdf$/i, "");
+    const baseCanon = canonSheetRef(base);
+    const exact = baseCanon.startsWith(canon) || new RegExp(`\\b${canon}\\b`, "i").test(base);
+    if (!exact) continue;
+    add(name, base, baseCanon.startsWith(canon) ? 85 : 60);
+  }
+
+  scored.sort((a, b) => b.score - a.score || compareSheetKeys(a.sheet_id, b.sheet_id));
+  return scored.map(({ sheet_id, title }) => ({ sheet_id, title }));
+}
+
 function kbForTag(
   kb: KbRowLike[] | Map<string, KbRowLike> | undefined,
   tag: string,
@@ -503,7 +578,13 @@ function kbForTag(
 /** Fill schedule fields from imported schedule rows, project KB, and/or conditions. */
 export function enrichSymbolsWithSchedule(
   symbols: PlanSymbol[],
-  opts: { conditions?: CondLike[]; rows?: RowLike[]; kb?: KbRowLike[] | Map<string, KbRowLike> } = {},
+  opts: {
+    conditions?: CondLike[];
+    rows?: RowLike[];
+    kb?: KbRowLike[] | Map<string, KbRowLike>;
+    sheetNames?: string[];
+    galleryLabels?: Record<string, string>;
+  } = {},
 ): PlanSymbol[] {
   const rowBy = new Map<string, RowLike>();
   for (const r of opts.rows || []) {
@@ -518,7 +599,9 @@ export function enrichSymbolsWithSchedule(
   return symbols.map((s) => {
     const row = rowBy.get(s.tag);
     const cond = condBy.get(s.tag);
-    const kb = kbForTag(opts.kb, s.tag, s.room_name, s.sheet_id);
+    // "DETAIL 4" is the callout number, not a room — look up the sheet tag (A4101) directly.
+    const kbRoom = (s.kind === "detail" && /^DETAIL\s+\d/i.test(s.room_name || "")) ? undefined : s.room_name;
+    const kb = kbForTag(opts.kb, s.tag, kbRoom, s.sheet_id);
     const mat0 = cond?.materials?.[0];
     const schedule: SymbolScheduleInfo = {
       finish_tag: row?.finish_tag || cond?.finish_tag || (s.kind === "finish" ? s.tag : undefined),
@@ -535,6 +618,14 @@ export function enrichSymbolsWithSchedule(
       source_title: kb?.source_title || undefined,
       source_bbox: kb?.source_bbox || undefined,
     };
+    let detail_links: DetailSheetLink[] | undefined;
+    if (s.kind === "detail") {
+      detail_links = resolveDetailSheetLinks(s.tag, opts);
+      if (!schedule.source_sheet && detail_links.length) {
+        schedule.source_sheet = detail_links[0].sheet_id;
+        schedule.source_title = detail_links[0].title;
+      }
+    }
     // Prefer KB room for door/window (schedule is source of truth); plan label otherwise
     const room_name = (s.kind === "door" || s.kind === "window")
       ? (kb?.room_name || s.room_name)
@@ -547,9 +638,14 @@ export function enrichSymbolsWithSchedule(
       }
       if (!schedule[k] || !String(schedule[k]).trim()) delete schedule[k];
     }
+    const out: PlanSymbol = {
+      ...s,
+      schedule,
+      ...(detail_links?.length ? { detail_links } : {}),
+    };
     return room_name && room_name !== s.room_name
-      ? { ...s, room_name, schedule }
-      : { ...s, schedule };
+      ? { ...out, room_name }
+      : out;
   });
 }
 

@@ -9,7 +9,9 @@ import {
   resolveSymbolFields,
   hitPlanSymbol,
   symbolNoteKey,
+  resolveDetailSheetLinks,
 } from "../src/lib/planSymbols.ts";
+import { buildScheduleKb } from "../src/lib/symbolScheduleKb.ts";
 
 test("classify: detail bubble sheet id + digit-led type mark", () => {
   assert.deepEqual(classifyPlanSymbol("A4103"), { tag: "A4103", kind: "detail" });
@@ -26,6 +28,53 @@ test("extract: detail callout pairs number above sheet id", () => {
   assert.equal(raw[0].tag, "A4103");
   assert.equal(raw[0].kind, "detail");
   assert.equal(raw[0].room_name, "DETAIL 4");
+});
+
+test("extract: two detail callouts with same number map to nearest sheet id", () => {
+  const raw = extractPlanSymbols([
+    { str: "1", x: 120, y: 180, h: 16 },
+    { str: "1", x: 420, y: 180, h: 16 },
+    { str: "A4301", x: 115, y: 210, h: 10 },
+    { str: "A5606", x: 415, y: 210, h: 10 },
+  ]);
+  assert.equal(raw.length, 2);
+  const a4301 = raw.find((s) => s.tag === "A4301");
+  const a5606 = raw.find((s) => s.tag === "A5606");
+  assert.equal(a4301?.room_name, "DETAIL 1");
+  assert.equal(a5606?.room_name, "DETAIL 1");
+});
+
+test("enrich: detail callout A4101 links to uploaded detail sheet KB", () => {
+  const kb = buildScheduleKb([{
+    tag: "A4101",
+    kind: "detail",
+    description: "A4101-WALL SECTION",
+    type: "Detail sheet",
+    source_sheet: "A4101-WALL SECTION.pdf",
+    source_title: "A4101-WALL SECTION",
+    source_bbox: { x: 0, y: 0, w: 400, h: 300 },
+  }]);
+  const idx = buildPlanSymbolIndex({
+    "plan.pdf": [{ tag: "A4101", kind: "detail", x: 10, y: 10, w: 20, h: 20, room_name: "DETAIL 4" }],
+  });
+  const en = enrichSymbolsWithSchedule(idx, {
+    kb,
+    sheetNames: ["plan.pdf", "A4101-WALL SECTION.pdf", "A4301-SECTION.pdf"],
+    galleryLabels: { "A4301-SECTION.pdf": "A4301" },
+  });
+  assert.equal(en[0].schedule.source_sheet, "A4101-WALL SECTION.pdf");
+  assert.equal(en[0].schedule.type, "Detail sheet");
+  assert.ok(en[0].detail_links?.some((l) => l.sheet_id === "A4101-WALL SECTION.pdf"));
+});
+
+test("resolveDetailSheetLinks: matches filename and title-block labels", () => {
+  const links = resolveDetailSheetLinks("A4301", {
+    sheetNames: ["A4101-WALL SECTION.pdf", "A4301-SECTION.pdf", "A5606-DETAIL.pdf"],
+    galleryLabels: { "A4301-SECTION.pdf": "A4301" },
+  });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].sheet_id, "A4301-SECTION.pdf");
+  assert.equal(links[0].title, "A4301");
 });
 
 test("extract: staircase name above 1ST-02", () => {

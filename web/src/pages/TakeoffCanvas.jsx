@@ -229,7 +229,7 @@ const DRAWINGS_ASK_HINTS = [
   "Which electrical drawings cover fire alarm?",
   "What door tags appear on the 1st floor plan?",
 ];
-const LP_TAB_ORDER = ["files", "sheets", "markup", "stamp", "rfi"];
+const LP_TAB_ORDER = ["summary", "files", "sheets", "markup", "stamp", "rfi"];
 // Top-bar quick-access condition palette: a curated handful (≤9) of pinned
 // conditions for one-click activation without leaving the canvas. Palette holds
 // condition ids (workspace-scoped), so it persists with the annotation payload,
@@ -509,7 +509,7 @@ export default function TakeoffCanvas() {
   const [layerPickIds, setLayerPickIds] = useState({});
   const [layerForest, setLayerForest] = useState({});
   const layerTargetSheetRef = useRef(null);
-  const leftCanvasWork = deskTab === "markup" || deskTab === "stamp";
+  const leftCanvasWork = deskTab === "markup" || deskTab === "stamp" || deskTab === "summary";
   useEffect(() => { if (!openTabs.length) setLeftTab((cur) => (cur === "sheets" ? "files" : cur)); }, [openTabs.length]);
   const [minimapOpen, setMinimapOpen] = useState(() => {
     try { return localStorage.getItem("opentakeoff_minimap") !== "0"; } catch { return true; }
@@ -1885,7 +1885,6 @@ export default function TakeoffCanvas() {
         sheetsLoadedRef.current = true;
         setSheets(list);
         if (list.length) {
-          setActive(list[0].name);
           if (noTabsRef.current) setStatus("ready");
         } else setStatus("empty");
         // decide the landing only once the annotations effect has also reported
@@ -2019,22 +2018,15 @@ export default function TakeoffCanvas() {
     const { sheetGroup: grp, lastGroup: lgFinal } = normalizeLoadedGroups(a, MAX_GROUP);
     setSheetGroup(grp);
     setLastGroup(lgFinal);
-    // gallery-first: tabs restore directly; legacy pinned pages migrate once
-    // (over in the sheets effect, where file names are known); nothing open → gallery
-    const tabs = Array.isArray(a.sheet_tabs) ? a.sheet_tabs : [];
-    noTabsRef.current = false;   // accurate on every (re)hydrate; the no-tabs branch flips it true
-    if (tabs.length) setOpenTabs(tabs);
-    else if (Array.isArray(a.pinned) && a.pinned.length) legacyPinnedRef.current = a.pinned;
-    // no tabs → the sheet chooser. Defer the picker-vs-gallery choice until the
-    // sheets effect has loaded the working set (coordinated via the refs) so an
-    // empty cloud project lands on the Drive picker without flashing the gallery.
-    else {
-      setOpenTabs([]);
-      noTabsRef.current = true;
-      if (sheetsLoadedRef.current) {
-        setView("canvas");
-        setStatus(hasSheetsRef.current ? "ready" : "empty");
-      }
+    // Canvas opens empty — no sheet on the plan until the user picks one.
+    setOpenTabs([]);
+    setActive("");
+    setPage(1);
+    setFocusKey("");
+    noTabsRef.current = true;
+    if (sheetsLoadedRef.current) {
+      setView("canvas");
+      setStatus(hasSheetsRef.current ? "ready" : "empty");
     }
     const sc = {};
     const src = {};
@@ -2274,15 +2266,6 @@ export default function TakeoffCanvas() {
   // with nothing painted yet (first open or a true jump to an uncached sheet).
   useEffect(() => {
     if (!openTabs.length) {
-      if (sheets.length > 0 && active) {
-        setOpenTabs([active]);
-        return;
-      }
-      if (sheets.length > 0) {
-        setOpenTabs([sheets[0].name]);
-        setActive(sheets[0].name);
-        return;
-      }
       if (statusRef.current === "loading" || statusRef.current === "rendering") {
         setStatus(sheets.length ? "ready" : "empty");
       }
@@ -2575,8 +2558,10 @@ export default function TakeoffCanvas() {
     setPlanSymbols(enrichSymbolsWithSchedule(buildPlanSymbolIndex(planSymbolsRawRef.current), {
       conditions,
       kb: scheduleKbRef.current,
+      sheetNames: sheets.map((s) => s.name),
+      galleryLabels,
     }));
-  }, [conditions, symbolEpoch, symbolKbEpoch]);
+  }, [conditions, symbolEpoch, symbolKbEpoch, sheets, galleryLabels]);
 
   const roomLabelsBySheet = useMemo(() => ({ ...roomLabelsRawRef.current }), [symbolEpoch]);
   const scheduleKb = useMemo(() => new Map(scheduleKbRef.current), [symbolKbEpoch]);
@@ -3079,7 +3064,33 @@ export default function TakeoffCanvas() {
   // carried while events keep arriving <300ms apart, so momentum tails keep
   // panning and a fast spin keeps zooming.
   useEffect(() => {
-    const el = containerRef.current; if (!el) return;
+    if (status !== "ready") return;
+    const stage = stageRef.current;
+    const cont = containerRef.current;
+    if (!stage || !cont) return;
+    const wheelChromeSel = ".toolbar-glass-bar,.toolbar-glass-pill,.toolbar-glass-pills-row,.tool-menu-drop-panel,.tool-menu-palette-shell,.tool-menu-anchored-panel,.takeoff-sticky-panel,.canvas-left-stack,.canvas-glass-cluster,.canvas-sheets-fab,.drawings-chat-glass-trigger,.left-window,.left-panel-glass,.canvas-minimap,.canvas-zoom-bar,.canvas-hamburger-btn,.takeoffs-drawer-slot,.takeoffs-drawer-scrim,.drawings-ask-wrap,.drawings-chat-center-scrim,.left-panel-stage-scrim,.cond-edit-float,.ill-panel,[data-hover-scroll]";
+    const inRect = (x, y, r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    const wheelOnSheet = (e) => {
+      const x = e.clientX, y = e.clientY;
+      // Ignore wheels whose pointer sits outside this iframe (e.g. ADICC TopNav
+      // above the embed when the iframe still receives a focused trackpad gesture).
+      if (y < 0 || x < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+      const cr = cont.getBoundingClientRect();
+      // Only the canvas workspace — never the deck toolbar / condition strip above it.
+      if (!inRect(x, y, cr)) return false;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !stage.contains(hit)) return false;
+      if (hit.closest?.(wheelChromeSel)) return false;
+      const tb = document.querySelector(".toolbar-glass-bar");
+      if (tb && inRect(x, y, tb.getBoundingClientRect())) return false;
+      const leftCol = document.querySelector(".canvas-left-stack")?.parentElement;
+      if (leftCol && inRect(x, y, leftCol.getBoundingClientRect())) return false;
+      for (const node of document.querySelectorAll(wheelChromeSel)) {
+        const r = node.getBoundingClientRect();
+        if (inRect(x, y, r)) return false;
+      }
+      return true;
+    };
     let glide = 0, gx = 0, gy = 0, raf = 0;
     let kind = "", kindUntil = 0;   // per-burst wheel-device classification
     const wheelKind = (e) => {
@@ -3094,7 +3105,7 @@ export default function TakeoffCanvas() {
       const d = Math.abs(glide) < 0.002 ? glide : glide * 0.35;
       glide -= d;
       if (d) {
-        const r = el.getBoundingClientRect();
+        const r = cont.getBoundingClientRect();
         zoomAround(gx - r.left, gy - r.top, Math.exp(d));
       }
       if (glide) {
@@ -3103,9 +3114,13 @@ export default function TakeoffCanvas() {
       }
     };
     const onWheel = (e) => {
-      if (editingRef.current) return;   // freeze pan/zoom while the inline editor is pinned to its anchor
-      // Static hover cards (symbol / mask) scroll their own body — don't steal the wheel.
-      if (e.target?.closest?.("[data-hover-scroll]")) return;
+      if (editingRef.current) return;   // freeze pan/zoom while the inline text editor is pinned to its anchor
+      const onSheet = wheelOnSheet(e);
+      if (!onSheet) {
+        // Trackpad pinch on toolbars/rails must not zoom the sheet or the browser page.
+        if (e.ctrlKey || e.metaKey) e.preventDefault();
+        return;
+      }
       e.preventDefault();
       gestureUntilRef.current = performance.now() + GESTURE_MS;  // detail view waits for wheel quiet
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
@@ -3116,7 +3131,7 @@ export default function TakeoffCanvas() {
         return;
       }
       if (e.ctrlKey || e.metaKey) {
-        const r = el.getBoundingClientRect();
+        const r = cont.getBoundingClientRect();
         zoomAround(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.01));
         return;
       }
@@ -3132,9 +3147,9 @@ export default function TakeoffCanvas() {
       gx = e.clientX; gy = e.clientY;
       if (!raf) raf = requestAnimationFrame(step);
     };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => { el.removeEventListener("wheel", onWheel); if (raf) cancelAnimationFrame(raf); };
-  }, [applyTf, scheduleSync, zoomAround]);
+    window.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => { window.removeEventListener("wheel", onWheel, { capture: true }); if (raf) cancelAnimationFrame(raf); };
+  }, [applyTf, scheduleSync, zoomAround, status]);
 
   // Space = temporary pan (any tool)
   useEffect(() => {
@@ -4725,6 +4740,48 @@ export default function TakeoffCanvas() {
     setScaleSources((s) => ({ ...s, [pv.key]: pv.source }));
     showScaleGuide(pv.key, pv.upp, STANDARD_SCALES.find((x) => Math.abs(x.upp - pv.upp) < 1e-9)?.label || pv.source);
   }
+
+  async function applyAutoscale(key) {
+    let det = detectedScales[key];
+    if (!det) {
+      const pageObj = pageObjsRef.current.get(key);
+      const rs = renderScalesRef.current.get(key);
+      if (pageObj && rs != null) {
+        try {
+          const tc = await pageObj.getTextContent();
+          const vp = pageObj.getViewport({ scale: rs });
+          det = detectScale(tc, vp);
+          if (det) setDetectedScales((d) => (d[key]?.label === det.label ? d : { ...d, [key]: det }));
+        } catch { /* best-effort */ }
+      }
+    }
+    if (det) {
+      rescaleSheet(key, det.upp);
+      setScaleSources((s) => ({ ...s, [key]: "autoscale" }));
+      showScaleGuide(key, det.upp, det.label);
+      setCommitMsg(`Autoscale — ${det.label}. Change it anytime from the scale menu.`);
+      return;
+    }
+    const fbLabel = units === "metric" ? "1:100" : '1/8" = 1\'-0"';
+    const fb = STANDARD_SCALES.find((s) => s.label === fbLabel);
+    if (fb) {
+      rescaleSheet(key, fb.upp);
+      setScaleSources((s) => ({ ...s, [key]: "autoscale" }));
+      showScaleGuide(key, fb.upp, fb.label);
+      setCommitMsg(`Autoscale — applied ${fb.label} as default. Change it if your plan uses a different scale.`);
+      return;
+    }
+    setCommitMsg("Autoscale couldn't detect a scale — pick one from Standard or calibrate two points.");
+  }
+
+  const autoscaleTriedRef = useRef(new Set());
+  useEffect(() => {
+    if (status !== "ready" || !focusPanel?.key) return;
+    const key = focusPanel.key;
+    if (scales[key] != null || autoscaleTriedRef.current.has(key)) return;
+    autoscaleTriedRef.current.add(key);
+    void applyAutoscale(key);
+  }, [status, focusPanel?.key, scales]);
 
   function applyCalibration() {
     const feet = calInputToFeet(parseFloat(pendingLen), units);   // metric users type meters; stored scale stays feet
@@ -8628,7 +8685,8 @@ export default function TakeoffCanvas() {
         return { ...next, computed: recomputeShape(next) };
       }
       const v = Math.max(0, parseFloat(raw) || 0);
-      const n = Math.max(0, (s.verts_norm?.length || 0) - 1);
+      const closed = !!(s.origin?.closed_loop);
+      const n = Math.max(0, (s.verts_norm?.length || 0) - (closed ? 0 : 1));
       let next = { ...s, height_ft: v, height_override: true };
       if (s.measure_role === "surface_area" && n > 0) {
         next = withSegmentHeights(next, Array(n).fill(v));
@@ -8960,6 +9018,9 @@ export default function TakeoffCanvas() {
     }
     if ("height_ft" in rest && sel) {
       const v = rest.height_ft;
+      if (sel.measure_role === "surface_area") {
+        updateCondById(sel.condition_id, { height_ft: v });
+      }
       delete rest.height_ft;
       if (selectedId === sel.id) {
         if (v == null || v === "") clearShapeHeight();
@@ -8979,7 +9040,8 @@ export default function TakeoffCanvas() {
             delete next.segment_heights_ft;
             return { ...next, computed: recomputeShape(next) };
           }
-          const n = Math.max(0, (s.verts_norm?.length || 0) - 1);
+          const closed = !!(s.origin?.closed_loop);
+          const n = Math.max(0, (s.verts_norm?.length || 0) - (closed ? 0 : 1));
           let next = { ...s, height_ft: Math.max(0, Number(v) || 0), height_override: true };
           if (s.measure_role === "surface_area" && n > 0) {
             next = withSegmentHeights(next, Array(n).fill(Math.max(0, Number(v) || 0)));
@@ -9002,6 +9064,12 @@ export default function TakeoffCanvas() {
   const applyFloatCondParam = (field, raw) => {
     const v = raw === "" ? null : Math.max(0, parseFloat(raw) || 0);
     applyFloatCondEdit({ [field]: v });
+  };
+  // Height / thickness share one condition value — keep the docked Takeoffs row
+  // and the floating Condition editor on the same live parameters.
+  const syncFloatCondParam = (field, raw) => {
+    if (field === "height_ft" || field === "thickness_in") setCondParam(field, raw);
+    else applyFloatCondParam(field, raw);
   };
   const applyFloatAssignAttr = (colId, v) => {
     const sel = selectedId ? shapesRef.current.find((s) => s.id === selectedId) : null;
@@ -9423,10 +9491,11 @@ export default function TakeoffCanvas() {
   // red dashed = unset ("you can't trace yet"), green = set, warning = the
   // plan notes a different scale than the one you picked
   const scaleDet = detectedScales[focusPanel.key];
-  const scaleMismatch = !!(unitsPerPx && stdValue && scaleDet && Math.abs(scaleDet.upp - unitsPerPx) > 1e-9);
-  const scaleFace = !unitsPerPx ? "Set scale…" : `${scaleMismatch ? "≠" : "✓"} ${stdValue || "custom"}`;
+  const autoscaleOn = scaleSources[focusPanel.key] === "autoscale";
+  const scaleMismatch = !!(unitsPerPx && stdValue && scaleDet && !autoscaleOn && Math.abs(scaleDet.upp - unitsPerPx) > 1e-9);
+  const scaleFace = !unitsPerPx ? "Autoscale" : autoscaleOn ? "✓ Autoscale" : `${scaleMismatch ? "≠" : "✓"} ${stdValue || "custom"}`;
   const scaleFaceStyle = !unitsPerPx
-    ? { border: "1px dashed var(--c-danger)", color: "var(--c-danger)" }
+    ? { border: "1px solid var(--c-positive)", color: "var(--c-positive)" }
     : scaleMismatch
       ? { border: "1px solid var(--c-warning)", color: "var(--c-warning)" }
       : { border: "1px solid var(--c-positive)", color: "var(--c-positive)" };
@@ -9436,8 +9505,18 @@ export default function TakeoffCanvas() {
   const scaleItems = [];
   // one-step revert after a rescale that changed committed quantities on this
   // sheet — the oops-hatch for a mistyped recalibrate (ephemeral, one slot)
-  scaleItems.push({ id: "calibrate", icon: "measure", label: "Calibrate two points…", title: "Calibrate — click two points of a known dimension", active: tool === "calibrate", onSelect: () => setTool("calibrate") });
+  scaleItems.push({ id: "calibrate", icon: "measure", label: "Set custom scale", title: "Calibrate — click two points of a known dimension", active: tool === "calibrate", onSelect: () => setTool("calibrate") });
   scaleItems.push({ id: "check", icon: "target", label: "Check a dimension…", shortcut: "K", title: "Check a dimension (K) — click both ends of a printed dimension string; compares the measured length against what the drawing says", active: tool === "check", onSelect: () => setTool("check") });
+  scaleItems.push("divider");
+  scaleItems.push({
+    id: "autoscale",
+    icon: "target",
+    tint: "var(--cobalt)",
+    label: "Autoscale",
+    active: autoscaleOn || !unitsPerPx,
+    title: "Detect the scale from the plan title block and apply it automatically. You can change it anytime from Standard or Calibrate.",
+    onSelect: () => { void applyAutoscale(focusPanel.key); },
+  });
   scaleItems.push("divider");
   if (prevScale && prevScale.key === focusPanel.key && scales[focusPanel.key] !== prevScale.upp) {
     const wasLabel = STANDARD_SCALES.find((x) => Math.abs(x.upp - prevScale.upp) < 1e-9)?.label
@@ -9467,7 +9546,7 @@ export default function TakeoffCanvas() {
     });
   }
   scaleItems.push({ section: "Standard" });
-  for (const s of STANDARD_SCALES) scaleItems.push({ id: s.label, label: s.label, active: stdValue === s.label, onSelect: () => { rescaleSheet(focusPanel.key, s.upp); setScaleSources((sc) => ({ ...sc, [focusPanel.key]: "standard" })); showScaleGuide(focusPanel.key, s.upp, s.label); } });
+  for (const s of STANDARD_SCALES) scaleItems.push({ id: s.label, label: s.label, active: !autoscaleOn && stdValue === s.label, onSelect: () => { rescaleSheet(focusPanel.key, s.upp); setScaleSources((sc) => ({ ...sc, [focusPanel.key]: "standard" })); showScaleGuide(focusPanel.key, s.upp, s.label); } });
   scaleItems.push({ note: "Remembered per sheet." });
 
   // One-Click fill sensitivity — lives in the render menu now, so arming
@@ -9850,9 +9929,9 @@ export default function TakeoffCanvas() {
             </header>
             <div className="cond-edit-float-body">
               <ConditionAppearanceEditor
-                cond={floatEditCond || aCond}
+                cond={floatEditCond && aCond ? { ...floatEditCond, height_ft: aCond.height_ft, thickness_in: aCond.thickness_in } : (floatEditCond || aCond)}
                 onUpdateCond={applyFloatCondEdit}
-                onSetCondParam={applyFloatCondParam}
+                onSetCondParam={syncFloatCondParam}
                 onAssignAttr={applyFloatAssignAttr}
                 conditionColumns={conditionColumns}
                 layout="row"
@@ -10144,6 +10223,7 @@ export default function TakeoffCanvas() {
                   onPatchCondition={updateCondById}
                   onShapeNavigate={flyToShape}
                   onClose={() => setLeftTab(null)}
+                  roomForShape={(s) => detectRoomName(s, boqDetectCtx, shapes) || s.room_detected || s.room || ""}
                 />
               )}
              {deskTab === "files" && (
@@ -10781,6 +10861,7 @@ export default function TakeoffCanvas() {
               });
             };
             const hasSource = !!(sym.schedule?.source_sheet);
+            const detailLinks = sym.kind === "detail" ? (sym.detail_links || []) : [];
             const hasEdits = !!(symbolNotes[noteKey] && Object.keys(symbolNotes[noteKey]).length);
             const openSource = () => {
               if (!sym.schedule?.source_sheet) return;
@@ -10788,6 +10869,14 @@ export default function TakeoffCanvas() {
                 sheetId: sym.schedule.source_sheet,
                 title: sym.schedule.source_title || sym.schedule.source_sheet,
                 bbox: sym.schedule.source_bbox || null,
+                tag: sym.tag,
+              });
+            };
+            const openDetailLink = (link) => {
+              setSymbolSourceView({
+                sheetId: link.sheet_id,
+                title: `${sym.tag} · ${link.title || link.sheet_id}`.replace(/^ · /, ""),
+                bbox: null,
                 tag: sym.tag,
               });
             };
@@ -10856,7 +10945,30 @@ export default function TakeoffCanvas() {
                       </label>
                     );
                   })}
-                  {hasSource && (
+                  {sym.kind === "detail" && detailLinks.length > 0 && (
+                    <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
+                      <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Detail sheets</div>
+                      {detailLinks.map((link) => (
+                        <button key={link.sheet_id} type="button" onClick={(e) => { e.stopPropagation(); openDetailLink(link); }}
+                          title="Open matching detail sheet in floating window"
+                          style={{
+                            display: "block", width: "100%", textAlign: "left", padding: "2px 0", border: "none",
+                            background: "transparent", cursor: "pointer", fontSize: 11.5, color: "var(--ink)",
+                            lineHeight: 1.35, fontFamily: "var(--f-body)", textDecoration: "underline",
+                            textUnderlineOffset: 2,
+                          }}>
+                          {link.title}
+                        </button>
+                      ))}
+                      {pinned && detailLinks[0] && (
+                        <button type="button" onClick={(e) => { e.stopPropagation(); openDetailLink(detailLinks[0]); }}
+                          style={{ width: "100%", marginTop: 8, padding: "6px 10px", border: "1px solid var(--ink)", background: "var(--paper-bright)", cursor: "pointer", fontSize: 12, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--f-body)" }}>
+                          Open in floating window →
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {sym.kind !== "detail" && hasSource && (
                     <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid var(--ink-faint)" }}>
                       <div style={{ fontSize: 10.5, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Source</div>
                       <button type="button" onClick={openSource}
@@ -10888,7 +11000,12 @@ export default function TakeoffCanvas() {
                       </button>
                     </div>
                   )}
-                  {!pinned && !hasSource && !fields.description && !fields.room_name && (
+                  {!pinned && sym.kind === "detail" && !detailLinks.length && !hasSource && (
+                    <div style={{ fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.45, marginTop: 2 }}>
+                      No matching detail sheet in project — upload the {sym.tag} PDF from Files.
+                    </div>
+                  )}
+                  {!pinned && sym.kind !== "detail" && !hasSource && !fields.description && !fields.room_name && (
                     <div style={{ fontSize: 11, color: "var(--ink-muted)", lineHeight: 1.45, marginTop: 2 }}>
                       No schedule match yet — click to enter details, or upload the door/finish schedule PDFs.
                     </div>
@@ -12282,6 +12399,7 @@ export default function TakeoffCanvas() {
               onPatchCondition={updateCondById}
               onShapeNavigate={flyToShape}
               onClose={() => setShowSummary(false)}
+              roomForShape={(s) => detectRoomName(s, boqDetectCtx, shapes) || s.room_detected || s.room || ""}
             />
           </FloatingWindow>
         )}

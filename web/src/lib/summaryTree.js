@@ -118,6 +118,7 @@ function computeShapeQty(shape, units = "imperial") {
  * @param {Record<string, boolean>|Set<string>} [options.hiddenShapeIds] Map/Set of hidden shape IDs
  * @param {string} [options.units] "imperial" | "metric"
  * @param {any[]} [options.boqLines] Optional BOQ line metadata
+ * @param {((shape: any) => string)|null} [options.roomForShape] Room name resolver (e.g. detectRoomName)
  * @returns {any[]} Tree of Floor nodes
  */
 export function buildSummaryTree({
@@ -128,6 +129,7 @@ export function buildSummaryTree({
   hiddenShapeIds = {},
   units = "imperial",
   boqLines = [],
+  roomForShape = null,
 } = {}) {
   const condMap = new Map((conditions || []).map((c) => [c.id, c]));
   const boqMetaMap = new Map((boqLines || []).map((l) => [l.id || `shape::${l.shape_id}`, l]));
@@ -206,7 +208,8 @@ export function buildSummaryTree({
 
         const q = computeShapeQty(s, units);
         const boqMeta = boqMetaMap.get(`shape::${s.id}`);
-        const roomName = boqMeta?.room || s.room || s.room_name || "";
+        const detectedRoom = typeof roomForShape === "function" ? roomForShape(s) : "";
+        const roomName = (boqMeta?.room || detectedRoom || s.room || s.room_name || s.room_detected || s.label || "").trim();
 
         codeMap.get(key).shapes.push({
           id: s.id,
