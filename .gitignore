@@ -46,3 +46,6 @@ mcp/dist-mcpb/
 # Voice model artifacts (~45 MB) — staged by web/scripts/fetch-voice-model.mjs
 # into public/ for same-origin serving; never committed (RFC #59)
 web/public/models/
+
+# pdf.js worker — copied by web/scripts/copy-pdf-worker.mjs on postinstall/dev
+web/public/pdf.worker.min.mjs

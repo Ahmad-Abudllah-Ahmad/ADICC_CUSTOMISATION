@@ -132,6 +132,7 @@ function DoorSchedulePicker({ options, onPick }) {
 
 export default function LiveReadoutBar({
   overlay = false,
+  visible = true,
   tool,
   aCond,
   activeCond,
@@ -185,24 +186,9 @@ export default function LiveReadoutBar({
 
   const expandedWall = showWallOpenings && wallSegmentRows.length > 1;
 
-  const hasLive = !!(
-    (tool === "oneclick" && proposal?.regions.length)
-    || (tool === "walltrace" && wallProposal?.regions.length)
-    || ((tool === "surface" || tool === "wallarea") && poly.length >= 2 && liveUpp)
-    || (tool === "zone" && poly.length >= 1)
-    || (liveArea != null && poly.length >= 3)
-    || (tool !== "oneclick" && proposal?.regions.length > 0)
-    || (tool !== "walltrace" && wallProposal?.regions.length > 0)
-    || showWallOpenings
-    || floorBeforeDeduction > 0 || floorAfterDeduction !== 0
-    || wallBeforeDeduction > 0 || wallAfterDeduction > 0
-  );
-
-  if (overlay && !hasLive) return null;
-
   return (
     <div
-      className={`live-readout-stack${overlay ? " live-readout-stack--overlay" : ""}${overlay && hasLive ? " has-focus" : ""}${expandedWall ? " is-wide" : ""}`}
+      className={`live-readout-stack${overlay ? " live-readout-stack--overlay" : ""}${overlay ? " has-focus" : ""}${expandedWall ? " is-wide" : ""}${visible ? "" : " is-view-hidden"}`}
       style={overlay ? undefined : { position: "absolute", top: 0, left: 0, zIndex: showWallOpenings ? 200 : 25, overflow: "visible", width: expandedWall ? 320 : 268, minWidth: expandedWall ? 300 : 220, maxWidth: expandedWall ? 360 : 280, fontVariantNumeric: "tabular-nums" }}
     >
       <div
@@ -272,6 +258,11 @@ export default function LiveReadoutBar({
               <div style={{ fontSize: 22, fontWeight: 700, color: tool === "deduct" ? "var(--c-danger)" : "var(--ink)" }}>{tool === "deduct" ? "−" : ""}{num(areaVal(liveArea, units))} <span style={{ fontSize: 13, fontWeight: 600 }}>{areaUnit(units)}</span></div>
               <div style={{ fontSize: 12.5, color: "var(--ink-secondary)", marginTop: 2 }}>{units === "metric" ? `${fl(livePerim)} perim` : `${num(liveArea / 9)} SY  ·  ${num(livePerim)} LF perim`}</div>
               {condH > 0 && <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>@H {num(condH, 2)}′: {fa(livePerim * condH)} vert{units === "metric" ? "" : ` · ${num((liveArea * condH) / 27)} CY`}</div>}
+            </>
+          ) : overlay ? (
+            <>
+              <div className="canvas-estimate-hud-val">{unitsPerPx ? fa(sheetFloorSf || 0) : "—"}</div>
+              <div className="canvas-estimate-hud-lbl">LIVE READOUT</div>
             </>
           ) : null}
           {tool !== "oneclick" && proposal?.regions.length > 0 && (() => {

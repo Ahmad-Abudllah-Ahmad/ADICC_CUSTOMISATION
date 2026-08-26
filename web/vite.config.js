@@ -32,10 +32,10 @@ export default defineConfig({
   assetsInclude: ["**/*.wasm"],
   server: {
     host: "127.0.0.1",
-    port: 5173,
+    port: 5180,
     strictPort: true,
     // HMR stays on the Vite port so the platform proxy only needs HTTP.
-    hmr: { host: "127.0.0.1", port: 5173, clientPort: 5173 },
+    hmr: { host: "127.0.0.1", port: 5180, clientPort: 5180 },
     proxy: {
       "/ai": "http://localhost:8000",
       "/rag": {

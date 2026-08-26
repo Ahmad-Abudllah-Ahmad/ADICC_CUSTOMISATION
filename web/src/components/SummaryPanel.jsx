@@ -48,7 +48,7 @@ function ColorPickerPopup({ currentColor, onClose, onSelectColor, anchorRect }) 
             height: 24,
             borderRadius: 4,
             background: c,
-            border: currentColor === c ? "2px solid var(--ink)" : "1px solid rgba(0,0,0,0.15)",
+            border: currentColor === c ? "2px solid var(--ink)" : "1px solid color-mix(in srgb, var(--ink) 18%, transparent)",
             cursor: "pointer",
             outline: "none",
             transform: currentColor === c ? "scale(1.1)" : "none",
@@ -411,7 +411,7 @@ export default function SummaryPanel({
       )}
 
       {/* Action Buttons Row (matching Files / neighbor tabs) */}
-      <div className="left-panel-glass-actions">
+      <div className="left-panel-glass-actions summary-panel-actions">
         <div className="lp-action-row" role="group" aria-label="Summary actions">
           <button type="button" className="lp-btn-primary" onClick={exportCsv} title="Export CSV summary">
             CSV
@@ -441,7 +441,7 @@ export default function SummaryPanel({
             name="summary-search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search files..."
+            placeholder="Search summary…"
             aria-label="Search summary"
             autoComplete="off"
           />
@@ -468,7 +468,7 @@ export default function SummaryPanel({
             gap: 6,
             padding: "6px 12px",
             borderBottom: "1px solid var(--ink-faint)",
-            background: "rgba(0,0,0,0.02)",
+            background: "color-mix(in srgb, var(--ink) 3%, transparent)",
             fontSize: 11,
           }}
         >
@@ -488,7 +488,7 @@ export default function SummaryPanel({
                   style={{
                     border: "1px solid",
                     borderColor: isSelected ? "var(--cobalt)" : "var(--ink-faint)",
-                    background: isSelected ? "rgba(31,63,199,0.08)" : "transparent",
+                    background: isSelected ? "color-mix(in srgb, var(--cobalt) 12%, transparent)" : "transparent",
                     color: isSelected ? "var(--cobalt)" : "var(--ink-muted)",
                     fontWeight: isSelected ? 700 : 500,
                     borderRadius: 4,
@@ -509,7 +509,7 @@ export default function SummaryPanel({
               style={{
                 border: "1px solid",
                 borderColor: selectedFloor === "all" ? "var(--cobalt)" : "var(--ink-faint)",
-                background: selectedFloor === "all" ? "rgba(31,63,199,0.08)" : "transparent",
+                background: selectedFloor === "all" ? "color-mix(in srgb, var(--cobalt) 12%, transparent)" : "transparent",
                 color: selectedFloor === "all" ? "var(--cobalt)" : "var(--ink-muted)",
                 fontWeight: selectedFloor === "all" ? 700 : 500,
                 borderRadius: 4,
@@ -608,7 +608,7 @@ export default function SummaryPanel({
                     {floor.children.map((typeNode) => {
                       const isTypeOpen = expandedNodes.has(typeNode.id);
                       return (
-                        <div key={typeNode.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                        <div key={typeNode.id} style={{ borderBottom: "1px solid color-mix(in srgb, var(--ink) 6%, transparent)" }}>
                           {/* Item Type Row */}
                           <div
                             style={{
@@ -616,7 +616,7 @@ export default function SummaryPanel({
                               alignItems: "center",
                               gap: 6,
                               padding: "5px 10px 5px 24px",
-                              background: "rgba(0,0,0,0.015)",
+                              background: "color-mix(in srgb, var(--ink) 2.5%, transparent)",
                               cursor: "pointer",
                               userSelect: "none",
                               fontSize: 11.5,
@@ -660,7 +660,7 @@ export default function SummaryPanel({
                                 const isEditing = editingCodeId === codeNode.condition_id;
 
                                 return (
-                                  <div key={codeNode.id} style={{ borderTop: "1px solid rgba(0,0,0,0.03)" }}>
+                                  <div key={codeNode.id} style={{ borderTop: "1px solid color-mix(in srgb, var(--ink) 5%, transparent)" }}>
                                     <div
                                       style={{
                                         display: "flex",
@@ -712,7 +712,7 @@ export default function SummaryPanel({
                                           height: 14,
                                           borderRadius: 3,
                                           background: codeNode.color || "#888",
-                                          border: "1px solid rgba(0,0,0,0.25)",
+                                          border: "1px solid color-mix(in srgb, var(--ink) 30%, transparent)",
                                           cursor: codeNode.condition_id ? "pointer" : "default",
                                           padding: 0,
                                           flexShrink: 0,
@@ -772,7 +772,7 @@ export default function SummaryPanel({
 
                                     {/* Shapes List Under Item Code */}
                                     {isCodeOpen && codeNode.shapes.length > 1 && (
-                                      <div style={{ background: "rgba(0,0,0,0.02)", padding: "2px 0 4px 54px" }}>
+                                      <div style={{ background: "color-mix(in srgb, var(--ink) 3%, transparent)", padding: "2px 0 4px 54px" }}>
                                         {codeNode.shapes.map((s, idx) => (
                                           <div
                                             key={s.id}

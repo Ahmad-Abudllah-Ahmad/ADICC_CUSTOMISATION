@@ -51,7 +51,7 @@ export default function SupabaseHome() {
   return (
     <div style={{
       position: "relative",
-      height: "100%", minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--paper-bright)", color: "var(--ink)",
+      height: "100%", minHeight: "100%", display: "flex", flexDirection: "column", background: "var(--stage)", color: "var(--ink)",
       fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       "--f-display": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       "--f-body": 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',

@@ -467,24 +467,17 @@ export default function PastProjectsPanel({
             </div>
           </BlurReveal>
         ) : (
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-            alignContent: "start",
-            gap: 18,
-            width: "100%",
-            flex: 1,
-            minHeight: 0,
-            overflow: "auto",
-          }}>
+          <div className="home-project-grid">
             {rows.filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii")).map((p, i) => {
               const active = p.id === currentProjectId;
               const renaming = renamingId === p.id;
               const busy = busyId === p.id;
               const highlighted = highlightId === p.id;
               const when = fmtCardDate(p.lastOpenedAt || p.updatedAt || p.createdAt);
+              const sheets = Number(p.sheetCount) || 0;
+              const takeoffs = Number(p.shapeCount) || 0;
               return (
-                <BlurReveal key={p.id} delay={Math.min(i * 100, 480)}>
+                <BlurReveal key={p.id} delay={Math.min(i * 100, 480)} style={{ height: "100%", minWidth: 0, overflow: "visible", paddingTop: 2 }}>
                 <div
                   data-project-id={p.id}
                   role="button"
@@ -495,65 +488,69 @@ export default function PastProjectsPanel({
                   onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !active && !renaming && !busy) { e.preventDefault(); openProject(p); } }}
                   style={{ cursor: active || renaming || busy ? "default" : "pointer" }}
                 >
-                  <ProjectPdfSlider projectId={p.id} sheetCount={p.sheetCount} />
-
-                  <div className="home-project-card-body">
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-                        <span style={{ color: "var(--ink-muted)", flexShrink: 0, display: "inline-flex" }}>
-                          <Icon name="product" size={15} />
+                  <div className="home-project-card-shell">
+                    <div className="home-project-preview-wrap">
+                      <ProjectPdfSlider projectId={p.id} sheetCount={p.sheetCount} />
+                      {sheets > 0 && (
+                        <span className="home-project-index-tab" aria-hidden="true">
+                          <b className="home-project-index-tab-n">{sheets}</b>
+                          <span className="home-project-index-tab-l">{sheets === 1 ? "sheet" : "sheets"}</span>
                         </span>
-                        {renaming ? (
-                          <input
-                            name="project-rename"
-                            value={renameDraft}
-                            autoFocus
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => setRenameDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") { e.preventDefault(); commitRename(p); }
-                              if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
-                            }}
-                            onBlur={() => commitRename(p)}
-                            style={{ flex: 1, minWidth: 0, padding: "4px 8px", border: "1px solid var(--ink-faint)", fontSize: 14, fontFamily: "var(--f-body)", borderRadius: 6 }}
-                          />
-                        ) : (
-                          <strong className="home-project-card-name" title={p.name}>
-                            {p.name}
-                          </strong>
-                        )}
-                      </div>
-                      <div className="home-project-card-org">
-                        <span style={{ display: "inline-flex", flexShrink: 0 }}><Icon name="pin" size={12} /></span>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>ADICC</span>
-                      </div>
+                      )}
+                      {active && <span className="home-project-card-now">Current</span>}
                     </div>
 
-                    {active && (
-                      <span className="home-project-card-now">Current</span>
-                    )}
-
-                    <div className="home-project-card-foot">
-                      {!active && !renaming ? (
-                        <div style={{ display: "flex", gap: 12, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                          <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} className="home-project-card-act">
-                            <Icon name="edit" size={12} />
-                            Rename
-                          </button>
-                          <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} className="home-project-card-act is-danger">
-                            <Icon name="trash" size={12} />
-                            Delete
-                          </button>
-                        </div>
+                    <div className="home-project-card-body">
+                      {renaming ? (
+                        <input
+                          name="project-rename"
+                          className="home-project-card-rename"
+                          value={renameDraft}
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); commitRename(p); }
+                            if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
+                          }}
+                          onBlur={() => commitRename(p)}
+                        />
                       ) : (
-                        <span />
+                        <strong className="home-project-card-name" title={p.name}>
+                          {p.name}
+                        </strong>
                       )}
-                      {when && (
-                        <div className="home-project-card-when">
-                          <Icon name="revisions" size={12} />
-                          {when}
-                        </div>
-                      )}
+                      <p className="home-project-card-meta">
+                        <span>ADICC</span>
+                        {takeoffs > 0 && (
+                          <>
+                            <span className="home-project-card-dot" aria-hidden="true" />
+                            <span>{takeoffs} {takeoffs === 1 ? "takeoff" : "takeoffs"}</span>
+                          </>
+                        )}
+                      </p>
+
+                      <div className="home-project-card-foot">
+                        {!active && !renaming ? (
+                          <div className="home-project-card-acts" onClick={(e) => e.stopPropagation()}>
+                            <button type="button" disabled={busy} onClick={(e) => startRename(p, e)} className="home-project-card-act">
+                              <Icon name="edit" size={13} />
+                              Rename
+                            </button>
+                            <button type="button" disabled={busy} onClick={(e) => deleteProject(p, e)} className="home-project-card-act is-danger">
+                              <Icon name="trash" size={13} />
+                              Delete
+                            </button>
+                          </div>
+                        ) : (
+                          <span />
+                        )}
+                        {when && (
+                          <div className="home-project-card-when">
+                            {when}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>

@@ -49,6 +49,7 @@
   --f-body:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --f-mono:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --f-mono-draft: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --f-card: "Fraunces", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
 
   /* hairlines */
   --rule: 1px solid var(--ink);

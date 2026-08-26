@@ -91,15 +91,16 @@ export function navigateToSupabaseProject(projectId, navigate) {
   try {
     localStorage.setItem("adicc_supabase_project_id", projectId);
   } catch { /* private mode */ }
-  const path = `/?db=${encodeURIComponent(projectId)}`;
+  // Keep the app's current mount path. In the ADICC production iframe that is
+  // `/takeoff/`; forcing `/` would navigate the frame into the parent Next app.
+  const url = new URL(window.location.href);
+  url.searchParams.set("db", projectId);
+  url.searchParams.delete("project");
+  const path = `${url.pathname}${url.search}${url.hash}`;
   if (typeof navigate === "function") {
     navigate(path);
     return;
   }
-  const url = new URL(window.location.href);
-  url.searchParams.set("db", projectId);
-  url.searchParams.delete("project");
-  url.pathname = "/";
   window.location.assign(url.toString());
 }
 
@@ -113,6 +114,5 @@ export function goSupabaseHome() {
   const url = new URL(window.location.href);
   url.searchParams.delete("db");
   url.searchParams.delete("project");
-  url.pathname = "/";
   window.location.assign(url.toString());
 }

@@ -1,8 +1,5 @@
-// TakeoffsPanel — the docked conditions panel on the canvas's right edge
-// (reflows the canvas, not an overlay): every condition with its running
-// totals and inline properties, plus the template Library, material-library
-// Materials (#47/#48), and custom Columns tabs. Extracted from TakeoffCanvas
-// and memoized so canvas-only renders (the
+// TakeoffsPanel — the right-edge conditions drawer (overlays the sheet; no
+// scrim). Extracted from TakeoffCanvas and memoized so canvas-only renders (the
 // ~11Hz transform mirror during pan/zoom, crosshair churn) skip this whole
 // subtree — every callback prop the canvas passes is identity-stable.
 //
@@ -810,8 +807,8 @@ function TakeoffsPanel({
     const hIdx = palette.length ? pinIdx : conditions.findIndex((x) => x.id === c.id);
     const hot = hIdx >= 0 && hIdx < 9;
     return (
-      <div key={c.id} data-cond-id={c.id} className={`takeoffs-panel-glass-row${on ? " is-active" : ""}${checked ? " is-checked" : ""}`} style={{ borderTop: "1px solid var(--ink-faint)" }}>
-        <div draggable
+      <div key={c.id} data-cond-id={c.id} className={`takeoffs-panel-glass-row${on ? " is-active" : ""}${checked ? " is-checked" : ""}`}>
+        <div className="tp-condition-hit" draggable
           onDragStart={(e) => { e.dataTransfer.setData(CONDITION_DND_MIME, c.id); e.dataTransfer.effectAllowed = "copy"; }}
           onClick={(e) => {
             if (e.metaKey || e.ctrlKey) { toggleChecked(c.id); return; }
@@ -820,13 +817,13 @@ function TakeoffsPanel({
           }}
           onDoubleClick={() => onLocate(c.id)}
           title={reassigning ? "Reassign selected shape to this condition" : "Make this the active condition (double-click zooms to its takeoffs · ⌘-click / ⇧-click selects for bulk edit · drag to the top-bar palette for one-click access)"}
-          style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: "pointer", outline: reassigning ? "1px dashed var(--cobalt)" : "none", outlineOffset: -3, userSelect: "none" }}>
-          {hot && <span title={pinned ? `Palette shortcut — press ${hIdx + 1} to activate` : `Press ${hIdx + 1} to activate (pin to lock this number)`} style={{ fontSize: 9, fontFamily: "var(--f-mono,monospace)", color: pinned ? "var(--cobalt)" : "var(--ink-soft)", fontWeight: 700, border: `1px solid ${pinned ? "var(--cobalt)" : "var(--ink-faint)"}`, borderRadius: 3, padding: "0 3px", flexShrink: 0 }}>{hIdx + 1}</span>}
-          <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontWeight: on ? 700 : 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.finish_tag}{mult > 1 ? <span style={{ color: "var(--ink-soft)", fontWeight: 600 }}> ×{mult}</span> : null}</div>
+          style={{ outline: reassigning ? "1px dashed var(--cobalt)" : "none", outlineOffset: -4 }}>
+          {hot && <span className={`tp-hotkey${pinned ? " is-pinned" : ""}`} title={pinned ? `Palette shortcut — press ${hIdx + 1} to activate` : `Press ${hIdx + 1} to activate (pin to lock this number)`}>{hIdx + 1}</span>}
+          <span className="tp-condition-swatch"><HatchSwatch type={c.hatch || "solid"} line={c.color} fill={c.fill} /></span>
+          <div className="tp-condition-copy">
+            <div className="tp-condition-tag">{c.finish_tag}{mult > 1 ? <span className="tp-condition-mult"> ×{mult}</span> : null}</div>
             {(sf || wsf || lf || ea) ? (
-              <div style={{ fontFamily: "var(--f-mono,monospace)", fontSize: 11, color: "var(--ink-soft)", fontWeight: 600 }}>
+              <div className="tp-condition-totals">
                 {sf ? fa(sf) : ""}{wsf ? `${sf ? " · " : ""}${fa(wsf)} wall` : ""}{lf ? `${sf || wsf ? " · " : ""}${fl(lf)}` : ""}{ea ? `${sf || wsf || lf ? " · " : ""}${num(ea, 0)} EA` : ""}
               </div>
             ) : null}
@@ -884,12 +881,12 @@ function TakeoffsPanel({
 
   if (!open) return null;
   const panelTabs = [
-    { id: "takeoffs", short: "Takeoffs", title: `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`, n: 0 },
-    { id: "library", short: "Library", title: `Library${templates.length ? ` (${templates.length})` : ""}`, n: templates.length },
-    { id: "materials", short: "Materials", title: `Materials${matLib.length ? ` (${matLib.length})` : ""}`, n: matLib.length },
-    { id: "columns", short: "Columns", title: `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`, n: conditionColumns.length },
+    { id: "takeoffs", short: "Takeoffs", scope: multiSheet ? "these sheets" : "this sheet", title: `Takeoffs · ${multiSheet ? "these sheets" : "this sheet"}`, n: 0 },
+    { id: "library", short: "Library", scope: templates.length ? `${templates.length}` : "templates", title: `Library${templates.length ? ` (${templates.length})` : ""}`, n: templates.length },
+    { id: "materials", short: "Materials", scope: matLib.length ? `${matLib.length}` : "library", title: `Materials${matLib.length ? ` (${matLib.length})` : ""}`, n: matLib.length },
+    { id: "columns", short: "Columns", scope: conditionColumns.length ? `${conditionColumns.length}` : "custom", title: `Columns${conditionColumns.length ? ` (${conditionColumns.length})` : ""}`, n: conditionColumns.length },
   ];
-  const activeTabLabel = panelTabs.find((t) => t.id === panelTab)?.title || "Takeoffs";
+  const activeTab = panelTabs.find((t) => t.id === panelTab) || panelTabs[0];
   return (
     <div ref={rootRef} className="takeoffs-panel-glass" style={{ width, flexShrink: 0, display: "flex", fontSize: 12.5 }}>
       <div onPointerDown={onResizeDown} onPointerMove={onResizeMove} onPointerUp={onResizeEnd}
@@ -898,43 +895,45 @@ function TakeoffsPanel({
         className="takeoffs-panel-glass-resize"
         style={{ width: 8, flexShrink: 0, cursor: "col-resize", touchAction: "none" }} />
       <div className="takeoffs-panel-glass-inner" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "row" }}>
-        <nav aria-label="Takeoffs panel sections" className="takeoffs-panel-glass-tabs" style={{ width: 104, flexShrink: 0, display: "flex", flexDirection: "column" }}>
+        <nav aria-label="Takeoffs panel sections" className="takeoffs-panel-glass-tabs">
           {panelTabs.map((t) => (
-            <button key={t.id} type="button" className={`takeoffs-panel-glass-tab${panelTab === t.id ? " is-active" : ""}`} onClick={() => setPanelTab(t.id)} aria-label={t.title}
-              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, width: "100%", padding: "12px 14px 12px 16px", border: "none", cursor: "pointer", fontWeight: panelTab === t.id ? 700 : 600, fontSize: 11, fontFamily: "var(--f-mono)", letterSpacing: "0.02em", textAlign: "left", lineHeight: 1.25 }}>
+            <button key={t.id} type="button" className={`takeoffs-panel-glass-tab${panelTab === t.id ? " is-active" : ""}`} onClick={() => setPanelTab(t.id)} aria-label={t.title}>
               <span>{t.short}</span>
               {t.n ? <span className="takeoffs-panel-glass-tab-n">{t.n}</span> : null}
             </button>
           ))}
         </nav>
         <div className="takeoffs-panel-glass-body" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-        <div className="takeoffs-panel-glass-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "7px 12px", flexShrink: 0 }}>
-          <span style={{ fontFamily: "var(--f-mono)", fontSize: 11, letterSpacing: "0.06em", fontWeight: 700, lineHeight: 1.35 }}>{activeTabLabel}</span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <div className="takeoffs-panel-glass-header">
+          <span className="takeoffs-panel-glass-title">
+            <span className="tp-title-main">{activeTab.short}</span>
+            <span className="tp-title-scope">{activeTab.scope}</span>
+          </span>
+          <span className="takeoffs-panel-glass-header-actions">
             <button type="button" className={`takeoffs-panel-glass-strip${panelPrefs.strip ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, strip: !p.strip }))}
               aria-label="Compact strip — also show the conditions as a horizontal strip above the canvas"
-              style={{ fontSize: 9.5, fontFamily: "var(--f-mono)", letterSpacing: "0.08em", textTransform: "uppercase", cursor: "pointer", padding: "2px 8px", lineHeight: 1.4, borderRadius: 999 }}>strip</button>
+              >Strip</button>
             <button type="button" className="takeoffs-panel-glass-close" onClick={onToggleCollapse} aria-label="Close panel"
-              style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 2px" }}>×</button>
+              >×</button>
           </span>
         </div>
         {panelTab === "takeoffs" && <>
-        <div className="takeoffs-panel-glass-actions" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", borderBottom: "1px solid var(--ink-faint)", flexShrink: 0 }}>
+        <div className="takeoffs-panel-glass-actions">
           <input name="condition-filter" className="takeoffs-panel-glass-filter" value={condQuery} onChange={(e) => setCondQuery(e.target.value)} placeholder="filter conditions…"
-            style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 999, fontSize: 12 }} />
+            />
           {condQuery && <button type="button" className="takeoffs-panel-glass-clear" onClick={() => setCondQuery("")} aria-label="Clear the filter" style={btnClearX}>×</button>}
           <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.az ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, az: !p.az }))}
             aria-label="Natural sort by tag (CT-2 before CT-10) — a view; hotkeys 1–9 keep their original numbering"
-            style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>A→Z</button>
+            >A→Z</button>
           <button type="button" className={`takeoffs-panel-glass-toggle${panelPrefs.group ? " is-on" : ""}`} onClick={() => onPanelPrefs((p) => ({ ...p, group: !p.group }))}
             aria-label="Group by tag family (the text before the dash: CPT, LVT, CT…)"
-            style={{ padding: "3px 9px", borderRadius: 999, cursor: "pointer", fontSize: 10.5, fontFamily: "var(--f-mono)", lineHeight: 1.4 }}>≡ grp</button>
+            ><span aria-hidden="true">≡</span> Group</button>
         </div>
         {/* bulk actions — appear while a ⌘/⇧ multi-selection is live
             (liveChecked: the count never claims ids the list lost) */}
         {liveChecked.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 10px", borderBottom: "1px solid var(--ink-faint)", background: "var(--tint-select)", flexShrink: 0, flexWrap: "wrap", fontSize: 11 }}>
-            <strong style={{ color: "var(--cobalt)" }}>{liveChecked.length} selected</strong>
+          <div className="tp-bulk-bar">
+            <strong>{liveChecked.length} selected</strong>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }} title="Set the waste % on every selected condition">
               <span style={{ color: "var(--ink)", fontWeight: 600 }}>Waste</span>
               <input name="bulk-waste" type="number" min="0" step="1" value={bulkWaste} onChange={(e) => setBulkWaste(e.target.value)} placeholder="%"
@@ -952,7 +951,7 @@ function TakeoffsPanel({
           </div>
         )}
         <div className="takeoffs-panel-glass-scroll" style={{ flex: 1, overflow: "auto" }}>
-          {conditions.length === 0 && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>No conditions yet — add one and start tracing.</div>}
+          {conditions.length === 0 && <div className="tp-empty-state">No conditions yet — add one and start tracing.</div>}
           {condGroups.map((g) => (
             <React.Fragment key={g.name ?? "_all"}>
               {g.name != null && (
@@ -969,11 +968,11 @@ function TakeoffsPanel({
               {groupVisibleItems(g).map(({ c }) => renderCondRow(c))}
             </React.Fragment>
           ))}
-          {searchMiss && <div style={{ padding: "12px", color: "var(--ink-muted)" }}>No conditions match “{condQuery}”.</div>}
-          <div style={{ padding: "6px 12px", borderTop: "1px solid var(--ink-faint)" }}>
-            <button onClick={onAddCondition} style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--ink-muted)" }}>+ condition</button>
+          {searchMiss && <div className="tp-empty-state">No conditions match “{condQuery}”.</div>}
+          <div className="tp-add-condition-wrap">
+            <button className="tp-add-condition" onClick={onAddCondition}><Icon name="plus" size={13} /> Add condition</button>
           </div>
-          <div style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)", color: "var(--ink-muted)", fontSize: 10.5 }}>
+          <div className="tp-panel-help">
             Select a shape on the plan, then ⧉ Copy / ⎘ Paste (⌘C / ⌘V) — it lands on the sheet under your cursor.
             <br />⌫ undo point · Esc cancel · scroll = zoom · pan mid-measure: press-and-drag (a click without dragging places the point).
           </div>
@@ -981,20 +980,20 @@ function TakeoffsPanel({
         </>}
         {/* Library tab — reusable condition templates, browser-wide */}
         {panelTab === "library" && (
-          <div style={{ flex: 1, overflow: "auto" }}>
-            <div style={{ padding: "8px 12px 4px", color: "var(--ink-muted)", fontSize: 11 }}>
+          <div className="tp-tab-scroll tp-library-tab">
+            <div className="tp-tab-intro">
               Reusable condition templates, shared across every plan in this browser. A fresh workspace seeds from this library (built-in flooring defaults when it's empty).
             </div>
-            <div style={{ padding: "6px 12px 10px" }}>
+            <div className="tp-tab-primary-action">
               <button onClick={onSaveTemplate} disabled={!aCond}
                 title="Snapshot the active condition (appearance, waste, H/T, materials) into the library"
                 style={{ width: "100%", padding: "6px 10px", borderRadius: 0, border: "1px dashed var(--ink-faint)", background: "transparent", cursor: aCond ? "pointer" : "default", fontSize: 12, color: aCond ? "var(--ink)" : "var(--ink-faint)" }}>
                 + save {aCond?.finish_tag || "the active condition"} to the library
               </button>
             </div>
-            {templates.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>No templates yet — make a condition the way you like it, then save it here.</div>}
+            {templates.length === 0 && <div className="tp-empty-state">No templates yet — make a condition the way you like it, then save it here.</div>}
             {templates.map((t, idx) => (
-              <div key={`${t.finish_tag}-${idx}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderTop: "1px solid var(--ink-faint)" }}>
+              <div key={`${t.finish_tag}-${idx}`} className="tp-library-row">
                 <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, flexShrink: 0 }}><HatchSwatch type={t.hatch || "solid"} line={t.color} fill={t.fill} /></span>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.finish_tag}</div>
@@ -1017,20 +1016,20 @@ function TakeoffsPanel({
             COPY on attach (lib_id link); edits here never propagate unless
             explicitly pushed to linked lines. */}
         {panelTab === "materials" && (
-          <div style={{ flex: 1, overflow: "auto", fontSize: 11.5 }}>
-            <div style={{ padding: "8px 12px 4px", color: "var(--ink-muted)", fontSize: 11 }}>
+          <div className="tp-tab-scroll tp-material-library-tab">
+            <div className="tp-tab-intro">
               Reusable materials, browser-wide. Attaching one to a condition copies its values and keeps a link — edits here only reach linked lines when you push them.
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px 8px" }}>
+            <div className="tp-tab-filter-row">
               <input name="material-library-filter" value={matLibQuery} onChange={(e) => setMatLibQuery(e.target.value)} placeholder="filter materials…"
                 style={{ flex: 1, minWidth: 0, padding: "4px 8px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12 }} />
               {matLibQuery && <button onClick={() => setMatLibQuery("")} title="Clear the filter" style={btnClearX}>×</button>}
             </div>
-            {matLib.length === 0 && <div style={{ padding: "2px 12px 12px", color: "var(--ink-muted)" }}>No library materials yet — add one below, or save a condition material with the box icon.</div>}
+            {matLib.length === 0 && <div className="tp-empty-state">No library materials yet — add one below, or save a condition material with the box icon.</div>}
             {matLib.filter((lm) => !matQ || (lm.name || "").toLowerCase().includes(matQ)).map((lm) => {
               const n = linkedCountById[lm.id] || 0;
               return (
-                <div key={lm.id} style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)" }}>
+                <div key={lm.id} className="tp-library-material-row">
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     {/* name is draft-buffered like per/note (round-3 finding 3): a per-keystroke
                         commit routes every transient value through libEntryPatch's rename
@@ -1068,7 +1067,7 @@ function TakeoffsPanel({
                 </div>
               );
             })}
-            <div style={{ padding: "6px 12px", borderTop: matLib.length ? "1px solid var(--ink-faint)" : "none" }}>
+            <div className="tp-tab-primary-action">
               <button onClick={onAddLibMaterial} style={btnAddFull}>+ add library material</button>
             </div>
           </div>
@@ -1077,7 +1076,7 @@ function TakeoffsPanel({
             vocabulary; per-condition assignment lives in the active row's
             properties on the Takeoffs tab */}
         {panelTab === "columns" && (
-          <div style={{ flex: 1, overflow: "auto", fontSize: 11.5 }}>
+          <div className="tp-tab-scroll tp-columns-tab">
             {/* Shape labels (#110) — a flat project-level vocabulary; each shape
                 carries at most one label. Lives here rather than a 5th panel tab:
                 it's the degenerate single-column case. */}
@@ -1101,12 +1100,12 @@ function TakeoffsPanel({
                 <AddValueInput onAdd={onAddLabel} />
               </div>
             </details>
-            <div style={{ padding: "8px 12px 4px", color: "var(--ink-muted)", fontSize: 11 }}>
+            <div className="tp-tab-intro">
               Custom columns (e.g. CSI Division) classify conditions for report grouping and exports. Columns and values apply to the whole project; assign values on a condition in the Takeoffs tab.
             </div>
-            {conditionColumns.length === 0 && <div style={{ padding: "2px 12px 8px", color: "var(--ink-muted)" }}>Add a column, e.g. CSI Division.</div>}
+            {conditionColumns.length === 0 && <div className="tp-empty-state">Add a column, e.g. CSI Division.</div>}
             {conditionColumns.map((cc) => (
-              <div key={cc.id} style={{ padding: "8px 12px", borderTop: "1px solid var(--ink-faint)" }}>
+              <div key={cc.id} className="tp-column-row">
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
                   <input name="column-name" value={cc.name} onChange={(e) => onRenameColumn(cc.id, e.target.value)} placeholder="Column name (e.g. CSI Division)"
                     style={{ padding: "3px 6px", borderRadius: 0, border: "1px solid var(--ink-faint)", fontSize: 12, flex: 1, minWidth: 0 }} />
@@ -1127,7 +1126,7 @@ function TakeoffsPanel({
                 </div>
               </div>
             ))}
-            <div style={{ padding: "6px 12px", borderTop: conditionColumns.length ? "1px solid var(--ink-faint)" : "none" }}>
+            <div className="tp-tab-primary-action">
               <button onClick={onAddColumn} style={btnAddFull}>+ add column</button>
             </div>
           </div>

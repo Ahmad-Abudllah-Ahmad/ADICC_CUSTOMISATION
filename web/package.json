@@ -6,9 +6,9 @@
   "description": "OpenTakeoff — a free, open-source PDF takeoff canvas for flooring contractors.",
   "license": "Apache-2.0",
   "scripts": {
-    "postinstall": "node scripts/copy-libredwg-wasm.mjs",
-    "dev": "node scripts/copy-libredwg-wasm.mjs && vite",
-    "build": "node scripts/copy-libredwg-wasm.mjs && vite build",
+    "postinstall": "node scripts/copy-libredwg-wasm.mjs && node scripts/copy-pdf-worker.mjs",
+    "dev": "node scripts/copy-libredwg-wasm.mjs && node scripts/copy-pdf-worker.mjs && vite",
+    "build": "node scripts/copy-libredwg-wasm.mjs && node scripts/copy-pdf-worker.mjs && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",

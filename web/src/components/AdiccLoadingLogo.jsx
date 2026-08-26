@@ -2,7 +2,10 @@
 // then fills solid, then resets — loops until unmounted.
 import React from "react";
 
-export default function AdiccLoadingLogo() {
+export default function AdiccLoadingLogo({ compact = false }) {
+  const w = compact ? 118 : 148;
+  const h = compact ? 30 : 36;
+  const size = compact ? 21 : 26;
   return (
     <>
       <style>{`
@@ -21,8 +24,11 @@ export default function AdiccLoadingLogo() {
           paint-order: stroke fill;
           animation: adicc-logo-draw 2.5s cubic-bezier(0.4, 0.05, 0.45, 0.95) infinite;
         }
+        @media (prefers-reduced-motion: reduce) {
+          .adicc-logo-draw-text { animation: none; fill-opacity: 1; stroke-opacity: 0; }
+        }
       `}</style>
-      <svg width="148" height="36" viewBox="0 0 148 36" role="img" aria-label="ADICC" style={{ display: "block" }}>
+      <svg width={w} height={h} viewBox="0 0 148 36" role="img" aria-label="ADICC" style={{ display: "block" }}>
         <text
           x="74"
           y="26"
@@ -30,7 +36,7 @@ export default function AdiccLoadingLogo() {
           className="adicc-logo-draw-text"
           style={{
             fontFamily: "var(--f-display)",
-            fontSize: 26,
+            fontSize: size,
             fontWeight: 700,
             letterSpacing: "-0.02em",
             fill: "var(--ink)",

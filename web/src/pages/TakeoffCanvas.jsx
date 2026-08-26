@@ -16,7 +16,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { flushSync } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { pdfjsWorkerSrc } from "../lib/pdfWorkerSrc.js";
 import { store, isStaleTabError, STALE_TAB_MESSAGE, projectIdFromUrl } from "../lib/store.js";
 import { isSupabaseConfigured } from "../lib/supabaseStore.js";
 import { aiFloorSheetKeysMatch } from "../lib/supabase/persist.js";
@@ -101,7 +101,7 @@ import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
 import AdiccLoadingLogo from "../components/AdiccLoadingLogo.jsx";
-import { ChevronLeft, ChevronRight, Contrast, FileStack, Folder, FolderOpen, Map as MapIcon, Menu, Minus, Plus, Redo2, Scan, Search, Undo2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Contrast, FileStack, Folder, FolderOpen, Map as MapIcon, Maximize2, Minimize2, Minus, Plus, Redo2, Scan, Search, Undo2, X } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
@@ -158,6 +158,14 @@ import * as panelGeom from "../lib/panelGeometry.js";
 // Carpet roll width — a run reaching this needs a seam. The live cursor readout
 // turns amber at/past it so the estimator sees where seams fall while tracing.
 const CARPET_ROLL_FT = 12;
+const VIEW_PREFS_KEY = "opentakeoff_view_prefs_v2";
+const VIEW_DEFAULTS = {
+  estimate: false,
+  readout: false,
+  rulers: false,
+  grid: false,
+  scaleBar: true,
+};
 
 /** Plan marks that can prefill wall-opening deducts (D/SD doors, CW/GD curtain & glass). */
 function isWallOpeningSymbol(sym) {
@@ -200,7 +208,7 @@ function hitShapeC(s, x, y, w, h, thr) {
   return hitShape({ ...s, verts_norm: flat.map(([px, py]) => [px / w, py / h]) }, x, y, w, h, thr);
 }
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc();
 
 // Hatch templates, palette, NO_FILL, and the HatchPattern/HatchSwatch pieces
 // live in components/hatches.jsx — shared with the TakeoffsPanel.
@@ -230,6 +238,14 @@ const DRAWINGS_ASK_HINTS = [
   "What door tags appear on the 1st floor plan?",
 ];
 const LP_TAB_ORDER = ["summary", "files", "sheets", "markup", "stamp", "rfi"];
+const LP_TAB_LABELS = {
+  summary: "Summary",
+  files: "Files",
+  sheets: "Sheets",
+  markup: "Markups",
+  stamp: "Stamps",
+  rfi: "RFIs",
+};
 // Top-bar quick-access condition palette: a curated handful (≤9) of pinned
 // conditions for one-click activation without leaving the canvas. Palette holds
 // condition ids (workspace-scoped), so it persists with the annotation payload,
@@ -326,23 +342,32 @@ function EstimateValueSpark({ series, currency }) {
   );
 }
 
-function useOpenMotion(open, durationMs = 280) {
+function useOpenMotion(open, durationMs = 360) {
   const [shown, setShown] = useState(() => !!open);
   const [entered, setEntered] = useState(() => !!open);
-  // Re-open before the close animation finishes — keep the shell visible so rapid
-  // Summary / Files toggles never flash an empty opacity-0 panel (blank screen).
+  // Enter: mount closed, then flip to open on the next frames so CSS can interpolate.
+  // Exit: drop entered immediately, unmount after the transition duration.
   useLayoutEffect(() => {
-    if (open) {
-      setShown(true);
-      setEntered(true);
-    }
-  }, [open]);
-  useEffect(() => {
+    if (!open) return undefined;
+    setShown(true);
     const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (open) {
-      if (reduce) setEntered(true);
+    if (reduce) {
+      setEntered(true);
       return undefined;
     }
+    setEntered(false);
+    let raf2 = 0;
+    const raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(() => setEntered(true));
+    });
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      if (raf2) window.cancelAnimationFrame(raf2);
+    };
+  }, [open]);
+  useEffect(() => {
+    if (open) return undefined;
+    const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     setEntered(false);
     const id = window.setTimeout(() => setShown(false), reduce ? 0 : durationMs);
     return () => window.clearTimeout(id);
@@ -425,12 +450,21 @@ export default function TakeoffCanvas() {
   // Layers has its own rail icon. One folder icon opens/closes this desk; tabs switch inside.
   const [leftTab, setLeftTab] = useState(null);
   const [lpTabsOverflow, setLpTabsOverflow] = useState({ start: false, end: false });
+  const leftDesk = useOpenMotion(!!leftTab);
   const [illLayersOpen, setIllLayersOpen] = useState(false); // Illustrator-style Layers panel (live shapes)
   const lastLeftTabRef = useRef("files");
   const toggleLeftDesk = useCallback(() => {
+    setIllLayersOpen(false);
     setLeftTab((cur) => {
       if (cur) return null;
       const next = lastLeftTabRef.current === "layers" ? "files" : (lastLeftTabRef.current || "files");
+      return next;
+    });
+  }, []);
+  const toggleLayersPanel = useCallback(() => {
+    setIllLayersOpen((open) => {
+      const next = !open;
+      if (next) setLeftTab(null);
       return next;
     });
   }, []);
@@ -471,7 +505,7 @@ export default function TakeoffCanvas() {
       el.removeEventListener("scroll", sync);
       el.removeEventListener("wheel", onWheel);
     };
-  }, [leftTab]);
+  }, [leftTab, leftDesk.shown]);
   const shiftLpTabs = (dir) => {
     const el = lpTabsScrollRef.current;
     if (!el) return;
@@ -479,9 +513,9 @@ export default function TakeoffCanvas() {
   };
   const [sheetsSearch, setSheetsSearch] = useState("");
   const toggleSheetsTab = useCallback(() => {
+    setIllLayersOpen(false);
     setLeftTab((cur) => (cur === "sheets" ? null : "sheets"));
   }, []);
-  const leftDesk = useOpenMotion(!!leftTab);
   const leftTabHoldRef = useRef(leftTab);
   if (leftTab) leftTabHoldRef.current = leftTab;
   const deskTab = leftTab || (leftDesk.shown ? leftTabHoldRef.current : null);
@@ -506,15 +540,38 @@ export default function TakeoffCanvas() {
   const [layerPickIds, setLayerPickIds] = useState({});
   const [layerForest, setLayerForest] = useState({});
   const layerTargetSheetRef = useRef(null);
-  const leftCanvasWork = deskTab === "markup" || deskTab === "stamp" || deskTab === "summary";
+  useEffect(() => { if (leftTab) setIllLayersOpen(false); }, [leftTab]);
   useEffect(() => { if (!openTabs.length) setLeftTab((cur) => (cur === "sheets" ? "files" : cur)); }, [openTabs.length]);
   const [minimapOpen, setMinimapOpen] = useState(() => {
     try { return localStorage.getItem("opentakeoff_minimap") !== "0"; } catch { return true; }
   });
   useEffect(() => { try { localStorage.setItem("opentakeoff_minimap", minimapOpen ? "1" : "0"); } catch { /* private mode */ } }, [minimapOpen]);
+  const [viewPrefs, setViewPrefs] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) || "{}");
+      const next = { ...VIEW_DEFAULTS };
+      if (saved && typeof saved === "object" && !Array.isArray(saved)) {
+        for (const key of Object.keys(VIEW_DEFAULTS)) {
+          if (typeof saved[key] === "boolean") next[key] = saved[key];
+        }
+      }
+      return next;
+    } catch { return { ...VIEW_DEFAULTS }; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify(viewPrefs)); } catch { /* private mode */ }
+  }, [viewPrefs]);
+  const [canvasExpanded, setCanvasExpanded] = useState(false);
+  const viewStateRef = useRef({ ...viewPrefs, minimap: minimapOpen, expanded: canvasExpanded });
+  viewStateRef.current = { ...viewPrefs, minimap: minimapOpen, expanded: canvasExpanded };
   const minimapCanvasRef = useRef(null);
   const minimapViewRef = useRef(null);
+  const zoomBarRef = useRef(null);
+  const [minimapPaintEpoch, setMinimapPaintEpoch] = useState(0);
+  const rulerXRef = useRef(null);
+  const rulerYRef = useRef(null);
   const minimapScaleRef = useRef(0);
+  const minimapLayoutRef = useRef({ boxW: 0, boxH: 0, ox: 0, oy: 0, s: 0 });
   const minimapDragRef = useRef(false);
   const [showMarkups, setShowMarkups] = useState(true);       // markup SVG layer visibility (orthogonal to the export checkbox)
   const [editor, setEditor] = useState(null);                 // inline on-canvas text editor { left, top, value, multiline, commit } (retires window.prompt; screen-space overlay, NOT an SVG child)
@@ -534,6 +591,16 @@ export default function TakeoffCanvas() {
       return { ...PANEL_DEFAULTS, ...(p && typeof p === "object" && !Array.isArray(p) ? p : {}) };
     } catch { return { ...PANEL_DEFAULTS }; }
   });
+  // The ADICC platform can temporarily clear canvas chrome without touching
+  // project data or takeoff state. Visibility is session-only; the existing
+  // Takeoffs collapsed preference remains the sole persisted drawer setting.
+  const [toolbarChrome, setToolbarChrome] = useState({
+    measureVisible: true,
+    workspaceVisible: true,
+  });
+  const toolbarChromeRef = useRef(toolbarChrome);
+  const workspaceBarRef = useRef(null);
+  toolbarChromeRef.current = toolbarChrome;
   // Panel VIEW state (tab, filter, collapsed groups, ⌘/⇧ multi-select) lives
   // in the TakeoffsPanel component. Two hooks back into it from here:
   const [panelEpoch, setPanelEpoch] = useState(0);   // bumped by hydrate — the panel clears the transients that described the replaced conditions
@@ -555,6 +622,38 @@ export default function TakeoffCanvas() {
   const [detectedScales, setDetectedScales] = useState({}); // { sheetKey: {upp,label,multi} } read off the plan text
   const [darkMode, setDarkMode] = useState(() => { try { return localStorage.getItem("opentakeoff_dark") === "1"; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem("opentakeoff_dark", darkMode ? "1" : "0"); } catch { /* private mode */ } }, [darkMode]);
+  const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
+  useEffect(() => {
+    if (!isEmbedded) return undefined;
+    const onPointerDown = () => {
+      try {
+        window.parent?.postMessage({ source: "opentakeoff", type: "adicc:host-pointer-down" }, "*");
+      } catch { /* cross-origin embed */ }
+    };
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, [isEmbedded]);
+  useEffect(() => {
+    if (isEmbedded) return undefined;
+    const onFullscreen = () => setCanvasExpanded(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFullscreen);
+    return () => document.removeEventListener("fullscreenchange", onFullscreen);
+  }, [isEmbedded]);
+  useEffect(() => {
+    const onMsg = (e) => {
+      const d = e?.data;
+      if (!d || d.source !== "adicc-platform" || d.type !== "adicc:sheet-invert-toggle") return;
+      setDarkMode((v) => !v);
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+  useEffect(() => {
+    if (view !== "canvas" || status !== "ready") return;
+    try {
+      window.parent?.postMessage({ source: "opentakeoff", type: "adicc:sheet-invert-state", active: darkMode }, "*");
+    } catch { /* cross-origin embed */ }
+  }, [darkMode, view, status]);
   // diff-only prefs (cf. reportColumns): only keys that differ from the
   // defaults persist, so a future default change reaches existing users
   useEffect(() => {
@@ -566,7 +665,21 @@ export default function TakeoffCanvas() {
   }, [panelPrefs]);
   const panelW = clampPanelW(Number(panelPrefs.w) || PANEL_DEFAULTS.w);
   const takeoffsOpen = !panelPrefs.collapsed;
-  const toggleTakeoffs = () => setPanelPrefs((p) => ({ ...p, collapsed: !p.collapsed }));
+  toolbarChromeRef.current = { ...toolbarChrome, takeoffsVisible: takeoffsOpen };
+  const toggleTakeoffs = useCallback(() => {
+    setPanelPrefs((p) => ({ ...p, collapsed: !p.collapsed }));
+  }, []);
+  const setToolbarVisible = useCallback((tool, visible) => {
+    if (tool === "takeoffs") {
+      setPanelPrefs((current) => ({ ...current, collapsed: !visible }));
+    } else {
+      const key = tool === "measure" ? "measureVisible" : "workspaceVisible";
+      setToolbarChrome((current) => ({
+        ...current,
+        [key]: visible,
+      }));
+    }
+  }, []);
   const [takeoffsShown, setTakeoffsShown] = useState(takeoffsOpen);
   const [takeoffsEntered, setTakeoffsEntered] = useState(takeoffsOpen);
   useEffect(() => {
@@ -967,8 +1080,15 @@ export default function TakeoffCanvas() {
   }, []);
   // Tell the ADICC TopNav a project/sheet canvas is open so "All projects" shows.
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const projectId = params.get("db") || params.get("project") || "";
     try {
-      window.parent?.postMessage({ source: "opentakeoff", type: "adicc:sheets-view", active: true }, "*");
+      window.parent?.postMessage({
+        source: "opentakeoff",
+        type: "adicc:sheets-view",
+        active: true,
+        projectId,
+      }, "*");
     } catch { /* cross-origin embed */ }
     return () => {
       try {
@@ -1029,6 +1149,164 @@ export default function TakeoffCanvas() {
   const [showFinishesSchedule, setShowFinishesSchedule] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const paletteRef = useRef(null);
+  useEffect(() => {
+    const onMsg = (e) => {
+      const d = e?.data;
+      if (!d || d.source !== "adicc-platform" || d.type !== "adicc:canvas-subnav") return;
+      const action = d.action;
+      if (action === "files") {
+        setIllLayersOpen(false);
+        setLeftTab((cur) => {
+          if (cur && cur !== "summary") return null;
+          const next = lastLeftTabRef.current === "layers" ? "files" : (lastLeftTabRef.current || "files");
+          return next;
+        });
+      } else if (action === "tools") {
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+  const postToolbarState = useCallback(() => {
+    const current = toolbarChromeRef.current;
+    try {
+      window.parent?.postMessage({
+        source: "opentakeoff",
+        type: "adicc:toolbar-state",
+        tools: {
+          measure: { visible: current.measureVisible },
+          workspace: { visible: current.workspaceVisible },
+          takeoffs: { visible: current.takeoffsVisible },
+        },
+      }, "*");
+    } catch { /* cross-origin embed */ }
+  }, []);
+  useEffect(() => {
+    postToolbarState();
+  }, [
+    postToolbarState,
+    toolbarChrome.measureVisible,
+    toolbarChrome.workspaceVisible,
+    takeoffsOpen,
+  ]);
+  useLayoutEffect(() => {
+    const bar = workspaceBarRef.current;
+    const shell = bar?.closest(".app-shell");
+    if (!bar || !shell) return undefined;
+    const apply = () => {
+      shell.style.setProperty("--workspace-chrome-h", `${bar.offsetHeight}px`);
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(apply);
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      shell.style.removeProperty("--workspace-chrome-h");
+    };
+  }, [status, toolbarChrome.workspaceVisible, view]);
+  useEffect(() => {
+    const onToolbarControl = (e) => {
+      const d = e?.data;
+      if (!d || d.source !== "adicc-platform" || d.type !== "adicc:toolbar-control") return;
+      if (d.action === "request-state") {
+        postToolbarState();
+        return;
+      }
+      if (!["measure", "workspace", "takeoffs"].includes(d.tool)) return;
+      const current = toolbarChromeRef.current;
+      if (d.action === "toggle-visible") {
+        const visible = d.tool === "measure"
+          ? current.measureVisible
+          : d.tool === "workspace"
+            ? current.workspaceVisible
+            : current.takeoffsVisible;
+        const nextVisible = !visible;
+        setToolbarVisible(d.tool, nextVisible);
+      }
+    };
+    window.addEventListener("message", onToolbarControl);
+    return () => window.removeEventListener("message", onToolbarControl);
+  }, [postToolbarState, setToolbarVisible]);
+  const postViewState = useCallback(() => {
+    const current = viewStateRef.current;
+    try {
+      window.parent?.postMessage({
+        source: "opentakeoff",
+        type: "adicc:view-state",
+        views: {
+          estimate: current.estimate,
+          readout: current.readout,
+          minimap: current.minimap,
+          rulers: current.rulers,
+          grid: current.grid,
+          scaleBar: current.scaleBar,
+        },
+      }, "*");
+    } catch { /* cross-origin embed */ }
+  }, []);
+  useEffect(() => {
+    postViewState();
+  }, [postViewState, minimapOpen, viewPrefs]);
+  useEffect(() => {
+    const onViewControl = (e) => {
+      const d = e?.data;
+      if (!d || d.source !== "adicc-platform") return;
+      if (d.type === "adicc:view-control") {
+        if (d.action === "request-state") {
+          postViewState();
+          return;
+        }
+        if (d.action !== "toggle") return;
+        if (d.view === "minimap") {
+          setMinimapOpen((visible) => !visible);
+          return;
+        }
+        if (!["estimate", "readout", "rulers", "grid", "scaleBar"].includes(d.view)) return;
+        setViewPrefs((current) => ({ ...current, [d.view]: !current[d.view] }));
+        return;
+      }
+      if (d.type === "adicc:canvas-expand-control") {
+        setCanvasExpanded(!!d.active);
+      }
+    };
+    window.addEventListener("message", onViewControl);
+    return () => window.removeEventListener("message", onViewControl);
+  }, [postViewState]);
+  useEffect(() => {
+    const onViewShortcut = (e) => {
+      if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey || e.repeat) return;
+      const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
+      if (!digit) return;
+      const n = Number(digit);
+      e.preventDefault();
+      e.stopPropagation();
+      if (n <= 3) {
+        const tool = n === 1 ? "measure" : n === 2 ? "workspace" : "takeoffs";
+        const current = toolbarChromeRef.current;
+        const visible = tool === "measure"
+          ? current.measureVisible
+          : tool === "workspace"
+            ? current.workspaceVisible
+            : current.takeoffsVisible;
+        setToolbarVisible(tool, !visible);
+        return;
+      }
+      if (n === 6) {
+        setMinimapOpen((visible) => !visible);
+        return;
+      }
+      const view = n === 4 ? "estimate"
+        : n === 5 ? "readout"
+        : n === 7 ? "rulers"
+        : n === 8 ? "grid"
+        : "scaleBar";
+      setViewPrefs((current) => ({ ...current, [view]: !current[view] }));
+    };
+    window.addEventListener("keydown", onViewShortcut);
+    return () => window.removeEventListener("keydown", onViewShortcut);
+  }, [setToolbarVisible]);
   const [showCondEdit, setShowCondEdit] = useState(false);
   // Floating Condition Edit: appearance for the in-progress draw only (not all CPT-1).
   const [drawAppearance, setDrawAppearance] = useState(null);
@@ -1609,22 +1887,55 @@ export default function TakeoffCanvas() {
   const paintMinimapView = useCallback(() => {
     const el = minimapViewRef.current;
     const cont = containerRef.current;
-    const s = minimapScaleRef.current;
+    const layout = minimapLayoutRef.current;
+    const s = layout.s || minimapScaleRef.current;
     if (!el || !cont || !(s > 0)) return;
     const t = tfRef.current;
     const r = cont.getBoundingClientRect();
     const sc = t.scale || 1;
+    const ox = layout.ox || 0;
+    const oy = layout.oy || 0;
     el.style.width = `${Math.max(2, (r.width / sc) * s)}px`;
     el.style.height = `${Math.max(2, (r.height / sc) * s)}px`;
-    el.style.transform = `translate(${(-t.x / sc) * s}px, ${(-t.y / sc) * s}px)`;
+    el.style.transform = `translate(${ox + (-t.x / sc) * s}px, ${oy + (-t.y / sc) * s}px)`;
   }, []);
+
+  const rulerMetrics = useMemo(() => {
+    if (!unitsPerPx || !focusPanel.key) return { majorPx: 100, label: "100 px divisions" };
+    const uppBitmap = unitsPerPx / panelGeom.factorFor(renderScalesRef.current, focusPanel.key);
+    const zoom = tf.scale || 1;
+    if (!(uppBitmap > 0) || !(zoom > 0)) return { majorPx: 100, label: "100 px divisions" };
+    const candidates = units === "metric"
+      ? [0.5, 1, 2, 5, 10, 20, 50].map((value) => ({ value, feet: value / M_PER_FT }))
+      : [1, 2, 5, 10, 20, 50, 100].map((value) => ({ value, feet: value }));
+    const chosen = candidates.find((candidate) => (candidate.feet / uppBitmap) * zoom >= 84)
+      || candidates[candidates.length - 1];
+    return {
+      majorPx: Math.max(24, (chosen.feet / uppBitmap) * zoom),
+      label: units === "metric" ? `${chosen.value} m divisions` : `${chosen.value} ft divisions`,
+    };
+  }, [focusPanel.key, tf.scale, units, unitsPerPx]);
+
+  const paintRulers = useCallback(() => {
+    if (!viewPrefs.rulers || !rulerMetrics) return;
+    const { x, y } = tfRef.current;
+    const major = rulerMetrics.majorPx;
+    const mod = (value) => ((value % major) + major) % major;
+    for (const [el, offset] of [[rulerXRef.current, mod(x)], [rulerYRef.current, mod(y)]]) {
+      if (!el) continue;
+      el.style.setProperty("--ruler-major", `${major}px`);
+      el.style.setProperty("--ruler-minor", `${major / 10}px`);
+      el.style.setProperty("--ruler-offset", `${offset}px`);
+    }
+  }, [rulerMetrics, viewPrefs.rulers]);
 
   // ── transform: tfRef is source of truth; write straight to the DOM ─────────
   const applyTf = useCallback(() => {
     const { x, y, scale } = tfRef.current;
     if (stageRef.current) stageRef.current.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
     paintMinimapView();
-  }, [paintMinimapView]);
+    paintRulers();
+  }, [paintMinimapView, paintRulers]);
   // Re-apply after every React render so an unrelated re-render mid-drag can't
   // snap the transform back to a stale value.
   useLayoutEffect(() => { applyTf(); });
@@ -1654,46 +1965,73 @@ export default function TakeoffCanvas() {
   }, []);
   const setTfNow = useCallback((next) => { tfRef.current = next; applyTf(); setTf({ ...next }); }, [applyTf]);
 
-  // Minimap thumbnail: sheet bitmaps only. Viewport box is a DOM overlay updated
-  // from applyTf — do not list `tf` here or every pan redraws every panel.
-  const MINIMAP_MAX_W = 220, MINIMAP_MAX_H = 168;
+  // Minimap thumbnail: fixed stage box, sheet letterboxed inside. Viewport box
+  // is a DOM overlay from applyTf — do not list `tf` here or every pan redraws.
+  const MINIMAP_FIXED_H = 148;
+  const MINIMAP_BEZEL_X = 12;
   useEffect(() => {
-    if (!minimapOpen) { minimapScaleRef.current = 0; return; }
+    if (!minimapOpen) {
+      minimapScaleRef.current = 0;
+      minimapLayoutRef.current = { boxW: 0, boxH: 0, ox: 0, oy: 0, s: 0 };
+      return;
+    }
     const cv = minimapCanvasRef.current;
-    if (!cv || !stage.w || !stage.h) return;
-    const s = Math.min(MINIMAP_MAX_W / stage.w, MINIMAP_MAX_H / stage.h);
-    minimapScaleRef.current = s;
-    const dispW = Math.max(1, Math.round(stage.w * s));
-    const dispH = Math.max(1, Math.round(stage.h * s));
+    if (!cv) return;
+    const barW = zoomBarRef.current?.offsetWidth || 276;
+    const boxW = Math.max(120, barW - MINIMAP_BEZEL_X);
+    const boxH = MINIMAP_FIXED_H;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    cv.style.width = `${dispW}px`;
-    cv.style.height = `${dispH}px`;
-    cv.width = Math.round(dispW * dpr);
-    cv.height = Math.round(dispH * dpr);
+    cv.style.width = `${boxW}px`;
+    cv.style.height = `${boxH}px`;
+    cv.width = Math.round(boxW * dpr);
+    cv.height = Math.round(boxH * dpr);
     const ctx = cv.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, dispW, dispH);
+    ctx.clearRect(0, 0, boxW, boxH);
     ctx.fillStyle = darkMode ? "#0f151f" : "#ffffff";
-    ctx.fillRect(0, 0, dispW, dispH);
+    ctx.fillRect(0, 0, boxW, boxH);
+
+    if (!stage.w || !stage.h) {
+      minimapScaleRef.current = 0;
+      minimapLayoutRef.current = { boxW, boxH, ox: 0, oy: 0, s: 0 };
+      return;
+    }
+
+    const s = Math.min(boxW / stage.w, boxH / stage.h);
+    const dispW = Math.max(1, Math.round(stage.w * s));
+    const dispH = Math.max(1, Math.round(stage.h * s));
+    const ox = Math.floor((boxW - dispW) / 2);
+    const oy = Math.floor((boxH - dispH) / 2);
+    minimapScaleRef.current = s;
+    minimapLayoutRef.current = { boxW, boxH, ox, oy, s };
+
     for (const p of panels) {
       const src = panelCanvasRefs.current.get(p.key);
       if (!src || !src.width || !src.height) continue;
-      try { ctx.drawImage(src, p.xOffset * s, 0, p.img.w * s, p.img.h * s); } catch { /* bitmap not ready */ }
+      try { ctx.drawImage(src, ox + p.xOffset * s, oy, p.img.w * s, p.img.h * s); } catch { /* bitmap not ready */ }
     }
     paintMinimapView();
-  }, [minimapOpen, stage.w, stage.h, panels, darkMode, status, paintMinimapView]);
+  }, [minimapOpen, stage.w, stage.h, panels, darkMode, status, minimapPaintEpoch, paintMinimapView]);
 
-  const centerViewOnMinimap = (e) => {
-    const cv = minimapCanvasRef.current, cont = containerRef.current;
-    const s = minimapScaleRef.current;
-    if (!cv || !cont || !(s > 0)) return;
+  const stagePointFromMinimap = (clientX, clientY) => {
+    const cv = minimapCanvasRef.current;
+    const layout = minimapLayoutRef.current;
+    const s = layout.s || minimapScaleRef.current;
+    if (!cv || !(s > 0)) return null;
     const rect = cv.getBoundingClientRect();
-    const stageX = (e.clientX - rect.left) / s;
-    const stageY = (e.clientY - rect.top) / s;
+    return {
+      x: (clientX - rect.left - (layout.ox || 0)) / s,
+      y: (clientY - rect.top - (layout.oy || 0)) / s,
+    };
+  };
+  const centerViewOnMinimap = (e) => {
+    const cont = containerRef.current;
+    const pt = stagePointFromMinimap(e.clientX, e.clientY);
+    if (!cont || !pt) return;
     const r = cont.getBoundingClientRect();
     const t = tfRef.current;
-    tfRef.current = { scale: t.scale, x: r.width / 2 - stageX * t.scale, y: r.height / 2 - stageY * t.scale };
+    tfRef.current = { scale: t.scale, x: r.width / 2 - pt.x * t.scale, y: r.height / 2 - pt.y * t.scale };
     applyTf();
   };
   const onMinimapPointerDown = (e) => {
@@ -2257,6 +2595,7 @@ export default function TakeoffCanvas() {
         cached.inverted = darkMode;
       }
     }
+    setMinimapPaintEpoch((epoch) => epoch + 1);
   }, [darkMode]);
 
   // ── render the sheet group (a single sheet is a group of one) ──────────────
@@ -2480,6 +2819,7 @@ export default function TakeoffCanvas() {
           } catch { /* best-effort */ }
         }).catch(() => {});
       }
+      setMinimapPaintEpoch((epoch) => epoch + 1);
       setStatus("ready");
       // title-block labels — current page now, then once per file scan the rest so
       // the pager + pinned tabs + provenance deep-jump can show real sheet numbers
@@ -3085,6 +3425,14 @@ export default function TakeoffCanvas() {
     applyTf(); scheduleSync();
   }, [applyTf, scheduleSync]);
 
+  // Minimap scroll/pinch zooms the main sheet toward the stage point under the cursor.
+  const zoomFromMinimap = useCallback((clientX, clientY, factor) => {
+    const pt = stagePointFromMinimap(clientX, clientY);
+    if (!pt) return;
+    const t = tfRef.current;
+    zoomAround(t.x + pt.x * t.scale, t.y + pt.y * t.scale, factor);
+  }, [zoomAround]);
+
   // wheel: the DEVICE decides between pan and zoom — no toggle, no mode.
   // Continuous trackpad scroll PANS both axes (the two-finger instinct every
   // Mac user brings); a discrete mouse-wheel notch ZOOMS toward the cursor,
@@ -3106,7 +3454,7 @@ export default function TakeoffCanvas() {
     const stage = stageRef.current;
     const cont = containerRef.current;
     if (!stage || !cont) return;
-    const wheelChromeSel = ".toolbar-glass-bar,.toolbar-glass-pill,.toolbar-glass-pills-row,.tool-menu-drop-panel,.tool-menu-palette-shell,.tool-menu-anchored-panel,.takeoff-sticky-panel,.canvas-left-stack,.canvas-glass-cluster,.canvas-sheets-fab,.drawings-chat-glass-trigger,.left-window,.left-panel-glass,.canvas-minimap,.canvas-zoom-bar,.canvas-hamburger-btn,.takeoffs-drawer-slot,.takeoffs-drawer-scrim,.drawings-ask-wrap,.drawings-chat-center-scrim,.left-panel-stage-scrim,.cond-edit-float,.ill-panel,[data-hover-scroll]";
+    const wheelChromeSel = ".toolbar-glass-bar,.toolbar-glass-pill,.toolbar-glass-pills-row,.tool-menu-drop-panel,.tool-menu-palette-shell,.tool-menu-anchored-panel,.takeoff-sticky-panel,.canvas-left-stack,.canvas-glass-cluster,.canvas-sheets-fab,.drawings-chat-glass-trigger,.left-window,.left-panel-glass,.left-panel-slot,.canvas-minimap,.canvas-zoom-bar,.chrome-edge-trigger,.takeoffs-drawer-slot,.drawings-ask-wrap,.drawings-chat-center-scrim,.cond-edit-float,.ill-panel,[data-hover-scroll]";
     const inRect = (x, y, r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
     const wheelOnSheet = (e) => {
       const x = e.clientX, y = e.clientY;
@@ -3130,6 +3478,7 @@ export default function TakeoffCanvas() {
       return true;
     };
     let glide = 0, gx = 0, gy = 0, raf = 0;
+    let glideOnMinimap = false;
     let kind = "", kindUntil = 0;   // per-burst wheel-device classification
     const wheelKind = (e) => {
       const now = performance.now();
@@ -3143,8 +3492,11 @@ export default function TakeoffCanvas() {
       const d = Math.abs(glide) < 0.002 ? glide : glide * 0.35;
       glide -= d;
       if (d) {
-        const r = cont.getBoundingClientRect();
-        zoomAround(gx - r.left, gy - r.top, Math.exp(d));
+        if (glideOnMinimap) zoomFromMinimap(gx, gy, Math.exp(d));
+        else {
+          const r = cont.getBoundingClientRect();
+          zoomAround(gx - r.left, gy - r.top, Math.exp(d));
+        }
       }
       if (glide) {
         gestureUntilRef.current = performance.now() + GESTURE_MS;  // glide still moving = still a gesture
@@ -3153,6 +3505,23 @@ export default function TakeoffCanvas() {
     };
     const onWheel = (e) => {
       if (editingRef.current) return;   // freeze pan/zoom while the inline text editor is pinned to its anchor
+      const overMinimap = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".canvas-minimap.is-open");
+      if (overMinimap) {
+        // Overview is for navigation: scroll / pinch always zooms the sheet.
+        e.preventDefault();
+        gestureUntilRef.current = performance.now() + GESTURE_MS;
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
+        if (e.ctrlKey || e.metaKey) {
+          zoomFromMinimap(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.01));
+          return;
+        }
+        glideOnMinimap = true;
+        glide += -e.deltaY * unit * 0.0012;
+        glide = Math.max(-1.2, Math.min(1.2, glide));
+        gx = e.clientX; gy = e.clientY;
+        if (!raf) raf = requestAnimationFrame(step);
+        return;
+      }
       const onSheet = wheelOnSheet(e);
       if (!onSheet) {
         // Trackpad pinch on toolbars/rails must not zoom the sheet or the browser page.
@@ -3162,6 +3531,7 @@ export default function TakeoffCanvas() {
       e.preventDefault();
       gestureUntilRef.current = performance.now() + GESTURE_MS;  // detail view waits for wheel quiet
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
+      glideOnMinimap = false;
       if (e.shiftKey) {
         const t = tfRef.current;
         tfRef.current = { ...t, x: t.x - e.deltaX * unit, y: t.y - e.deltaY * unit };
@@ -3187,7 +3557,7 @@ export default function TakeoffCanvas() {
     };
     window.addEventListener("wheel", onWheel, { passive: false, capture: true });
     return () => { window.removeEventListener("wheel", onWheel, { capture: true }); if (raf) cancelAnimationFrame(raf); };
-  }, [applyTf, scheduleSync, zoomAround, status]);
+  }, [applyTf, scheduleSync, zoomAround, zoomFromMinimap, status]);
 
   // Space = temporary pan (any tool)
   useEffect(() => {
@@ -4028,10 +4398,10 @@ export default function TakeoffCanvas() {
       el.style[prop] = `${val}px`; el.style.display = "block";
       if (el.__lock !== lockState) {
         el.__lock = lockState;
-        el.style.background = lock ? "rgba(31,63,199,.85)" : "rgba(31,63,199,.55)";
+        el.style.background = lock ? "var(--canvas-aim-lock)" : "var(--canvas-aim)";
         el.style.boxShadow = lock
-          ? "0 0 0 0.5px rgba(255,255,255,.6), 0 0 6px rgba(31,63,199,.5)"
-          : "0 0 0 0.5px rgba(255,255,255,.55), 0 0 4px rgba(31,63,199,.3)";
+          ? "var(--canvas-aim-shadow-lock)"
+          : "var(--canvas-aim-shadow)";
       }
     }
     if (aimMarkRef.current) {
@@ -4042,7 +4412,7 @@ export default function TakeoffCanvas() {
         const star = el.firstChild;
         if (star) {
           star.style.transform = lock ? "scale(1.3)" : "scale(1)";
-          star.style.filter = lock ? "drop-shadow(0 0 5px rgba(31,63,199,.6)) drop-shadow(0 1px 2px rgba(14,26,46,.3))" : "drop-shadow(0 1px 2px rgba(14,26,46,.3))";
+          star.style.filter = lock ? "var(--canvas-aim-star-shadow-lock)" : "var(--canvas-aim-star-shadow)";
         }
       }
       el.style.display = "block";
@@ -4076,9 +4446,9 @@ export default function TakeoffCanvas() {
         const os = over ? "1" : "";
         if (chip.__over !== os) {
           chip.__over = os;
-          chip.style.background = over ? "var(--c-warning)" : "var(--paper-bright)";
-          chip.style.color = over ? "var(--paper-bright)" : "var(--ink)";
-          chip.style.borderColor = over ? "var(--c-warning)" : "var(--ink)";
+          chip.style.background = over ? "var(--c-warning)" : "var(--canvas-chip-bg)";
+          chip.style.color = over ? "var(--canvas-chip-warning-ink)" : "var(--canvas-chip-ink)";
+          chip.style.borderColor = over ? "var(--c-warning)" : "var(--canvas-chip-border)";
         }
         chip.style.transform = `translate3d(${ex + 14}px, ${ey + 18}px, 0)`;
         chip.style.display = "block";
@@ -9667,12 +10037,13 @@ export default function TakeoffCanvas() {
   );
   const canvasReady = view === "canvas" && status === "ready";
   const sheetTools = status !== "loading" && status !== "rendering";
+  const workspaceBarShown = canvasReady && toolbarChrome.workspaceVisible;
   const workspaceBg = darkMode ? "#0b0e14" : "var(--surface-pop)";
 
   return (
     // .app-shell: the print stylesheet collapses this 100vh flex column while the report is open
     <div
-      className="app-shell"
+      className={`app-shell${darkMode ? " is-sheet-invert" : ""}`}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files); }}
       style={{ position: "relative", display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -9681,12 +10052,16 @@ export default function TakeoffCanvas() {
           the SHEET (arm tools, toggle aids, set scale). Neither row wraps, and
           conditional UI renders only into deck 2's reserved ACTION slot, so no
           control ever changes position. */}
-      {/* Unified Floating Toolbar */}
-      <div className="toolbar-glass-bar" style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: sheetTools ? "12px 12px 4px" : 0, width: "100%", zIndex: 10, background: sheetTools ? "var(--surface-pop)" : "transparent", userSelect: "none" }}>
+      {/* Unified Floating Toolbar — waits for the sheet like Measure Rail / Takeoffs */}
+      <div
+        ref={workspaceBarRef}
+        className={`toolbar-glass-bar workspace-chrome${workspaceBarShown ? " is-visible" : " is-hidden"}${darkMode ? " is-sheet-invert" : ""}`}
+        style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: workspaceBarShown ? "12px 12px 4px" : 0, width: "100%", userSelect: "none", ...(darkMode ? { background: workspaceBg } : {}) }}
+      >
         <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
         <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
 
-        {sheetTools && (
+        {workspaceBarShown && sheetTools && (
         <div className="toolbar-glass-pills-row" style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "center", width: "100%" }}>
           {/* Tools — icon row + Auto-Takeoff / Takeoff Tool Palette */}
           <div className="toolbar-glass-pill" style={{ display: "flex", alignItems: "center", overflow: "visible", borderRadius: 14, padding: "4px 10px", gap: 8, whiteSpace: "nowrap" }}>
@@ -9956,7 +10331,6 @@ export default function TakeoffCanvas() {
         </div>
         )}
       </div>
-
       {showCondEdit && aCond && (
         <FloatingWindow
           defaultRect={{
@@ -10079,22 +10453,21 @@ export default function TakeoffCanvas() {
         </div>
       )}
 
-      {/* canvas + issue desk */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
-       {/* Left icon rail + floating desk panel — canvas only (gallery/picker
-           sit at z-40; this rail is z-55 so it must not mount over the plan set). */}
+      {/* Measure Rail lives on the app shell — not inside the overflow-hidden
+          canvas row — so its top cannot be clipped by the Workspace Bar. */}
        {canvasReady && (
        <div
+         className={`measure-rail-chrome${toolbarChrome.measureVisible ? " is-visible" : " is-hidden"}`}
          onPointerDown={(e) => e.stopPropagation()}
          style={{
            position: "absolute",
            left: 16,
-           top: 10,
-           bottom: 14,
-           zIndex: 55,
+           top: 12,
+           bottom: 12,
+           zIndex: 120,
            display: "flex",
            flexDirection: "row",
-           alignItems: "stretch",
+           alignItems: "center",
            gap: 6,
            pointerEvents: "none",
          }}
@@ -10108,16 +10481,19 @@ export default function TakeoffCanvas() {
            <div className="canvas-glass-cluster">
              {railBtn(() => {
                 lastLeftTabRef.current = "summary";
+                setIllLayersOpen(false);
                 setLeftTab((cur) => (cur === "summary" ? null : "summary"));
               }, <Icon name="sheets" size={16} />, "Summary table — hierarchical takeoff", leftTab === "summary")}
              {railBtn(toggleLeftDesk, leftTab && leftTab !== "summary" ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, sheets, markups, stamps, RFIs", !!leftTab && leftTab !== "summary")}
-             {railBtn(() => {
-               setIllLayersOpen((v) => !v);
-             }, <Icon name="layers" size={16} />, "Layers panel", illLayersOpen)}
+             {railBtn(toggleLayersPanel, <Icon name="layers" size={16} />, "Layers panel", illLayersOpen)}
              <span className="canvas-rail-rule" aria-hidden="true" />
              {MEASURE_TOOLS.map((t) => measureRailBtn(t))}
-             <span className="canvas-rail-rule" aria-hidden="true" />
-             {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
+             {!isEmbedded && (
+               <>
+                 <span className="canvas-rail-rule" aria-hidden="true" />
+                 {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
+               </>
+             )}
            </div>
            <button
              type="button"
@@ -10125,6 +10501,7 @@ export default function TakeoffCanvas() {
              data-tip="Open sheets — jump, pair, or close tabs"
              aria-label="Sheets open on the canvas — jump, pair, or close tabs"
              onClick={() => {
+               setIllLayersOpen(false);
                if (sheetKey) setOpenTabs((t) => (t.includes(sheetKey) ? t : [...t, sheetKey]));
                toggleSheetsTab();
              }}
@@ -10146,46 +10523,48 @@ export default function TakeoffCanvas() {
                </svg>
              </button>
         </div>
-        {/* Illustrator-style Layers panel — docks left, next to the rail icon */}
-        {layersMotion.shown && (
-          <div className={`left-window${layersMotion.entered ? " is-open" : ""}`}>
-            {renderLiveLayersPanel({ onClose: () => setIllLayersOpen(false) })}
-          </div>
-        )}
-        {/* Floating LEFT panel — Files/Markups/Stamps/RFIs; fixed size, not resizable */}
-         {leftDesk.shown && deskTab && (
-         <div className={`left-window${leftDesk.entered ? " is-open" : ""}`}>
-         <div
-           className="left-panel-glass"
-           role="dialog"
-           aria-label="Files panel"
-           style={{
-             width: 360,
-             alignSelf: "stretch",
-             display: "flex",
-             flexDirection: "column",
-             borderRadius: 5,
-             overflow: "hidden",
-             minHeight: 0,
-           }}
-         >
+        {/* One dock slot beside the rail — Files desk OR Layers, never both side-by-side. */}
+        <div className={`left-panel-slot${(layersMotion.shown || leftDesk.shown) ? " is-open" : ""}`}>
+          {layersMotion.shown && (
+            <div className={`left-window${layersMotion.entered ? " is-open" : ""}`}>
+              {renderLiveLayersPanel({ onClose: () => setIllLayersOpen(false) })}
+            </div>
+          )}
+          {leftDesk.shown && deskTab && (
+          <div className={`left-window${leftDesk.entered ? " is-open" : ""}`}>
+          <div
+            className="left-panel-glass"
+            role="dialog"
+            aria-label={`${LP_TAB_LABELS[deskTab] || "Project desk"} panel`}
+            style={{
+              width: "100%",
+              alignSelf: "stretch",
+              display: "flex",
+              flexDirection: "column",
+              borderRadius: 5,
+              overflow: "hidden",
+              minHeight: 0,
+              height: "100%",
+            }}
+          >
            {/* tab strip — tabs scroll in their own track; close is a pinned end-cap */}
            <div className={`left-panel-glass-tabs${lpTabsOverflow.start ? " has-overflow-start" : ""}${lpTabsOverflow.end ? " has-overflow-end" : ""}`} style={{ color: "var(--accent-contrast)", flexShrink: 0 }}>
              <div className="lp-tabs-track">
-             {lpTabsOverflow.start && (
                <button
                  type="button"
                  className="lp-tabs-shift is-start"
                  onClick={() => shiftLpTabs(-1)}
+                 disabled={!lpTabsOverflow.start}
                  data-tip="Earlier tabs"
                  aria-label="Earlier tabs"
                >
                  <ChevronLeft size={14} strokeWidth={2.6} />
                </button>
-             )}
              <div
                ref={lpTabsScrollRef}
                className="lp-tabs-scroller"
+               role="tablist"
+               aria-label="Project desk sections"
                onPointerDown={(e) => {
                  if (e.button !== 0) return;
                  const el = lpTabsScrollRef.current;
@@ -10221,7 +10600,11 @@ export default function TakeoffCanvas() {
              {[{ id: "summary", label: "Summary", n: boqShapes.length }, { id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
                <button
                  key={t.id}
+                 id={`lp-tab-${t.id}`}
                  type="button"
+                 role="tab"
+                 aria-selected={deskTab === t.id}
+                 aria-controls="lp-tab-panel"
                  className={`lp-tab${deskTab === t.id ? " is-on" : ""}`}
                  onClick={() => {
                    lastLeftTabRef.current = t.id;
@@ -10234,17 +10617,16 @@ export default function TakeoffCanvas() {
                </button>
              ))}
              </div>
-             {lpTabsOverflow.end && (
                <button
                  type="button"
                  className="lp-tabs-shift is-end"
                  onClick={() => shiftLpTabs(1)}
+                 disabled={!lpTabsOverflow.end}
                  data-tip="More tabs"
                  aria-label="More tabs"
                >
                  <ChevronRight size={14} strokeWidth={2.6} />
                </button>
-             )}
              </div>
              <button type="button" className="lp-tab-close" onClick={() => setLeftTab(null)} aria-label="Close panel">
                <Icon name="close" size={14} />
@@ -10253,6 +10635,9 @@ export default function TakeoffCanvas() {
            {/* body of the active tab */}
            <div className="left-panel-scroll" style={{ flex: 1, overflowX: "hidden", overflowY: "auto", minHeight: 0 }}>
              <div
+               id="lp-tab-panel"
+               role="tabpanel"
+               aria-labelledby={`lp-tab-${deskTab}`}
                key={deskTab}
                className={`lp-tab-pane${lpTabMotionRef.current.animate ? (lpTabMotionRef.current.dir < 0 ? " is-back" : " is-fwd") : ""}`}
              >
@@ -10607,79 +10992,162 @@ export default function TakeoffCanvas() {
          </div>
          </div>
          )}
+        </div>
        </div>
        )}
+      {/* canvas + issue desk */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {canvasReady && leftDesk.shown && (leftCanvasWork ? (
-          <div className={`left-panel-stage-scrim is-pass${leftDesk.entered ? " is-open" : ""}`} aria-hidden="true" />
-        ) : (
-          <button type="button" className={`left-panel-stage-scrim${leftDesk.entered ? " is-open" : ""}`} aria-label="Close panel" onClick={() => setLeftTab(null)} />
-        ))}
-        {/* Bottom-right canvas controls: undo/redo pill + zoom pill. Lives in the
-            canvas column (not the outer row) so the Takeoffs dock never covers it. */}
+        {/* Bottom-right view stack. Stays put when Takeoffs opens so the
+            drawer slides over the minimap / zoom / HUD instead of shoving them. */}
         {canvasReady && (
           <div
-            style={{ position: "absolute", right: 16, bottom: 14, zIndex: 55, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, pointerEvents: "none" }}
+            className="canvas-view-dock"
+            style={{ position: "absolute", right: 16, bottom: viewPrefs.rulers ? 38 : 14, zIndex: 40, pointerEvents: "none" }}
           >
-            {minimapOpen && (
+            {sheetTools && (
+            <div className="canvas-hud-dock">
+            {Number(projectEstimateTotal) > 0 && (
               <div
-                className="canvas-minimap"
-                onPointerDown={onMinimapPointerDown}
-                onPointerMove={onMinimapPointerMove}
-                onPointerUp={onMinimapPointerUp}
-                onPointerCancel={onMinimapPointerUp}
-                onDoubleClick={(e) => e.stopPropagation()}
+                className={`canvas-estimate-hud has-focus${viewPrefs.estimate ? "" : " is-view-hidden"}`}
+                title="Live takeoff value — updates as quantities and rates change"
               >
-                <div className="canvas-minimap-stage">
-                  <canvas ref={minimapCanvasRef} className="canvas-minimap-cv" title="Overview — drag to pan" />
-                  <div ref={minimapViewRef} className="canvas-minimap-view" aria-hidden="true" />
+                <div className="canvas-estimate-hud-copy">
+                  <div className={estimateValuePulse ? "canvas-estimate-hud-val is-pulse" : "canvas-estimate-hud-val"}>
+                    {money(projectEstimateTotal || 0, projectCurrency)}
+                  </div>
+                  <div className="canvas-estimate-hud-lbl">TAKE-OFF VALUE</div>
                 </div>
+                <EstimateValueSpark series={estimateHistory} currency={projectCurrency} />
               </div>
             )}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, pointerEvents: "none" }}>
-              <div
-                className="canvas-zoom-bar"
-                onPointerDown={(e) => e.stopPropagation()}
-                onDoubleClick={(e) => e.stopPropagation()}
-              >
-                <button type="button" className="canvas-zoom-btn" data-tip="Undo · ⌘Z" aria-label="Undo (⌘Z)"
-                  disabled={!undoStackRef.current.length}
-                  onClick={undoShapeCommand}>
-                  <Undo2 size={15} strokeWidth={1.8} />
-                </button>
-                <button type="button" className="canvas-zoom-btn" data-tip="Redo · ⇧⌘Z" aria-label="Redo (⇧⌘Z)"
-                  disabled={!redoStackRef.current.length}
-                  onClick={redoShapeCommand}>
-                  <Redo2 size={15} strokeWidth={1.8} />
-                </button>
+              <LiveReadoutBar
+                overlay
+                visible={viewPrefs.readout}
+                tool={tool}
+                aCond={aCond}
+                activeCond={activeCond}
+                units={units}
+                unitsPerPx={unitsPerPx}
+                poly={poly}
+                liveUpp={liveUpp}
+                liveArea={liveArea}
+                livePerim={livePerim}
+                zoneTraceCross={zoneTraceCross}
+                condH={condH}
+                proposal={proposal}
+                wallProposal={wallProposal}
+                ocSel={ocSel}
+                selShape={selShape}
+                doorScheduleOptions={doorScheduleOptions}
+                condRow={condRow}
+                condMult={condMult}
+                condTotal={condTotal}
+                wallTotal={wallTotal}
+                floorBeforeDeduction={condDeduction.floorBefore}
+                floorAfterDeduction={condDeduction.floorAfter}
+                wallBeforeDeduction={condDeduction.wallBefore}
+                wallAfterDeduction={condDeduction.wallAfter}
+                borderTotal={borderTotal}
+                lfTotal={lfTotal}
+                countTotal={countTotal}
+                vertTotal={vertTotal}
+                sheetFloorSf={sheetFloorSf}
+                sheetWallSf={sheetWallSf}
+                visibleShapeCount={visibleShapes.length}
+                groupKeyCount={groupKeys.length}
+                zoomScale={tf.scale}
+                onSetShapeHeight={setShapeHeight}
+                onClearShapeHeight={clearShapeHeight}
+                wallSegmentRows={selWallSegmentRows}
+                onSetSegmentHeight={(idx, raw) => selectedId && setSegmentHeight(selectedId, idx, raw)}
+                onFlyToWallSegment={(idx) => selectedId && flyToWallSegment(selectedId, idx)}
+                activeWallSegment={selShape?.measure_role === "surface_area" ? wallSegmentFocus : null}
+                onAddWallOpening={addWallOpening}
+                onStartWallCutout={startWallCutoutLinear}
+                onUpdateWallOpening={updateWallOpening}
+                onRemoveWallOpening={removeWallOpening}
+                onFlyToWallOpening={flyToWallOpening}
+              />
+            </div>
+            )}
+            <div
+              className={`canvas-minimap${minimapOpen ? " is-open" : ""}`}
+              onPointerDown={onMinimapPointerDown}
+              onPointerMove={onMinimapPointerMove}
+              onPointerUp={onMinimapPointerUp}
+              onPointerCancel={onMinimapPointerUp}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <div className="canvas-minimap-stage">
+                <canvas ref={minimapCanvasRef} className="canvas-minimap-cv" title="Overview — drag to pan, scroll to zoom the sheet" />
+                <div ref={minimapViewRef} className="canvas-minimap-view" aria-hidden="true" />
               </div>
-              <div
-                className="canvas-zoom-bar"
-                onPointerDown={(e) => e.stopPropagation()}
-                onDoubleClick={(e) => e.stopPropagation()}
-              >
-                <button type="button" className="canvas-zoom-btn" data-tip="Zoom out" aria-label="Zoom out"
-                  onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 0.8); }}>
-                  <Minus size={16} strokeWidth={2} />
-                </button>
-                <button type="button" className="canvas-zoom-pct" data-tip="Reset to 100%" aria-label="Reset to 100%"
-                  onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1 / (tfRef.current.scale || 1)); }}>
-                  {Math.round((tf.scale || 1) * 100)}%
-                </button>
-                <button type="button" className="canvas-zoom-btn" data-tip="Zoom in" aria-label="Zoom in"
-                  onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1.25); }}>
-                  <Plus size={16} strokeWidth={2} />
-                </button>
-                <span className="canvas-zoom-sep" aria-hidden="true" />
-                <button type="button" className="canvas-zoom-btn" data-tip="Fit sheet to view" aria-label="Fit sheet to view"
-                  onClick={() => stage.w && fitToView(stage.w, stage.h)}>
-                  <Scan size={15} strokeWidth={1.6} />
-                </button>
-                <button type="button" className={`canvas-zoom-btn${minimapOpen ? " is-on" : ""}`} data-tip="Minimap — drag to pan" aria-label="Minimap — sheet overview; drag to pan"
-                  onClick={() => setMinimapOpen((v) => !v)}>
-                  <MapIcon size={15} strokeWidth={1.6} />
-                </button>
-              </div>
+            </div>
+            <div
+              ref={zoomBarRef}
+              className="canvas-zoom-bar"
+              onPointerDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              <button type="button" className="canvas-zoom-btn" data-tip="Undo · ⌘Z" aria-label="Undo (⌘Z)"
+                disabled={!undoStackRef.current.length}
+                onClick={undoShapeCommand}>
+                <Undo2 size={15} strokeWidth={1.8} />
+              </button>
+              <button type="button" className="canvas-zoom-btn" data-tip="Redo · ⇧⌘Z" aria-label="Redo (⇧⌘Z)"
+                disabled={!redoStackRef.current.length}
+                onClick={redoShapeCommand}>
+                <Redo2 size={15} strokeWidth={1.8} />
+              </button>
+              <span className="canvas-zoom-sep" aria-hidden="true" />
+              <button type="button" className={`canvas-zoom-btn${minimapOpen ? " is-on" : ""}`} data-tip="Minimap — drag to pan, scroll to zoom" aria-label="Minimap — sheet overview; drag to pan, scroll to zoom" aria-pressed={minimapOpen}
+                onClick={() => setMinimapOpen((v) => !v)}>
+                <MapIcon size={15} strokeWidth={1.6} />
+              </button>
+              <button type="button" className="canvas-zoom-btn" data-tip="Zoom out" aria-label="Zoom out"
+                onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 0.8); }}>
+                <Minus size={16} strokeWidth={2} />
+              </button>
+              <button type="button" className="canvas-zoom-pct" data-tip="Reset to 100%" aria-label="Reset to 100%"
+                onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1 / (tfRef.current.scale || 1)); }}>
+                {Math.round((tf.scale || 1) * 100)}%
+              </button>
+              <button type="button" className="canvas-zoom-btn" data-tip="Zoom in" aria-label="Zoom in"
+                onClick={() => { const r = containerRef.current.getBoundingClientRect(); zoomAround(r.width / 2, r.height / 2, 1.25); }}>
+                <Plus size={16} strokeWidth={2} />
+              </button>
+              <span className="canvas-zoom-sep" aria-hidden="true" />
+              <button type="button" className="canvas-zoom-btn" data-tip="Fit sheet to view" aria-label="Fit sheet to view"
+                onClick={() => stage.w && fitToView(stage.w, stage.h)}>
+                <Scan size={15} strokeWidth={1.6} />
+              </button>
+              <button
+                type="button"
+                className={`canvas-zoom-btn${canvasExpanded ? " is-on" : ""}`}
+                data-tip={canvasExpanded ? "Exit fullscreen · Esc" : "Fullscreen"}
+                aria-label={canvasExpanded ? "Exit fullscreen" : "Fullscreen"}
+                aria-pressed={canvasExpanded}
+                onClick={() => {
+                  if (isEmbedded) {
+                    const active = !canvasExpanded;
+                    try {
+                      window.parent?.postMessage({
+                        source: "opentakeoff",
+                        type: "adicc:canvas-expand-state",
+                        active,
+                      }, "*");
+                    } catch { /* cross-origin embed */ }
+                    setCanvasExpanded(active);
+                    return;
+                  }
+                  const el = containerRef.current?.closest(".canvas-workspace") || containerRef.current;
+                  if (!el) return;
+                  if (document.fullscreenElement) document.exitFullscreen?.();
+                  else el.requestFullscreen?.();
+                }}>
+                {canvasExpanded ? <Minimize2 size={15} strokeWidth={1.6} /> : <Maximize2 size={15} strokeWidth={1.6} />}
+              </button>
             </div>
           </div>
         )}
@@ -10790,8 +11258,17 @@ export default function TakeoffCanvas() {
             else if (tool === "select") editMarkupAt(e);
           }}
           style={{ position: "absolute", inset: 0, ...(darkMode ? { background: workspaceBg } : {}), cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "none", touchAction: "none" }}
-          className={darkMode ? "canvas-workspace is-sheet-invert" : "canvas-workspace"}
+          className={`canvas-workspace${darkMode ? " is-sheet-invert" : ""}${viewPrefs.rulers ? " has-view-rulers" : ""}`}
           data-canvas-status={status}>
+          {viewPrefs.rulers && rulerMetrics && (
+            <>
+              <div ref={rulerXRef} className="canvas-view-ruler is-horizontal" aria-hidden="true">
+                <span>{rulerMetrics.label}</span>
+              </div>
+              <div ref={rulerYRef} className="canvas-view-ruler is-vertical" aria-hidden="true" />
+              <div className="canvas-view-ruler-corner" aria-hidden="true">0</div>
+            </>
+          )}
           {/* aim crosshair (draw modes): the OS cursor is hidden on the canvas — the
               crosshair IS the cursor. Two crisp full-page hairlines riding the
               EFFECTIVE point (angle-locked / endpoint-snapped), the SPLINE STAR at
@@ -10799,16 +11276,16 @@ export default function TakeoffCanvas() {
               lock reads as a quiet state change (hairlines brighten, star swells
               cobalt, rubber band thickens) — no extra chrome on the sheet. All
               positioned imperatively in moveCrosshair. */}
-          <div ref={crossVRef} style={{ position: "absolute", top: 0, bottom: 0, width: 1.5, background: "rgba(31,63,199,.55)", boxShadow: "0 0 0 0.5px rgba(255,255,255,.55), 0 0 4px rgba(31,63,199,.3)", pointerEvents: "none", display: "none", zIndex: 5 }} />
-          <div ref={crossHRef} style={{ position: "absolute", left: 0, right: 0, height: 1.5, background: "rgba(31,63,199,.55)", boxShadow: "0 0 0 0.5px rgba(255,255,255,.55), 0 0 4px rgba(31,63,199,.3)", pointerEvents: "none", display: "none", zIndex: 5 }} />
+          <div ref={crossVRef} style={{ position: "absolute", top: 0, bottom: 0, width: 1.5, background: "var(--canvas-aim)", boxShadow: "var(--canvas-aim-shadow)", pointerEvents: "none", display: "none", zIndex: 5 }} />
+          <div ref={crossHRef} style={{ position: "absolute", left: 0, right: 0, height: 1.5, background: "var(--canvas-aim)", boxShadow: "var(--canvas-aim-shadow)", pointerEvents: "none", display: "none", zIndex: 5 }} />
           <div ref={aimMarkRef} style={{ position: "absolute", left: 0, top: 0, width: 0, height: 0, pointerEvents: "none", display: "none", zIndex: 6, willChange: "transform" }}>
             {/* the SPLINE STAR at the crossing — the house vertex mark IS the cursor;
                 it swells and glows cobalt while the 45° lock holds */}
-            <svg width={22} height={22} viewBox="0 0 22 22" style={{ position: "absolute", left: -11, top: -11, transition: "transform 120ms ease, filter 120ms ease", filter: "drop-shadow(0 1px 2px rgba(14,26,46,.3))" }}>
-              <path d={starPath(11, 11, 8.5)} fill="#1f3fc7" stroke="#fff" strokeWidth={1.4} />
+            <svg width={22} height={22} viewBox="0 0 22 22" style={{ position: "absolute", left: -11, top: -11, transition: "transform 120ms ease, filter 120ms ease", filter: "var(--canvas-aim-star-shadow)" }}>
+              <path d={starPath(11, 11, 8.5)} style={{ fill: "var(--canvas-aim-star)", stroke: "var(--canvas-aim-star-stroke)" }} strokeWidth={1.4} />
             </svg>
           </div>
-          <div ref={aimChipRef} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", display: "none", zIndex: 6, padding: "2px 8px", background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-1)", fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", willChange: "transform" }} />
+          <div ref={aimChipRef} style={{ position: "absolute", left: 0, top: 0, pointerEvents: "none", display: "none", zIndex: 6, padding: "2px 8px", background: "var(--canvas-chip-bg)", border: "1px solid var(--canvas-chip-border)", boxShadow: "var(--shadow-1)", fontFamily: "var(--f-mono)", fontSize: 10.5, fontWeight: 600, color: "var(--canvas-chip-ink)", whiteSpace: "nowrap", willChange: "transform" }} />
           {/* hover readout — proposals / agent previews (DOM-direct) */}
           <div ref={hoverRef} style={{ position: "absolute", display: "none", pointerEvents: "none", zIndex: 8, background: "var(--paper-bright)", border: "1px solid var(--ink)", boxShadow: "var(--shadow-1)", padding: "4px 8px", fontFamily: "var(--f-mono)", fontSize: 11, color: "var(--ink)", whiteSpace: "nowrap" }} />
           {/* BOQ hover card — masked area quantities; click opens filtered BOQ panel */}
@@ -11108,6 +11585,7 @@ export default function TakeoffCanvas() {
             ))}
             {/* high-res detail overlay — a crop of the visible region re-rendered at the current zoom (see the detail-view effect) */}
             <canvas ref={detailCanvasRef} style={{ position: "absolute", left: 0, top: 0, display: "none", pointerEvents: "none" }} />
+            {viewPrefs.grid && <div className="canvas-view-grid" aria-hidden="true" />}
             <svg width={stage.w} height={stage.h} viewBox={`0 0 ${stage.w} ${stage.h}`} style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}>
               <defs>
                 {conditions.map((c) => <HatchPattern key={patId(c)} id={patId(c)} type={c.hatch || "solid"} line={c.color} fill={c.fill} dark={darkMode} />)}
@@ -11709,15 +12187,18 @@ export default function TakeoffCanvas() {
 
           {status !== "ready" && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, pointerEvents: "none" }}>
-              {(status === "loading" || status === "rendering") ? (
-                <div className="canvas-loading-mark" aria-busy="true" aria-label={status === "loading" ? "Reading the sheet" : "Rendering the sheet"}>
+              {(status === "loading" || status === "rendering" || status === "empty") ? (
+                <div className="canvas-loading-mark" aria-busy="true" aria-label={status === "empty" ? "ADICC" : status === "loading" ? "Reading the sheet" : "Rendering the sheet"}>
                   <AdiccLoadingLogo />
-                  <span className="canvas-loading-rule" aria-hidden="true" />
-                  <div className="canvas-loading-caption">{status === "loading" ? "Reading the sheet" : "Rendering the sheet"}</div>
+                  {status !== "empty" && (
+                    <>
+                      <span className="canvas-loading-rule" aria-hidden="true" />
+                      <div className="canvas-loading-caption">{status === "loading" ? "Reading the sheet" : "Rendering the sheet"}</div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div style={{ color: "var(--ink-muted)", fontSize: 15, textAlign: "center" }}>
-                  {status === "empty" && "No PDFs yet — click “Open PDF” or drag a plan onto the canvas."}
                   {status === "error" && <span style={{ color: "var(--c-danger)" }}>Error: {err}</span>}
                 </div>
               )}
@@ -12004,71 +12485,6 @@ export default function TakeoffCanvas() {
           );
         })()}
 
-        {sheetTools && Number(projectEstimateTotal) > 0 && (
-          <div
-            className="canvas-estimate-hud has-focus"
-            title="Live takeoff value — updates as quantities and rates change"
-          >
-            <div className="canvas-estimate-hud-copy">
-              <div className={estimateValuePulse ? "canvas-estimate-hud-val is-pulse" : "canvas-estimate-hud-val"}>
-                {money(projectEstimateTotal || 0, projectCurrency)}
-              </div>
-              <div className="canvas-estimate-hud-lbl">TAKE-OFF VALUE</div>
-            </div>
-            <EstimateValueSpark series={estimateHistory} currency={projectCurrency} />
-          </div>
-        )}
-
-        {sheetTools && (
-          <LiveReadoutBar
-            overlay
-            tool={tool}
-            aCond={aCond}
-            activeCond={activeCond}
-            units={units}
-            unitsPerPx={unitsPerPx}
-            poly={poly}
-            liveUpp={liveUpp}
-            liveArea={liveArea}
-            livePerim={livePerim}
-            zoneTraceCross={zoneTraceCross}
-            condH={condH}
-            proposal={proposal}
-            wallProposal={wallProposal}
-            ocSel={ocSel}
-            selShape={selShape}
-            doorScheduleOptions={doorScheduleOptions}
-            condRow={condRow}
-            condMult={condMult}
-            condTotal={condTotal}
-            wallTotal={wallTotal}
-            floorBeforeDeduction={condDeduction.floorBefore}
-            floorAfterDeduction={condDeduction.floorAfter}
-            wallBeforeDeduction={condDeduction.wallBefore}
-            wallAfterDeduction={condDeduction.wallAfter}
-            borderTotal={borderTotal}
-            lfTotal={lfTotal}
-            countTotal={countTotal}
-            vertTotal={vertTotal}
-            sheetFloorSf={sheetFloorSf}
-            sheetWallSf={sheetWallSf}
-            visibleShapeCount={visibleShapes.length}
-            groupKeyCount={groupKeys.length}
-            zoomScale={tf.scale}
-            onSetShapeHeight={setShapeHeight}
-            onClearShapeHeight={clearShapeHeight}
-            wallSegmentRows={selWallSegmentRows}
-            onSetSegmentHeight={(idx, raw) => selectedId && setSegmentHeight(selectedId, idx, raw)}
-            onFlyToWallSegment={(idx) => selectedId && flyToWallSegment(selectedId, idx)}
-            activeWallSegment={selShape?.measure_role === "surface_area" ? wallSegmentFocus : null}
-            onAddWallOpening={addWallOpening}
-            onStartWallCutout={startWallCutoutLinear}
-            onUpdateWallOpening={updateWallOpening}
-            onRemoveWallOpening={removeWallOpening}
-            onFlyToWallOpening={flyToWallOpening}
-          />
-        )}
-
         {/* Classic scale bar — bottom-center HUD; always visible while a sheet scale is set */}
         {status === "ready" && unitsPerPx && focusPanel?.img?.w && (() => {
           const uppBitmap = unitsPerPx / factorFor(focusPanel.key);
@@ -12085,13 +12501,13 @@ export default function TakeoffCanvas() {
           const step = unitPx >= 6 ? 1 : unitPx * 5 >= 6 ? 5 : 0;
           const ticks = step ? Array.from({ length: Math.floor(nUnits / step) + 1 }, (_, i) => i * step) : [0, nUnits];
           if (ticks[ticks.length - 1] !== nUnits) ticks.push(nUnits);
-          const ink = "#1f3fc7";
+          const ink = darkMode ? "#9ec9f5" : "#1f3fc7";
           const halo = darkMode ? "#0b0e14" : "#fff";
           const y = 14;
           const mid = barPx / 2;
           const isMajor = (u) => u === 0 || u === nUnits || (step && u % (step === 1 ? 5 : step) === 0);
           return (
-            <div className={darkMode ? "canvas-scale-hud is-sheet-invert" : "canvas-scale-hud"}>
+            <div className={`canvas-scale-hud${darkMode ? " is-sheet-invert" : ""}${viewPrefs.scaleBar ? "" : " is-view-hidden"}`}>
               <div className="canvas-scale-hud-lbl">{lbl}</div>
               <svg className="canvas-scale-hud-rule" width={Math.ceil(barPx)} height={22} aria-hidden="true">
                 <line x1={0} y1={y} x2={barPx} y2={y} stroke={halo} strokeWidth={7} strokeLinecap="square" />
@@ -12115,7 +12531,7 @@ export default function TakeoffCanvas() {
 
         {/* status line — floats above the scale bar so they never share a corner */}
         {commitMsg && (
-          <div style={{ position: "absolute", left: "50%", bottom: status === "ready" && unitsPerPx && focusPanel?.img?.w ? 78 : 14, transform: "translateX(-50%)", maxWidth: "70%", zIndex: 6, pointerEvents: "none", padding: "6px 12px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-1)", fontSize: 12, color: isDangerMsg(commitMsg) ? "var(--c-danger)" : "var(--c-positive)" }}>
+          <div style={{ position: "absolute", left: "50%", bottom: (status === "ready" && unitsPerPx && focusPanel?.img?.w && viewPrefs.scaleBar ? 78 : 14) + (viewPrefs.rulers ? 24 : 0), transform: "translateX(-50%)", maxWidth: "70%", zIndex: 6, pointerEvents: "none", padding: "6px 12px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-1)", fontSize: 12, color: isDangerMsg(commitMsg) ? "var(--c-danger)" : "var(--c-positive)" }}>
             {commitMsg}
           </div>
         )}
@@ -12146,7 +12562,7 @@ export default function TakeoffCanvas() {
             right:56 so it never covers the panel rail (right:14, 34px wide), and
             anchored to the BOTTOM (not top:14 like the original) so it stacks
             vertically with the live readout instead of sitting on top of it —
-            the live readout (top-right canvas overlay) shows the SAME zone's
+            the live readout (view-dock overlay above the minimap) shows the SAME zone's
             live "SF in zone" figure for the NEXT trace while this panel is open,
             and a top:14 placement here covered all but a ~42px sliver of it. */}
         {zoneRows && (
@@ -12206,17 +12622,17 @@ export default function TakeoffCanvas() {
           </div>
         )}
 
-        {/* Takeoffs hamburger — top-right; opens the right drawer. Hidden while
-            the drawer is open (the panel's × closes it). */}
-        {canvasReady && !takeoffsOpen && (
+        {/* Standalone builds retain a click-only drawer affordance. The ADICC
+            embed is controlled exclusively by the host's Tools eye button. */}
+        {canvasReady && !isEmbedded && !takeoffsOpen && (
           <button
             type="button"
-            className="canvas-hamburger-btn"
-            aria-label="Takeoffs — conditions + running totals"
+            className="chrome-edge-trigger is-right"
+            aria-label="Show Takeoffs Drawer"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={toggleTakeoffs}
+            onClick={() => setToolbarVisible("takeoffs", true)}
           >
-            <Menu size={18} strokeWidth={1.8} />
+            <span>Takeoffs Drawer</span>
           </button>
         )}
 
@@ -12296,11 +12712,13 @@ export default function TakeoffCanvas() {
           </div>
         )}
 
+        {/* Takeoffs Drawer overlays the sheet with no scrim — close only via
+            the panel × or Tools → Takeoffs Drawer (toggle). Outside clicks keep
+            working the canvas underneath. */}
         {canvasReady && takeoffsShown && (
-          <button type="button" className={`takeoffs-drawer-scrim${takeoffsEntered ? " is-open" : ""}`} aria-label="Close takeoffs" onClick={toggleTakeoffs} />
-        )}
-        {canvasReady && takeoffsShown && (
-        <div className={`takeoffs-drawer-slot${takeoffsEntered ? " is-open" : ""}`}>
+        <div
+          className={`takeoffs-drawer-slot${takeoffsEntered ? " is-open" : ""}`}
+        >
           <TakeoffsPanel
             open
             width={panelW}

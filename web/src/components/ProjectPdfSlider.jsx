@@ -2,9 +2,10 @@
 // Renders the first page of each plan (PDF/image) and slides them continuously.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { pdfjsWorkerSrc } from "../lib/pdfWorkerSrc.js";
+import AdiccLoadingLogo from "./AdiccLoadingLogo.jsx";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc();
 
 const MAX_SHEETS = 12;
 const THUMB_WIDTH = 200;
@@ -160,8 +161,10 @@ export default function ProjectPdfSlider({ projectId, sheetCount = 0 }) {
 
   if (!thumbs.length) {
     return (
-      <div className="home-project-preview" aria-busy="true">
-        <div className="home-project-preview-msg">Reading sheets…</div>
+      <div className="home-project-preview is-waiting" aria-busy="true">
+        <div className="home-project-preview-msg">
+          <AdiccLoadingLogo compact />
+        </div>
       </div>
     );
   }
