@@ -63,6 +63,7 @@ test("buildLayerTree puts grouped shapes under the group and leaves the rest at 
   assert.equal(tree.length, 3);
   assert.equal(tree[0].kind, "group");
   assert.equal(tree[0].name, "Walls");
+  assert.ok(tree[0].children);
   assert.deepEqual(tree[0].children.map((n) => n.id), ["a", "b"]);
   assert.equal(tree[0].color, "#f00");
   assert.equal(tree[0].children[0].color, "#f00");
@@ -102,6 +103,7 @@ test("folder paint colour is unanimous child paint, else the folder fallback", (
     condById: { c1: { finish_tag: "CPT-1", color: "#f00" } },
   });
   assert.equal(mixed[0].color, "#1a5276");
+  assert.ok(mixed[0].children);
   assert.equal(mixed[0].children[0].color, "#111111");
   assert.equal(mixed[0].children[1].color, "#eeeeee");
 });
@@ -182,6 +184,8 @@ test("nested buildLayerTree keeps group-in-group and summed metrics", () => {
   };
   const tree = buildLayerTree({ sheetKeys: ["s1"], shapes, layerForest: forest });
   const zone = tree.find((n) => n.id === "g2");
+  assert.ok(zone);
+  assert.ok(zone.children);
   assert.equal(zone.children[0].id, "g1");
   assert.deepEqual(shapeIdsUnder(zone), ["a", "b", "c"]);
   assert.match(zone.metric, /9 LF/);
@@ -194,6 +198,8 @@ test("a locked ancestor group marks descendant leaves locked", () => {
   };
   const tree = buildLayerTree({ sheetKeys: ["s1"], shapes, layerForest: forest });
   const g = tree.find((n) => n.id === "g1");
+  assert.ok(g);
+  assert.ok(g.children);
   assert.equal(g.locked, true);
   assert.equal(g.children[0].locked, true);
   assert.equal(g.children[1].locked, true);
@@ -341,14 +347,19 @@ test("groupSelection returns a new object when it groups", () => {
 
 test("sanitizeForest drops stale children on hydrate; tombstones reappear when the shape is live", () => {
   const forest = { g1: { id: "g1", name: "Walls", sheetKey: "s1", children: ["a", "gone"] } };
-  const pruned = sanitizeForest(forest, ["a"]);
+  const pruned = sanitizeForest(forest, ["a"]) as Record<string, { children: string[] }>;
   assert.deepEqual(pruned.g1.children, ["a"]);
   const missing = { g1: { id: "g1", name: "Walls", sheetKey: "s1", children: ["a", "b"] } };
   const withoutB = buildLayerTree({ sheetKeys: ["s1"], shapes: [shapes[0]], layerForest: missing });
   const g = withoutB.find((n) => n.id === "g1");
+  assert.ok(g);
+  assert.ok(g.children);
   assert.deepEqual(g.children.map((n) => n.id), ["a"]);
   const withB = buildLayerTree({ sheetKeys: ["s1"], shapes: [shapes[0], shapes[1]], layerForest: missing });
-  assert.deepEqual(withB.find((n) => n.id === "g1").children.map((n) => n.id), ["a", "b"]);
+  const hydrated = withB.find((n) => n.id === "g1");
+  assert.ok(hydrated);
+  assert.ok(hydrated.children);
+  assert.deepEqual(hydrated.children.map((n) => n.id), ["a", "b"]);
 });
 
 test("isLockedId follows the leaf map and ancestor group.locked", () => {

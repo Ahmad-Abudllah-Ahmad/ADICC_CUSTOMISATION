@@ -8,9 +8,30 @@
 
 import { kindFromRole } from "./layerTree.js";
 
-/** Letter-key → tool id. Shift D/Q/H are in SHIFT_LETTER_TO_TOOL, not here. */
+/**
+ * @typedef {object} ToolSpec
+ * @property {"shape" | "markup" | "none" | "ephemeral"} creates
+ * @property {boolean} createsLayer
+ * @property {string | null} layerKind
+ * @property {boolean} needsScale
+ * @property {boolean} needsCondition
+ * @property {boolean} needsHeight
+ * @property {string} [shortcut]
+ * @property {string} [measure_role]
+ * @property {string} [carveRole]
+ * @property {boolean} [proposalThenCreate]
+ * @property {number} [minPts]
+ * @property {number} [commitMinPts]
+ * @property {number} [commitVerts]
+ * @property {string} [clickCommit]
+ * @property {boolean} [curved]
+ * @property {boolean} [returnsToSelect]
+ * @property {boolean} [unreachable]
+ */
+
+/** Letter-key → tool id. Shift D/Q variants are in SHIFT_LETTER_TO_TOOL. */
 export const LETTER_TO_TOOL = {
-  h: "pan",
+  h: "highlighter",
   p: "pan",
   v: "select",
   a: "area",
@@ -30,7 +51,6 @@ export const LETTER_TO_TOOL = {
 export const SHIFT_LETTER_TO_TOOL = {
   D: "deduct-rect",
   Q: "deduct-curve",
-  H: "highlighter",
 };
 
 function shape(fields) {
@@ -74,6 +94,7 @@ function none(fields = {}) {
  * One row per canvas tool id (and chrome that is not a draw tool).
  * `minPts` is the Enter / Finish gate for poly-draw tools; omit it when the
  * tool commits on click, via a proposal, or never draws a poly.
+ * @type {Record<string, ToolSpec>}
  */
 export const TOOL_SPEC = {
   // ── measure rail ──────────────────────────────────────────────────────────

@@ -48,7 +48,10 @@ export default function LayersSidebar({
   selVert = null,
   onSeparateWallLine,
 }) {
-  const pickSet = layerPickIds instanceof Set ? layerPickIds : new Set(layerPickIds || []);
+  const pickSet = useMemo(
+    () => (layerPickIds instanceof Set ? layerPickIds : new Set(layerPickIds || [])),
+    [layerPickIds],
+  );
   const pickedN = pickSet.size;
   const pickedShapes = useMemo(
     () => shapes.filter((s) => pickSet.has(s.id)),

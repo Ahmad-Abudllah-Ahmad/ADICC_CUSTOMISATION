@@ -11,6 +11,7 @@ describe("ratesImport", () => {
       rate_material: "85",
       labour: "25",
     });
+    assert.ok(row);
     assert.equal(row.code, "CPT-1");
     assert.equal(row.rate_material, 85);
     assert.equal(row.rate_labour, 25);

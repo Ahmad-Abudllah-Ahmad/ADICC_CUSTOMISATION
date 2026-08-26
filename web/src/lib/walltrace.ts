@@ -155,7 +155,8 @@ export function wallTraceAtPoint(
   if (!(heightFt > 0)) return { status: "no_scale", message: "Set a wall height on the active condition (H in the condition editor)." };
   const f = floodWallInk(maskObj, ix, iy, sensitivity, maxGapMaskPx);
   if (f.status !== "ok") {
-    return { status: f.status, message: failMessage(f.status, f.count), count: f.count };
+    const count = f.status === "tiny" ? f.count : undefined;
+    return { status: f.status, message: failMessage(f.status, count), count };
   }
   const traced = traceWallRegion(f, opts);
   if (traced.status !== "ok") {

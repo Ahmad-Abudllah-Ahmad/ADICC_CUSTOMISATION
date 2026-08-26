@@ -1,10 +1,7 @@
 // Branding mode — how a deliverable presents itself. Two modes:
-//   • "default"    — OpenTakeoff-branded, exactly as the parent repo ships. This
-//                    is the code default (unset ⇒ default), so an upstream clone
-//                    is unchanged.
+//   • "default"    — ADICC-branded. This is the code default (unset ⇒ default).
 //   • "clearlabel" — a saved trade-name profile brands the document as the firm
-//                    presenting it; OpenTakeoff keeps a subtle plain-text credit
-//                    ("Measured with OpenTakeoff"), so the parent is still credited.
+//                    presenting it; ADICC keeps a subtle plain-text credit.
 //
 // resolveBranding() is PURE — given the per-project selection + the global
 // profiles list it tells every render point (report masthead, marked-set cover,
@@ -26,7 +23,7 @@ export const OT_CREDIT = "Measured with ADICC";
 export function resolveBranding(sel) {
   const profiles = sel?.profiles || [];
   // clear-label only takes effect when a real profile resolves — no profiles, a
-  // stale id with none left, or mode off all fall back to OpenTakeoff. A stale
+  // stale id with none left, or mode off all fall back to ADICC. A stale
   // id with other profiles present rides the first one. activeProfile() is the
   // ONE place that fallback rule lives (shared with the modal chip highlight) so
   // the deliverable and the UI can never disagree on which profile is selected.

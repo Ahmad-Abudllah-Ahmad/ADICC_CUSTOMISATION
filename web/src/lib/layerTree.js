@@ -563,6 +563,47 @@ function sheetChildren(sheetKey, shapes, forest, condById, hiddenShapeIds, locke
   return [...folders, ...ungrouped];
 }
 
+/**
+ * @typedef {object} LayerTreeShape
+ * @property {string} id
+ * @property {string} [sheet_id]
+ * @property {string} [condition_id]
+ * @property {string} [measure_role]
+ * @property {Record<string, number | undefined>} [computed]
+ * @property {boolean} [appearance_override]
+ * @property {string} [color]
+ */
+
+/**
+ * @typedef {object} LayerTreeNode
+ * @property {string} id
+ * @property {string} name
+ * @property {string} kind
+ * @property {LayerTreeNode[]} [children]
+ * @property {boolean} hidden
+ * @property {boolean} locked
+ * @property {string} metric
+ * @property {string} color
+ */
+
+/**
+ * Build the visible Layers hierarchy from live shapes and persisted groups.
+ * @param {{
+ *   sheetKeys?: string[],
+ *   sheetLabel?: (key: string) => string,
+ *   shapes?: LayerTreeShape[],
+ *   layerForest?: Record<string, any>,
+ *   layerGroups?: Record<string, any>,
+ *   condById?: Record<string, any>,
+ *   hiddenShapeIds?: Record<string, boolean>,
+ *   lockedShapeIds?: Record<string, boolean>,
+ *   units?: string,
+ *   sheetMatch?: (shapeSheetId: string, sheetKey: string) => boolean,
+ *   shapeMeta?: Record<string, any>,
+ *   roomForShape?: ((shape: LayerTreeShape) => string) | null,
+ * }} [options]
+ * @returns {LayerTreeNode[]}
+ */
 export function buildLayerTree({
   sheetKeys = [],
   sheetLabel = (k) => k,

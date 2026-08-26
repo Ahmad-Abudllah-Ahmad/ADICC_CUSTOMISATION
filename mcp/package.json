@@ -3,15 +3,15 @@
   "version": "0.6.1",
   "mcpName": "io.github.Kentucky-ai/opentakeoff",
   "type": "module",
-  "description": "OpenTakeoff MCP server — drive the takeoff engine from your MCP client over stdio.",
+  "description": "OpenTakeoff MCP server \u2014 drive the takeoff engine from your MCP client over stdio.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node --import tsx server.ts",
-    "start": "node dist/server.js",
-    "build": "esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server-core.js && node scripts/finish-build.mjs",
+    "dev": "node init && node --import tsx server.ts",
+    "start": "node init && node dist/server.js",
+    "build": "node init && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server-core.js && node scripts/finish-build.mjs",
     "smoke:dist": "node scripts/smoke-dist.mjs",
     "mcpb": "npm run build && node scripts/build-mcpb.mjs",
     "prepublishOnly": "npm run typecheck && npm test && npm run build",

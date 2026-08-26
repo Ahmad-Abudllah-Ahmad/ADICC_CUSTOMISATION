@@ -7,6 +7,11 @@ import { PALETTE, NO_FILL } from "./hatches.jsx";
 import { csvEsc } from "../lib/csv.js";
 
 const num = (v, d = 2) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: d });
+const collectionHas = (collection, value) => (
+  collection instanceof Set
+    ? collection.has(value)
+    : Array.isArray(collection) && collection.includes(value)
+);
 
 function ColorPickerPopup({ currentColor, onClose, onSelectColor, anchorRect }) {
   const ref = useRef(null);
@@ -80,7 +85,6 @@ export default function SummaryPanel({
 }) {
   const [search, setSearch] = useState("");
   const [expandedNodes, setExpandedNodes] = useState(() => new Set());
-  const [initExpanded, setInitExpanded] = useState(false);
   const [colorPickerAnchor, setColorPickerAnchor] = useState(null); // { condId, rect, currentColor }
   const [editingCodeId, setEditingCodeId] = useState(null);
   const [draftCodeVal, setDraftCodeVal] = useState("");
@@ -127,7 +131,7 @@ export default function SummaryPanel({
     });
     if (match.length) return match;
     if (activeSheetId) {
-      const matchBySheet = tree.filter((f) => f.sheet_ids && f.sheet_ids.has(activeSheetId));
+      const matchBySheet = tree.filter((f) => collectionHas(f.sheet_ids, activeSheetId));
       if (matchBySheet.length) return matchBySheet;
     }
     return tree;
@@ -773,7 +777,7 @@ export default function SummaryPanel({
                                     {/* Shapes List Under Item Code */}
                                     {isCodeOpen && codeNode.shapes.length > 1 && (
                                       <div style={{ background: "color-mix(in srgb, var(--ink) 3%, transparent)", padding: "2px 0 4px 54px" }}>
-                                        {codeNode.shapes.map((s, idx) => (
+                                        {codeNode.shapes.map((s) => (
                                           <div
                                             key={s.id}
                                             style={{
