@@ -30,7 +30,10 @@ async function bytesToThumbUrl(bytes, fileName, contentType) {
     return URL.createObjectURL(blob);
   }
   if (!isPdfName(fileName, contentType)) return null;
-  const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+  const doc = await pdfjsLib.getDocument({
+    data: bytes.slice(0),
+    verbosity: pdfjsLib.VerbosityLevel.ERRORS,
+  }).promise;
   try {
     const page = await doc.getPage(1);
     const base = page.getViewport({ scale: 1 });

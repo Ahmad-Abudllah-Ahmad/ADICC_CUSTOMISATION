@@ -473,6 +473,53 @@ textarea {
   pointer-events: none;
 }
 
+.measure-rail-chrome.is-portaled {
+  z-index: 10000;
+  /* Pixel top/left anchor the rail box; keep the icon stack pinned to that corner. */
+  align-items: flex-start;
+}
+
+.measure-rail-chrome.is-portaled .canvas-left-stack {
+  align-self: flex-start;
+}
+
+.measure-rail-chrome.is-portaled.is-hidden:not(.has-host-menu):not(.is-rail-dragging):not(.is-rail-resetting) {
+  transform: translate3d(calc(-100% - 24px), 0, 0);
+}
+
+.measure-rail-chrome.is-portaled.is-custom-pos:not(.is-rail-dragging),
+.measure-rail-chrome.is-portaled.is-rail-resetting {
+  transform: none !important;
+}
+
+.measure-rail-chrome.is-rail-resetting {
+  transition:
+    left 340ms cubic-bezier(0.16, 1, 0.3, 1),
+    top 340ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  will-change: left, top;
+}
+
+.measure-rail-chrome.is-portaled.is-custom-pos.is-rail-dragging,
+.measure-rail-chrome.is-rail-dragging {
+  transition: none !important;
+  left: 0 !important;
+  top: 0 !important;
+  transform: translate3d(var(--rail-drag-x, 0px), var(--rail-drag-y, 0px), 0) !important;
+  will-change: transform;
+  contain: layout style;
+}
+
+.measure-rail-chrome.is-rail-commit {
+  transition: none !important;
+  transform: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .measure-rail-chrome.is-rail-resetting {
+    transition-duration: 1ms !important;
+  }
+}
+
 .measure-rail-chrome {
   z-index: 120;
   overflow: visible;
@@ -487,6 +534,20 @@ textarea {
   transform: translate3d(calc(-100% - 24px), 0, 0);
   opacity: 0;
   pointer-events: none !important;
+}
+.measure-rail-chrome.has-host-menu,
+.measure-rail-chrome.is-hidden.has-host-menu {
+  transform: none;
+  opacity: 1;
+  /* A transformed ancestor becomes the containing block for the fixed host
+     menu. Remove the rail transition before the menu's first paint so its
+     anchor cannot shift from rail-relative to viewport-relative mid-open. */
+  transition: none;
+}
+.measure-rail-chrome.is-hidden.has-host-menu .canvas-left-stack {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .toolbar-glass-pills-row {
@@ -1680,6 +1741,96 @@ textarea {
   align-items: center;
 }
 
+.canvas-adicc-rail-drag {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  min-height: 32px !important;
+  padding: 0 !important;
+  flex: 0 0 32px;
+  border: none !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: grab;
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  color: #8b93a7;
+  position: relative;
+  overflow: visible;
+}
+
+.canvas-glass-cluster .canvas-adicc-rail-drag:hover:not(.is-dragging) {
+  background: color-mix(in srgb, #8b93a7 14%, #eef0f6) !important;
+  box-shadow: none !important;
+}
+
+.canvas-adicc-rail-drag:focus-visible {
+  outline: 2px solid #111111;
+  outline-offset: -2px;
+}
+
+.canvas-glass-cluster .canvas-adicc-rail-drag.is-dragging {
+  cursor: grabbing;
+  background: color-mix(in srgb, #1f3fc7 12%, #eef0f6) !important;
+  box-shadow: none !important;
+  color: #1f3fc7;
+}
+
+.canvas-adicc-rail-mark__clip {
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  flex-shrink: 0;
+  border-radius: 4px;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+.canvas-adicc-rail-mark__clip img {
+  height: 26px;
+  width: auto;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+.canvas-adicc-rail-drag__grip {
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  transform: translateX(-50%);
+  display: flex;
+  line-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.canvas-glass-cluster .canvas-adicc-rail-drag:hover:not(.is-dragging) .canvas-adicc-rail-drag__grip,
+.canvas-glass-cluster .canvas-adicc-rail-drag.is-dragging .canvas-adicc-rail-drag__grip {
+  opacity: 0.72;
+}
+
+.measure-rail-chrome.is-rail-dragging .canvas-glass-cluster {
+  box-shadow:
+    0 1px 2px rgba(14, 26, 46, 0.04),
+    0 4px 12px rgba(14, 26, 46, 0.06),
+    0 10px 28px rgba(31, 63, 199, 0.14);
+}
+
+.measure-rail-chrome.is-custom-pos {
+  bottom: auto;
+}
+
+.measure-rail-chrome.is-custom-pos .canvas-left-stack {
+  align-self: flex-start;
+}
+
 .canvas-glass-cluster .canvas-circle-btn {
   width: 32px !important;
   height: 32px !important;
@@ -1711,6 +1862,19 @@ textarea {
 .canvas-glass-cluster .canvas-circle-btn:focus-visible {
   outline: 2px solid #111111;
   outline-offset: -2px;
+}
+
+.canvas-glass-cluster .canvas-circle-btn.is-rail-reset-idle {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.canvas-glass-cluster .canvas-circle-btn.is-rail-reset-ready {
+  color: #1f3fc7 !important;
+}
+
+.canvas-glass-cluster .canvas-circle-btn.is-rail-reset-ready:hover {
+  background: color-mix(in srgb, #1f3fc7 12%, #eef0f6) !important;
 }
 
 .canvas-rail-rule {
@@ -1949,6 +2113,7 @@ textarea {
 .canvas-view-grid {
   position: absolute;
   inset: 0;
+  z-index: 1;
   pointer-events: none;
   background-image:
     linear-gradient(to right, rgba(31, 63, 199, 0.105) 1px, transparent 1px),
@@ -2499,6 +2664,124 @@ textarea {
   width: 100%;
   height: 100%;
 }
+.left-panel-slot.is-host-menu {
+  position: fixed;
+  top: 0;
+  left: var(--host-menu-left, 16px);
+  align-self: flex-start;
+  flex: none;
+  width: min(420px, calc(100vw - var(--host-menu-left, 16px) - 12px));
+  height: min(620px, calc(100vh - 16px));
+  max-height: calc(100vh - 16px);
+  z-index: 4;
+  pointer-events: auto;
+}
+.left-panel-slot.is-host-menu.is-switching {
+  transition:
+    left 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: left, width;
+}
+.left-panel-slot.is-open.is-host-menu {
+  width: min(420px, calc(100vw - var(--host-menu-left, 16px) - 12px));
+}
+.left-panel-slot.is-host-menu .left-window {
+  opacity: 0;
+  transform: translate3d(0, -8px, 0) scale(0.985);
+  transform-origin: top left;
+  transition:
+    transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.left-panel-slot.is-host-menu .left-window.is-open {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+.left-panel-slot.is-host-menu.is-switching .left-window {
+  transition: none;
+}
+.left-panel-slot.is-host-menu .left-panel-glass {
+  border: 1px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-radius: 0 0 7px 7px !important;
+  box-shadow: var(--shadow-2);
+}
+.host-project-menu-head {
+  flex: 0 0 auto;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 9px 0 12px;
+  border-bottom: 1px solid var(--hairline-warm);
+  background: var(--surface-pop);
+  color: var(--ink);
+}
+.host-project-menu-head > span,
+.host-project-menu-title {
+  overflow: hidden;
+  font-family: var(--f-body);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.host-project-menu-title {
+  animation: host-menu-title-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes host-menu-title-in {
+  from { opacity: 0; transform: translate3d(0, -5px, 0); }
+  to { opacity: 1; transform: none; }
+}
+.left-panel-slot.is-host-menu .left-panel-scroll {
+  position: relative;
+  overflow-x: hidden;
+}
+.left-panel-slot.is-host-menu .lp-tab-pane.is-host-menu-pane.is-fwd {
+  animation: host-menu-pane-fwd 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.left-panel-slot.is-host-menu .lp-tab-pane.is-host-menu-pane.is-back {
+  animation: host-menu-pane-back 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes host-menu-pane-fwd {
+  from { opacity: 0; transform: translate3d(8px, 4px, 0); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes host-menu-pane-back {
+  from { opacity: 0; transform: translate3d(-8px, 4px, 0); }
+  to { opacity: 1; transform: none; }
+}
+.host-project-menu-head > button {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.host-project-menu-head > button:hover {
+  background: var(--ink-faint);
+  color: var(--ink);
+}
+.host-project-menu-head > button:active {
+  transform: translateY(1px);
+  background: var(--ink-faint);
+  color: var(--ink);
+}
+.host-project-menu-head > button:focus-visible {
+  outline: 2px solid var(--cobalt);
+  outline-offset: 1px;
+}
+.host-project-menu-head > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 
 /* Files / Layers / Sheets — slide + fade from the rail. */
 .left-window {
@@ -2532,6 +2815,17 @@ textarea {
 @media (prefers-reduced-motion: reduce) {
   .left-window {
     transition: none !important;
+  }
+  .left-panel-slot.is-host-menu {
+    transition: none !important;
+  }
+  .left-panel-slot.is-host-menu .left-window {
+    transition: none !important;
+  }
+  .host-project-menu-title,
+  .left-panel-slot.is-host-menu .lp-tab-pane.is-host-menu-pane.is-fwd,
+  .left-panel-slot.is-host-menu .lp-tab-pane.is-host-menu-pane.is-back {
+    animation: none !important;
   }
 }
 

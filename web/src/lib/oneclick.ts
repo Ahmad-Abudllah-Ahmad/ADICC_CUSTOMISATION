@@ -1409,13 +1409,13 @@ export function floodWallInk(
   sensitivity: number = SENS_BALANCED, maxGapMaskPx: number = 0,
 ): FloodResult {
   const work = maxGapMaskPx >= 1 ? prepareWallFloodMask(maskObj, maxGapMaskPx) : maskObj;
-  const { leakFraction, growthMax } = wallSensitivityParams(sensitivity);
+  const { leakFraction } = wallSensitivityParams(sensitivity);
   const r1 = floodInkPass(work, ix, iy, 1, leakFraction);
   if (!work.softCount) return r1;
   if (r1.status === "leak") return r1;
   if (r1.status === "ok") return r1;
   const r2 = floodInkPass(work, ix, iy, 3, leakFraction);
-  if (r2.status === "ok" && (r1.status !== "ok" || r2.count <= (r1.count || 0) * growthMax)) {
+  if (r2.status === "ok") {
     r2.hatchFiltered = true;
     return r2;
   }

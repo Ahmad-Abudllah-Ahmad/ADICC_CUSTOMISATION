@@ -307,7 +307,7 @@ function PaperSelect({ name, value, options, onChange, ariaLabel, renderOption, 
   const current = options.find((o) => String(o.value) === String(value))
     || (placeholder != null ? { value: "", label: placeholder } : options[0]);
 
-  const placeMenu = () => {
+  const placeMenu = useCallback(() => {
     const btn = btnRef.current;
     if (!btn) return;
     const r = btn.getBoundingClientRect();
@@ -320,7 +320,7 @@ function PaperSelect({ name, value, options, onChange, ariaLabel, renderOption, 
       minWidth: Math.max(r.width, 132),
       maxHeight: maxH,
     });
-  };
+  }, [options.length]);
 
   useLayoutEffect(() => {
     if (!open) return undefined;
@@ -332,7 +332,7 @@ function PaperSelect({ name, value, options, onChange, ariaLabel, renderOption, 
       window.removeEventListener("resize", onReflow);
       window.removeEventListener("scroll", onReflow, true);
     };
-  }, [open, options.length]);
+  }, [open, placeMenu]);
 
   useEffect(() => {
     if (!open) return undefined;

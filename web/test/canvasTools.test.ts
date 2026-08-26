@@ -294,7 +294,7 @@ test("zone and schedule stay unreachable leftover paths", async () => {
 test("gallery G is a view switch, not a LETTER_TO_TOOL entry", async () => {
   const src = await readFile(canvasPath, "utf8");
   assert.match(src, /if \(lower === "g"\)/);
-  assert.equal(LETTER_TO_TOOL.g, undefined);
+  assert.equal((LETTER_TO_TOOL as Record<string, string | undefined>).g, undefined);
   assert.equal(TOOL_SPEC.gallery.shortcut, "G");
 });
 

@@ -160,7 +160,6 @@ export default function BoqPanel({
   onClearFocus,
   onOpenRates,
   onOpenSummary,
-  materialRates = [],
   projectSettings = {},
   pricingCtx = null,
 }) {
@@ -304,34 +303,6 @@ export default function BoqPanel({
       return changed ? next : prev;
     });
   }, [shapeRows, open, onBoqLinesChange]);
-
-  const syncFromTakeoff = useCallback(() => {
-    onBoqLinesChange((prev) => {
-      const byId = new Map(prev.map((l) => [l.id, l]));
-      const next = [...prev];
-      for (const r of shapeRows) {
-        const key = rowKey(r.shape_id);
-        const ex = byId.get(key);
-        const autoRoom = r.room_detected || "";
-        const patch = {
-          id: key,
-          shape_id: r.shape_id,
-          manual: false,
-          sheet_id: r.sheet_id,
-          condition_id: r.condition_id,
-          room: ex?.room_manual ? (ex.room || "") : autoRoom,
-          description: r.finish_tag || "",
-        };
-        if (ex) {
-          const i = next.findIndex((l) => l.id === key);
-          if (i >= 0) next[i] = { ...ex, ...patch, room_manual: ex.room_manual || false };
-        } else {
-          next.push({ ...patch, notes: "", unit: "", qty_override: "", rate: "", room_manual: false });
-        }
-      }
-      return next;
-    });
-  }, [shapeRows, onBoqLinesChange]);
 
   const exportCsv = useCallback(() => {
     const header = ["Floor/Level", "Sheet", "Room/Area", "Finish", "Description", "Floor SF", "Wall SF", "LF", "EA", "Qty", "Unit", "Rate", "Amount", "Material Name", "Material Qty", "Material Unit", "Material Amount", "Notes", "Source"];
@@ -477,8 +448,6 @@ export default function BoqPanel({
   const printPdfPreview = () => {
     pdfPreviewRef.current?.contentWindow?.print();
   };
-
-  if (!open) return null;
 
   const th = { textAlign: "left", padding: "6px 8px", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)", borderBottom: "1px solid var(--ink-faint)", whiteSpace: "nowrap" };
   const td = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid var(--ink-faint)", verticalAlign: "top" };
@@ -828,6 +797,8 @@ export default function BoqPanel({
       totalCost: round2(totalCost),
     };
   }, [shapeRows, blueprintTarget, focusShapeId, bySheet, sheetLevels, sheetLabel, boqLines, units]);
+
+  if (!open) return null;
 
   return (
     <>

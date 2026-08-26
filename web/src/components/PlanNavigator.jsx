@@ -255,13 +255,13 @@ export default function PlanNavigator({
   const toggleSel = (key) => setSel((g) => (g.includes(key) ? g.filter((k) => k !== key) : [...g, key]));
   const shapeCount = (key) => shapes.reduce((n, s) => n + (s.sheet_id === key ? 1 : 0), 0);
   const pdfShapeCount = (file) => shapes.reduce((n, s) => n + (parseSheetKey(s.sheet_id).file === file ? 1 : 0), 0);
-  const labelOf = (key) => {
+  const labelOf = useCallback((key) => {
     if (labels[key]) return labels[key];
     const t = parseSheetKey(key);
     // Foldered sheets carry their relative path as an id — label the sheet, not the path.
     const base = t.file.split("/").pop().replace(/\.pdf$/i, "");
     return t.page > 1 ? `${base} · ${t.page}` : base;
-  };
+  }, [labels]);
   // multi-floor: group by assigned level (natural sort), unassigned last; within a
   // group that itself has a level, order by the title-block label so A-sheets
   // read in drawing order. The Unassigned group keeps stable file/page order
@@ -307,7 +307,7 @@ export default function PlanNavigator({
     };
     walk(root);
     return root;
-  }, [allKeys, fileFolders, hasFolderTree, planNeedle, labels, levels]);
+  }, [allKeys, fileFolders, hasFolderTree, planNeedle, labels, levels, labelOf]);
   const countTreeSheets = (node) => {
     let n = node.files.length;
     for (const child of Object.values(node.folders)) n += countTreeSheets(child);
