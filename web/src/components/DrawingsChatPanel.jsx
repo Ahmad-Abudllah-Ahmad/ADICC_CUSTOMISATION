@@ -23,7 +23,7 @@ function fileName(path) {
 
 function cleanDisplayText(text) {
   return String(text || "")
-    .replace(/[#*`>•●○◆▪︎■□★☆✓✔✕✖]/g, "")
+    .replace(/[#*`>•●○◆▪■□★☆✓✔✕✖]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -237,6 +237,8 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
   const [previewState, setPreviewState] = useState("loading"); // loading | ready | error
   const dragRef = useRef(null);
   const panRef = useRef(null);
+  const citationChunkId = citation?.chunk_id;
+  const preview = hasImagePreview(citation);
 
   useEffect(() => {
     // Re-center slightly when switching citation so the window stays visible
@@ -246,11 +248,10 @@ function FloatingSourceWindow({ citation, onClose, onOpenInWorkspace, sheetNames
     }));
     setViewZoom(1);
     setViewPan({ x: 0, y: 0 });
-    setPreviewState(hasImagePreview(citation) ? "loading" : "error");
-  }, [citation?.chunk_id]);
+    setPreviewState(preview ? "loading" : "error");
+  }, [citationChunkId, preview]);
 
   if (!citation) return null;
-  const preview = hasImagePreview(citation);
   const inProject = sheetNames?.length ? sheetKeyForCitation(citation, sheetNames, galleryLabels) : null;
 
   function onDragStart(e) {

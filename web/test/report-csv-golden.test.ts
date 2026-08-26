@@ -14,7 +14,8 @@ import { conditionTotals, sheetTotals, totalsToCsv } from "../src/lib/totals.js"
 import { conditions, shapes, projectName, sheetLabel } from "./fixtures/report.fixture.ts";
 
 test("report CSV matches the golden snapshot byte-for-byte", () => {
-  const golden = readFileSync(new URL("./fixtures/report.golden.csv", import.meta.url), "utf8");
+  const golden = readFileSync(new URL("./fixtures/report.golden.csv", import.meta.url), "utf8")
+    .replace(/\r\n/g, "\n");
   const rows = conditionTotals(conditions, shapes).filter((r: any) => r.shape_count > 0);
   const csv = totalsToCsv(rows, projectName, sheetTotals(conditions, shapes), sheetLabel);
   assert.equal(csv, golden);

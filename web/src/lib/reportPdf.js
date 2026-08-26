@@ -91,7 +91,6 @@ export async function buildReportPdf({
   matSummary = [],
   markups = [],
   rfis = [],
-  sheetLabel = null,
   tableCols = [],
   ctx = {},
   groups = null,

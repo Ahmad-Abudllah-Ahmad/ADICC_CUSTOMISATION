@@ -25,7 +25,20 @@ export function sanitizeMaterialLibrary(raw) {
   return out;
 }
 
-/** Copy transferable fields from a library entry or condition line. */
+/**
+ * Copy transferable fields from a library entry or condition line.
+ * @param {Record<string, any>} m
+ * @returns {{
+ *   name: any,
+ *   unit: any,
+ *   per: any,
+ *   basis: any,
+ *   round: boolean,
+ *   note: any,
+ *   kind?: any,
+ *   grout?: Record<string, any>,
+ * }}
+ */
 export function libFields(m) {
   const out = {
     name: m.name || "",
@@ -44,7 +57,11 @@ function nameClassification(name) {
   return materialKind({ name });
 }
 
-/** Drop kind when a rename changes the name's classification (name drives presets). */
+/**
+ * Drop kind when a rename changes the name's classification (name drives presets).
+ * @param {Record<string, any>} m
+ * @param {string | null} [oldName=null]
+ */
 export function renameReclassified(m, oldName = null) {
   const next = { ...m };
   if (!oldName || oldName === m.name) return next;

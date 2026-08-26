@@ -24,7 +24,7 @@ import { GETTERS, CSV_PROFILE, colGetter, floorPerimeterLf, applyUnits, METRIC_C
 import { M_PER_FT, M2_PER_SF } from "./units";
 import { attrValue } from "./conditionColumns.js";
 import { shapeLabelValue } from "./shapeLabels.js";
-import { compareSheetKeys, sheetExportName } from "./sheetKey"; // NOT ./sheets — that module imports pdfjs-dist
+import { compareSheetKeys } from "./sheetKey"; // NOT ./sheets — that module imports pdfjs-dist
 
 // Re-export so existing consumers (markedset, snapshotDiff, ReportPanel, tests)
 // keep importing round2 from here; num.js is the single definition.
@@ -352,7 +352,7 @@ export function totalsToCsv(rows, projectName = "", bySheet = null, sheetLabel =
     lines.push("");
     lines.push(["Sheet", "Sheet ID", "Finish", `Floor ${AU}`, `Wall ${AU}`, `Border ${AU}`, LU, "EA"].map(esc).join(","));
     for (const g of bySheet) {
-      const label = sheetExportName(g.sheet_id);
+      const label = sheetLabel ? sheetLabel(g.sheet_id) : g.sheet_id;
       for (const row of g.rows) {
         const mult = row.multiplier || 1;
         const finish = mult > 1 ? `${row.finish_tag} ×${mult}` : row.finish_tag;

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  type Point,
   buildWallMask,
   floodWallInk,
   breakWallOpenings,
@@ -31,13 +32,13 @@ function syntheticBuildingMask(): { mask: Uint8Array; mw: number; mh: number; ws
 
 describe("walltrace", () => {
   it("ringPerimeter sums closed ring edges", () => {
-    const sq = [[0, 0], [10, 0], [10, 10], [0, 10]];
+    const sq: Point[] = [[0, 0], [10, 0], [10, 10], [0, 10]];
     assert.equal(ringPerimeter(sq), 40);
   });
 
   it("wallQuantitiesFromRings computes footprint, face, volume", () => {
-    const outer = [[0, 0], [10, 0], [10, 10], [0, 10]];
-    const holes = [[[2, 2], [8, 2], [8, 8], [2, 8]]];
+    const outer: Point[] = [[0, 0], [10, 0], [10, 10], [0, 10]];
+    const holes: Point[][] = [[[2, 2], [8, 2], [8, 8], [2, 8]]];
     const q = wallQuantitiesFromRings(outer, holes, 1, 10); // 1 ft/px, 10 ft height
     assert.equal(q.footprint_sf, 64); // 100 - 36
     assert.equal(q.perimeter_lf, 64); // outer 40 + hole 24

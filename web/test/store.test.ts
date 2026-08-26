@@ -260,12 +260,13 @@ test("meta KV does not collide with the annotations blob", async () => {
   assert.equal(await metaGet("sync::touched"), true);
 });
 
-test("createLocalStore(folderId): PDFs and browser-global libraries stay global (unscoped)", async () => {
+test("createLocalStore(folderId): PDFs are project-scoped while libraries stay global", async () => {
   const A = createLocalStore("folderA");
-  // a PDF added through a scoped store is visible to the global store — PDFs are
-  // intentionally NOT per-project locally (cloud mode routes them to cloudStore)
+  // A project cache exposes its own PDF without leaking the internal scoped key
+  // into the anonymous/global workspace.
   await A.addPdf({ name: "plan.pdf", arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer } as any);
-  assert.deepEqual((await localStore.listSheets()).map((s: any) => s.name), ["plan.pdf"]);
+  assert.deepEqual((await A.listSheets()).map((s: any) => s.name), ["plan.pdf"]);
+  assert.deepEqual((await localStore.listSheets()).map((s: any) => s.name), []);
   // browser-global libraries delegate to the same keys too: a save through a
   // scoped store is read back by the global store (materials/stamps/templates
   // are cross-project by design — the scoped store overrides only annotations)
@@ -306,7 +307,7 @@ test("database newer than this build surfaces as a stale-tab VersionError", asyn
   await assert.rejects(store.listSheets(), (e: any) => {
     assert.equal(e.name, "VersionError");
     assert.equal(isStaleTabError(e), true);
-    assert.match(e.message, /older OpenTakeoff/);
+    assert.match(e.message, /older ADICC/);
     return true;
   });
   // sanity: garden-variety errors are NOT stale-tab errors
@@ -341,7 +342,7 @@ test("friendlyStoreError maps quota to actionable copy; other errors pass throug
   assert.equal(friendlyStoreError(new Error("boom")), "boom");
   // TakeoffCanvas routes its message tint on EXACT equality with this string —
   // pin the copy so an edit there can't silently turn the warning green
-  assert.equal(STALE_TAB_MESSAGE, "OpenTakeoff was updated in another tab — reload this tab to continue.");
+  assert.equal(STALE_TAB_MESSAGE, "ADICC was updated in another tab — reload this tab to continue.");
 });
 
 test("two cloudStores over one IndexedDB scope snapshots by folderId (end-to-end)", async () => {

@@ -10,16 +10,11 @@ import { TABLE_PROFILE, CSV_PROFILE, colGetter, customColProfile, specColProfile
 import { areaVal, areaUnit, lenVal, lenUnit } from "../lib/units";
 import { columnLabel } from "../lib/conditionColumns.js";
 import { shapeLabelValue } from "../lib/shapeLabels.js";
-import { loadTemplates, saveTemplate, deleteTemplate, renameTemplate, mergeTemplates, overwriteTemplates } from "../lib/reportTemplates.js";
-import { canSyncTemplates, pushTemplatesToDrive, loadTemplatesFromDrive } from "../lib/reportTemplatesSync.js";
-import { useGoogleAuth } from "../lib/google/AuthContext.jsx";
-import { projectHomeFolderId } from "../lib/projectHome.js";
-import { getAccessToken } from "../lib/google/auth.js";
 import { shapesDetail, shapesToCsv, shapesToJson } from "../lib/shapesExport.js";
 import { rfisToCsv, rfisToJson } from "../lib/rfi.js";
 import { reportWorkbook, buildXlsx } from "../lib/xlsx.js";
 import { buildContribution, sendContribution, isContributeConfigured } from "../lib/contribute.js";
-import { activeTheme, saveActiveThemeFile, clearActiveTheme } from "../lib/reportTheme.js";
+import { activeTheme } from "../lib/reportTheme.js";
 import { normalizeLogoToPng, loadProfiles, saveProfiles, activeProfile, updateActiveProfile, addProfile, setActiveProfile, removeProfile } from "../lib/identity.js";
 import { resolveBranding, loadBrandingSelection, saveBrandingSelection } from "../lib/branding.js";
 import { buildReportPdf } from "../lib/reportPdf.js";
@@ -52,28 +47,7 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   // imported report theme → { vars, name, warnings }. vars are spread onto this
   // panel's root so the theme scopes to the document subtree (screen + print +
   // masthead) without touching app chrome. Held in state so an import applies live.
-  const [theme, setTheme] = useState(() => activeTheme());
-  const [showTheme, setShowTheme] = useState(false);
-  const themeRef = useRef(null);
-  const themeFileRef = useRef(null);
-  const importThemeFile = (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = ""; // let the same file re-trigger onChange next time
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const raw = String(reader.result || "");
-      try {
-        JSON.parse(raw); // reject non-JSON before storing
-        saveActiveThemeFile(raw);
-        setTheme(activeTheme());
-      } catch {
-        setTheme((t) => ({ ...t, warnings: ["That file isn't valid JSON — expected a design-token file."] }));
-      }
-    };
-    reader.readAsText(f);
-  };
-  const resetTheme = () => { clearActiveTheme(); setTheme({ vars: {}, name: null, warnings: [] }); };
+  const [theme] = useState(() => activeTheme());
 
   const rows = useMemo(() => conditionTotals(conditions, shapes).filter((r) => r.shape_count > 0), [conditions, shapes]);
   const bySheet = useMemo(() => sheetTotals(conditions, shapes), [conditions, shapes]);
@@ -110,18 +84,6 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
   const [colPrefs, setColPrefs] = useState(loadColPrefs);
   const [showCols, setShowCols] = useState(false);
   const colsRef = useRef(null);
-  // saved report templates (#114) — named column-visibility + grouping bundles
-  const [templates, setTemplates] = useState(loadTemplates);
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [tplName, setTplName] = useState("");
-  const templatesRef = useRef(null);
-  // optional Drive sync of templates (#115) — offered only when signed in AND a
-  // Projects root is configured. googleUser/driveRoot are also the push/load args.
-  const { user: googleUser } = useGoogleAuth();
-  const driveRoot = projectHomeFolderId();
-  const canSync = canSyncTemplates(googleUser, driveRoot);
-  const [syncBusy, setSyncBusy] = useState(false);
-  const [syncMsg, setSyncMsg] = useState("");
   // custom columns append after each profile (frozen 13 → built-in opt-ins →
   // custom), so toggling one can never disturb the frozen CSV prefix
   const customCols = customColProfile(conditionColumns);
@@ -212,79 +174,6 @@ export default function ReportPanel({ projectName, onProjectName, conditions, sh
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [showCols]);
-
-  // templates popover — same outside-click close as columns
-  useEffect(() => {
-    if (!showTemplates) return;
-    const onDown = (e) => { if (templatesRef.current && !templatesRef.current.contains(e.target)) setShowTemplates(false); };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [showTemplates]);
-
-  useEffect(() => {
-    if (!showTheme) return;
-    const onDown = (e) => { if (themeRef.current && !themeRef.current.contains(e.target)) setShowTheme(false); };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [showTheme]);
-
-  // Apply a template: set BOTH the column prefs and the grouping mode, and write
-  // them through to the sticky defaults so the layout persists (and #14's "By
-  // label" mode, captured as a string, self-heals via the group-by normalizer on
-  // a label-less project). Save-as snapshots the CURRENT layout under a name;
-  // groupByRaw (not the normalized groupBy) is captured so the user's real choice
-  // round-trips even when momentarily invalid.
-  const applyTemplate = (t) => {
-    setColPrefs(t.cols); saveColPrefs(t.cols);
-    setGroupByRaw(t.groupBy); saveGroupBy(t.groupBy);
-    setShowTemplates(false);
-  };
-  const saveAsTemplate = () => {
-    const nm = tplName.trim();
-    if (!nm) return;
-    setTemplates(saveTemplate(nm, colPrefs, groupByRaw));
-    setTplName("");
-  };
-  const renameTpl = (t) => {
-    const nm = (window.prompt("Rename template:", t.name) || "").trim();
-    if (!nm || nm === t.name) return;
-    setTemplates(renameTemplate(t.id, nm));
-  };
-
-  // Push/Load — Drive sync (#115). drive.js is a DYNAMIC import so the Drive
-  // client never lands in the anonymous bundle (mirrors ProjectHome.jsx);
-  // getAccessToken is safe to import statically (auth.js already ships).
-  const pushToDrive = async () => {
-    if (!canSync || syncBusy) return;
-    setSyncBusy(true); setSyncMsg("Pushing…");
-    try {
-      const { createDrive } = await import("../lib/google/drive.js");
-      const { count } = await pushTemplatesToDrive(createDrive({ getToken: getAccessToken }), driveRoot, googleUser.email, templates);
-      setSyncMsg(`Pushed ${count} to Drive.`);
-    } catch (e) {
-      setSyncMsg(`Push failed: ${String(e?.message || e)}`);
-    } finally { setSyncBusy(false); }
-  };
-  const loadFromDrive = async () => {
-    if (!canSync || syncBusy) return;
-    setSyncBusy(true); setSyncMsg("Loading…");
-    try {
-      const { createDrive } = await import("../lib/google/drive.js");
-      const remote = await loadTemplatesFromDrive(createDrive({ getToken: getAccessToken }), driveRoot, googleUser.email);
-      // Merge against the IN-MEMORY set (the source of truth the popover shows),
-      // not a fresh localStorage read — a blocked-storage read would look empty
-      // and drop templates that are live in state.
-      const before = templates.length;
-      const merged = overwriteTemplates(mergeTemplates(templates, remote));
-      setTemplates(merged);
-      const added = merged.length - before;
-      // Disambiguate a zero result: an empty Drive file reads differently to a
-      // user than "you already have everything on Drive."
-      setSyncMsg(added > 0 ? `Loaded ${added} from Drive.` : remote.length === 0 ? "Nothing saved on Drive yet." : "Already up to date — no new templates.");
-    } catch (e) {
-      setSyncMsg(`Load failed: ${String(e?.message || e)}`);
-    } finally { setSyncBusy(false); }
-  };
 
   // no-waste actuals view for labor: hides the waste-baked columns, surfaces
   // the raw Total SF opt-in — same diff-from-default shape applyTemplate uses.

@@ -146,7 +146,12 @@ export const localStore = {
     // preserve insertion order (IndexedDB getAllKeys sorts by key; we keep the
     // saved order from annotations.sheet_tabs at the canvas layer, so name-sort
     // here is fine for the gallery)
-    return (names || []).map((name) => ({ name }));
+    // Project-scoped PDF cache entries use an internal `<scope>::<name>` key.
+    // Keep them out of the anonymous workspace; scoped stores expose their own
+    // entries with the prefix removed.
+    return (names || [])
+      .filter((name) => typeof name !== "string" || !name.includes(PDF_SCOPE_SEP))
+      .map((name) => ({ name }));
   },
 
   async loadPdfData(name) {
@@ -313,11 +318,10 @@ export const localStore = {
 //   • folderId == null returns the SAME `localStore` object — the anonymous,
 //     browser-only app is byte-identical (same reference, same "annotations"
 //     key), so no importer, DB version, or migration changes.
-//   • Only loadAnnotations/saveAnnotations are re-scoped (key "annotations:<id>").
-//     The existing global "annotations" blob simply IS the null-scope project.
-//   • PDFs and the browser-global libraries (templates/materials/stamps) stay
-//     GLOBAL — cloud mode routes PDFs to cloudStore, and the libraries are
-//     cross-project by design (see their key comments above).
+//   • Annotations use "annotations:<id>"; PDFs use "<id>::<filename>" so local
+//     caches for Supabase/Drive projects cannot bleed into each other.
+//   • Browser-global libraries (templates/materials/stamps) remain shared
+//     across projects by design (see their key comments above).
 //   • Snapshots keep their explicit `project` argument (cloudStore/snapshotSync
 //     pass the scope), so they are untouched here.
 // Spreading `localStore` is safe: none of its methods use `this` (they close over

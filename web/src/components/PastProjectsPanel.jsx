@@ -1,5 +1,5 @@
 // Past projects — Supabase-backed recents on the home screen.
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "../brand/icons.jsx";
 import { isSupabaseConfigured } from "../lib/supabaseStore.js";
 import { createSupabaseRecents, mergeProjectLists, browserStorage } from "../lib/supabaseRecents.js";
@@ -128,8 +128,6 @@ export default function PastProjectsPanel({
   const [highlightId, setHighlightId] = useState(null);
   const [newProjectHover, setNewProjectHover] = useState(false);
   const [menuBtnHover, setMenuBtnHover] = useState("");
-
-  const recents = useMemo(() => createSupabaseRecents(browserStorage()).list(), [refresh]);
 
   useEffect(() => {
     if (!isSupabaseConfigured()) return;

@@ -74,7 +74,7 @@ export function resolveRate(catalog, query = {}) {
 
 /**
  * Compute extended costs for one line.
- * @param {{ qty: number, rate?: Record<string, any>, wastePct?: number }} args
+ * @param {{ qty: number, rate?: Record<string, any> | null, wastePct?: number }} args
  */
 export function lineCost({ qty, rate, wastePct }) {
   const q = Math.max(0, Number(qty) || 0);

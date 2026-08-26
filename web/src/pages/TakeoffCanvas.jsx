@@ -13,7 +13,7 @@
 // pans. Geometry math reads tfRef (always current), so drawing stays accurate.
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import * as pdfjsLib from "pdfjs-dist";
 import { pdfjsWorkerSrc } from "../lib/pdfWorkerSrc.js";
@@ -49,7 +49,7 @@ import {
 } from "../lib/symbolScheduleKb";
 import SymbolSourceViewer from "../components/SymbolSourceViewer.jsx";
 import { isGoogleConfigured, isSignedIn, isAllowedDomain, getAccessToken, orgDomainHint } from "../lib/google/auth.js";
-import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons, differencePolygons, intersectPolygons, subtractPolygonsToPolys } from "../lib/oneclick";
+import { extractVectorGeometry, buildMask, floodRegionSealed, traceRegion, traceRegionWithHoles, snapVertices, ringArea, MASK_MAX_DIM, SENS_STRICT, SENS_BALANCED, SENS_AGGRESSIVE, openingGapPx, polygonsOverlap, unionPolygons, intersectPolygons, subtractPolygonsToPolys } from "../lib/oneclick";
 import { buildWallMaskFromSegs, wallTraceAtPoint } from "../lib/walltrace";
 import { buildRasterMask, RASTER_MIN_IMG_FRAC, RASTER_MIN_SEGS, RASTER_RDP_EPS } from "../lib/rastermask";
 import { conditionTotals, verticalWallSf } from "../lib/totals.js";
@@ -101,7 +101,7 @@ import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
 import AdiccLoadingLogo from "../components/AdiccLoadingLogo.jsx";
-import { ChevronLeft, ChevronRight, Contrast, FileStack, Folder, FolderOpen, Map as MapIcon, Maximize2, Minimize2, Minus, Plus, Redo2, Scan, Search, Undo2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Contrast, FileStack, Map as MapIcon, Maximize2, Minimize2, Minus, Plus, Redo2, RotateCcw, Scan, Search, Undo2, X } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
@@ -123,9 +123,8 @@ import { AGENT_TOOL_DEFS, executeAgentTool, agentScaleGate } from "../lib/agentT
 import { runAgentLoop } from "../lib/agentLoop.js";
 import { runVoiceCommand, isAgentHandoffTrigger, shouldOfferAgentHandoff } from "../lib/voiceActions";
 import { createVoiceRecognizerClient } from "../lib/voiceRecognizerClient";
-import { startCapture, captureSupported } from "../lib/voiceCapture";
+import { startCapture } from "../lib/voiceCapture";
 import { aiConfig, isAiConfigured } from "../lib/ai.js";
-import { useGoogleAuth } from "../lib/google/AuthContext.jsx";
 import { projectHomeFolderId } from "../lib/projectHome.js";
 import ThemeToggle from "../components/ThemeToggle.jsx";
 import ProjectSwitcherDropdown from "../components/ProjectSwitcherDropdown.jsx";
@@ -393,7 +392,6 @@ export default function TakeoffCanvas() {
   // convenience shortcut for someone ALREADY signed in — it must never appear
   // while signed out, or it'd be a second OAuth entry point (a /projects
   // sign-in wall) in the toolbar, breaking the pre-Drive local-first look.
-  const { user: googleUser } = useGoogleAuth();
   // Client-side exit back to the project home (`/`) — main.jsx's gate cleanup
   // restores the local store on the way out, so this navigation is safe.
   const navigate = useNavigate();
@@ -449,19 +447,38 @@ export default function TakeoffCanvas() {
   // Floating LEFT panel — one at a time: null | "files" | "sheets" | "markup" | "stamp" | "rfi".
   // Layers has its own rail icon. One folder icon opens/closes this desk; tabs switch inside.
   const [leftTab, setLeftTab] = useState(null);
+  const leftTabRef = useRef(leftTab);
+  const [leftPanelPresentation, setLeftPanelPresentation] = useState("dock");
+  const leftPanelPresentationRef = useRef(leftPanelPresentation);
+  const [hostPanelAnchorLeft, setHostPanelAnchorLeft] = useState(16);
+  const hostMenuRef = useRef(null);
+  const measureRailRef = useRef(null);
+  const MEASURE_RAIL_POS_KEY = "opentakeoff_measure_rail_pos_v3";
+  const [measureRailPos, setMeasureRailPos] = useState(() => {
+    try {
+      const raw = localStorage.getItem(MEASURE_RAIL_POS_KEY)?.trim();
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) return { x: p.x, y: p.y };
+    } catch {
+      try { localStorage.removeItem(MEASURE_RAIL_POS_KEY); } catch { /* private mode */ }
+    }
+    return null;
+  });
+  const measureRailPosRef = useRef(measureRailPos);
+  const measureRailDragRef = useRef(null);
+  const measureRailDragLiveRef = useRef(null);
+  const measureRailDragRafRef = useRef(0);
+  const measureRailResettingRef = useRef(false);
+  const measureRailDraggingRef = useRef(false);
+  const [measureRailResetting, setMeasureRailResetting] = useState(false);
+  useEffect(() => { measureRailPosRef.current = measureRailPos; }, [measureRailPos]);
   const [lpTabsOverflow, setLpTabsOverflow] = useState({ start: false, end: false });
   const leftDesk = useOpenMotion(!!leftTab);
   const [illLayersOpen, setIllLayersOpen] = useState(false); // Illustrator-style Layers panel (live shapes)
   const lastLeftTabRef = useRef("files");
-  const toggleLeftDesk = useCallback(() => {
-    setIllLayersOpen(false);
-    setLeftTab((cur) => {
-      if (cur) return null;
-      const next = lastLeftTabRef.current === "layers" ? "files" : (lastLeftTabRef.current || "files");
-      return next;
-    });
-  }, []);
   const toggleLayersPanel = useCallback(() => {
+    setLeftPanelPresentation("dock");
     setIllLayersOpen((open) => {
       const next = !open;
       if (next) setLeftTab(null);
@@ -470,6 +487,17 @@ export default function TakeoffCanvas() {
   }, []);
   useEffect(() => { if (leftTab && leftTab !== "layers") lastLeftTabRef.current = leftTab; }, [leftTab]);
   useEffect(() => { if (leftTab === "layers") setLeftTab("files"); }, [leftTab]);
+  useEffect(() => {
+    leftTabRef.current = leftTab;
+    try {
+      window.parent?.postMessage({
+        source: "opentakeoff",
+        type: "adicc:canvas-panel-state",
+        panel: leftTab,
+      }, "*");
+    } catch { /* cross-origin embed */ }
+  }, [leftTab]);
+  useEffect(() => { leftPanelPresentationRef.current = leftPanelPresentation; }, [leftPanelPresentation]);
   useEffect(() => {
     const el = lpTabsScrollRef.current;
     if (!el || !leftTab) return;
@@ -513,22 +541,44 @@ export default function TakeoffCanvas() {
   };
   const [sheetsSearch, setSheetsSearch] = useState("");
   const toggleSheetsTab = useCallback(() => {
+    const fromHostMenu = leftPanelPresentationRef.current === "menu";
+    setLeftPanelPresentation("dock");
     setIllLayersOpen(false);
-    setLeftTab((cur) => (cur === "sheets" ? null : "sheets"));
+    setLeftTab((cur) => (cur === "sheets" && !fromHostMenu ? null : "sheets"));
   }, []);
   const leftTabHoldRef = useRef(leftTab);
   if (leftTab) leftTabHoldRef.current = leftTab;
   const deskTab = leftTab || (leftDesk.shown ? leftTabHoldRef.current : null);
+  const lpScrollRef = useRef(null);
   const lpTabMotionRef = useRef({ tab: deskTab, animate: false, dir: 1 });
+  const [, bumpLpTabMotion] = useState(0);
   if (deskTab && deskTab !== lpTabMotionRef.current.tab) {
-    const from = LP_TAB_ORDER.indexOf(lpTabMotionRef.current.tab);
+    const prev = lpTabMotionRef.current.tab;
+    const from = LP_TAB_ORDER.indexOf(prev);
     const to = LP_TAB_ORDER.indexOf(deskTab);
     lpTabMotionRef.current = {
       tab: deskTab,
-      animate: leftDesk.entered && leftDesk.shown,
       dir: from >= 0 && to >= 0 && to < from ? -1 : 1,
+      animate: leftDesk.shown && leftDesk.entered && prev != null,
     };
   }
+  const hostMenuSwitching = leftPanelPresentation === "menu" && lpTabMotionRef.current.animate;
+  useLayoutEffect(() => {
+    if (!deskTab) lpTabMotionRef.current = { tab: null, animate: false, dir: 1 };
+  }, [deskTab]);
+  useEffect(() => {
+    if (!lpTabMotionRef.current.animate) return undefined;
+    const id = window.setTimeout(() => {
+      lpTabMotionRef.current = { ...lpTabMotionRef.current, animate: false };
+      bumpLpTabMotion((n) => n + 1);
+    }, 280);
+    return () => window.clearTimeout(id);
+  }, [deskTab]);
+  useLayoutEffect(() => {
+    if (leftPanelPresentation !== "menu" || !deskTab) return;
+    const el = lpScrollRef.current;
+    if (el) el.scrollTop = 0;
+  }, [deskTab, leftPanelPresentation]);
   const layersMotion = useOpenMotion(illLayersOpen);
   const openGallery = useCallback(() => {
     setLeftTab(null);
@@ -625,7 +675,14 @@ export default function TakeoffCanvas() {
   const isEmbedded = typeof window !== "undefined" && window.self !== window.top;
   useEffect(() => {
     if (!isEmbedded) return undefined;
-    const onPointerDown = () => {
+    const onPointerDown = (e) => {
+      if (leftPanelPresentationRef.current === "menu" && leftTabRef.current) {
+        const menu = hostMenuRef.current;
+        const rail = measureRailRef.current;
+        if (!menu?.contains(e.target) && !rail?.contains(e.target)) {
+          setLeftTab(null);
+        }
+      }
       try {
         window.parent?.postMessage({ source: "opentakeoff", type: "adicc:host-pointer-down" }, "*");
       } catch { /* cross-origin embed */ }
@@ -634,8 +691,19 @@ export default function TakeoffCanvas() {
     return () => window.removeEventListener("pointerdown", onPointerDown, true);
   }, [isEmbedded]);
   useEffect(() => {
-    if (isEmbedded) return undefined;
-    const onFullscreen = () => setCanvasExpanded(!!document.fullscreenElement);
+    const onFullscreen = () => {
+      const active = !!document.fullscreenElement;
+      setCanvasExpanded(active);
+      if (isEmbedded) {
+        try {
+          window.parent?.postMessage({
+            source: "opentakeoff",
+            type: "adicc:canvas-expand-state",
+            active,
+          }, "*");
+        } catch { /* cross-origin embed */ }
+      }
+    };
     document.addEventListener("fullscreenchange", onFullscreen);
     return () => document.removeEventListener("fullscreenchange", onFullscreen);
   }, [isEmbedded]);
@@ -682,11 +750,13 @@ export default function TakeoffCanvas() {
   }, []);
   const [takeoffsShown, setTakeoffsShown] = useState(takeoffsOpen);
   const [takeoffsEntered, setTakeoffsEntered] = useState(takeoffsOpen);
+  const takeoffsShownRef = useRef(takeoffsShown);
+  takeoffsShownRef.current = takeoffsShown;
   useEffect(() => {
     const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (takeoffsOpen) {
       setTakeoffsShown(true);
-      if (reduce || takeoffsShown) {
+      if (reduce || takeoffsShownRef.current) {
         setTakeoffsEntered(true);
         return undefined;
       }
@@ -1059,7 +1129,7 @@ export default function TakeoffCanvas() {
   // Per-sheet reveal counts persist when switching files among A1105–A1109.
   // Clicking AI Detection always restarts the sequential reveal on the viewed sheet.
   const [aiDetectShownBySheet, setAiDetectShownBySheet] = useState({});
-  const [aiDetectAnimatingKey, setAiDetectAnimatingKey] = useState(null);
+  const [, setAiDetectAnimatingKey] = useState(null);
   const aiDetectTimerRef = useRef(null);
   const stopAiDetectReveal = useCallback(() => {
     if (aiDetectTimerRef.current != null) {
@@ -1085,6 +1155,11 @@ export default function TakeoffCanvas() {
     try {
       window.parent?.postMessage({
         source: "opentakeoff",
+        type: "adicc:canvas-ready-state",
+        ready: false,
+      }, "*");
+      window.parent?.postMessage({
+        source: "opentakeoff",
         type: "adicc:sheets-view",
         active: true,
         projectId,
@@ -1092,6 +1167,11 @@ export default function TakeoffCanvas() {
     } catch { /* cross-origin embed */ }
     return () => {
       try {
+        window.parent?.postMessage({
+          source: "opentakeoff",
+          type: "adicc:canvas-ready-state",
+          ready: false,
+        }, "*");
         window.parent?.postMessage({ source: "opentakeoff", type: "adicc:sheets-view", active: false }, "*");
       } catch { /* cross-origin embed */ }
     };
@@ -1154,13 +1234,29 @@ export default function TakeoffCanvas() {
       const d = e?.data;
       if (!d || d.source !== "adicc-platform" || d.type !== "adicc:canvas-subnav") return;
       const action = d.action;
-      if (action === "files") {
+      if (LP_TAB_ORDER.includes(action)) {
+        const closesCurrentMenu = leftTabRef.current === action && leftPanelPresentationRef.current === "menu";
+        setLeftPanelPresentation(d.presentation === "menu" ? "menu" : "dock");
+        if (Number.isFinite(d.anchorLeft)) {
+          const anchorLeft = Math.max(0, d.anchorLeft);
+          // The slot is always mounted. Write the incoming anchor before React
+          // opens it so the first painted menu frame is already under its
+          // navbar trigger instead of flashing at the previous/default x.
+          hostMenuRef.current?.style.setProperty("--host-menu-left", `${anchorLeft}px`);
+          setHostPanelAnchorLeft(anchorLeft);
+        }
         setIllLayersOpen(false);
-        setLeftTab((cur) => {
-          if (cur && cur !== "summary") return null;
-          const next = lastLeftTabRef.current === "layers" ? "files" : (lastLeftTabRef.current || "files");
-          return next;
-        });
+        setLeftTab(closesCurrentMenu ? null : action);
+      } else if (action === "close-panel") {
+        setLeftTab(null);
+      } else if (action === "request-panel-state") {
+        try {
+          window.parent?.postMessage({
+            source: "opentakeoff",
+            type: "adicc:canvas-panel-state",
+            panel: leftTabRef.current,
+          }, "*");
+        } catch { /* cross-origin embed */ }
       } else if (action === "tools") {
         setPaletteOpen((v) => !v);
       }
@@ -1258,6 +1354,22 @@ export default function TakeoffCanvas() {
           postViewState();
           return;
         }
+        const applyViewEnabled = (view, enabled) => {
+          if (typeof enabled !== "boolean") return false;
+          if (view === "minimap") {
+            setMinimapOpen(enabled);
+            return true;
+          }
+          if (["estimate", "readout", "rulers", "grid", "scaleBar"].includes(view)) {
+            setViewPrefs((current) => ({ ...current, [view]: enabled }));
+            return true;
+          }
+          return false;
+        };
+        if (d.action === "set") {
+          applyViewEnabled(d.view, d.enabled);
+          return;
+        }
         if (d.action !== "toggle") return;
         if (d.view === "minimap") {
           setMinimapOpen((visible) => !visible);
@@ -1313,9 +1425,9 @@ export default function TakeoffCanvas() {
   const drawAppearanceRef = useRef(null);
   drawAppearanceRef.current = drawAppearance;
   const [materialRates, setMaterialRates] = useState([]);
-  const [projectCurrency, setProjectCurrency] = useState("AED");
-  const [markupPct, setMarkupPct] = useState(0);
-  const [overheadPct, setOverheadPct] = useState(0);
+  const [projectCurrency] = useState("AED");
+  const [markupPct] = useState(0);
+  const [overheadPct] = useState(0);
   const [boqFocusShapeId, setBoqFocusShapeId] = useState(null); // filtered BOQ view — one mask
   const [shapeBoqHover, setShapeBoqHover] = useState(null);     // { id, cx, cy } canvas-local hover card
   const [shapeBoqFocus, setShapeBoqFocus] = useState(null);     // pinned shape id — static BOQ card
@@ -1727,7 +1839,10 @@ export default function TakeoffCanvas() {
   // Every coordinate on screen lives in "stage space": panel i's image px plus
   // its xOffset. With one panel xOffset is 0, so stage space IS image space and
   // all the original single-sheet math is unchanged.
-  const groupKeys = openTabs.length === 0 ? [] : (sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []));
+  const groupKeys = useMemo(
+    () => (openTabs.length === 0 ? [] : (sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []))),
+    [openTabs.length, sheetGroup, sheetKey],
+  );
   const groupSig = JSON.stringify(groupKeys);
   let _px = 0;
   const panels = groupKeys.map((key) => {
@@ -1759,11 +1874,6 @@ export default function TakeoffCanvas() {
   const aiDetectViewKey = (sheetGroup.length
     ? ((focusKey && sheetGroup.includes(focusKey)) ? focusKey : (sheetGroup[0] || sheetKey))
     : sheetKey);
-  const aiDetectShapes = useMemo(() => {
-    if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return [];
-    return shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, aiDetectViewKey));
-  }, [shapes, aiDetectViewKey, isAiDetectFloorPlan]);
-  const aiDetectShownNow = aiDetectShownBySheet[aiDetectViewKey] || 0;
   const aiDetectShapeRevealed = useCallback((shape) => {
     if (!shape || !isAiDetectFloorPlan(shape.sheet_id)) return true;
     // Manual cutouts stay visible on top of the parent until the user applies them.
@@ -2491,13 +2601,13 @@ export default function TakeoffCanvas() {
   // One-Click + Wall Trace proposals persist across each other — estimate
   // workflows trace walls then rooms on the same sheet without losing previews.
   // Leaving both tools (or switching to a draw tool) clears pending work.
-  const TRACE_PROPOSAL_TOOLS = new Set(["oneclick", "walltrace"]);
+  const TRACE_PROPOSAL_TOOLS = useMemo(() => new Set(["oneclick", "walltrace"]), []);
   useEffect(() => {
     if (!TRACE_PROPOSAL_TOOLS.has(tool)) {
       setProposal(null);
       setWallProposal(null);
     }
-  }, [tool]);
+  }, [tool, TRACE_PROPOSAL_TOOLS]);
   // Proposal gone (created, discarded, sheet changed) ⇒ drop any handle selection/hover.
   useEffect(() => { if (!proposal) { setOcSel(null); ocHoverRef.current = -1; setOcHover(-1); } }, [proposal]);
   // Switching to a different shape (or clearing the selection) drops the vertex pick.
@@ -2565,7 +2675,13 @@ export default function TakeoffCanvas() {
     if (!t) {
       t = store.loadPdfData(file).then((data) => {
         if (!data) throw new Error(`Missing PDF data for ${file}`);
-        return pdfjsLib.getDocument({ data });
+        return pdfjsLib.getDocument({
+          data,
+          // Some construction PDFs contain unsupported TrueType hint
+          // instructions. They are harmless to rendering, so keep pdf.js at
+          // error-only verbosity instead of flooding the console.
+          verbosity: pdfjsLib.VerbosityLevel.ERRORS,
+        });
       });
       pdfDocsRef.current.set(file, t);
     }
@@ -2609,7 +2725,35 @@ export default function TakeoffCanvas() {
   // that already have a finished bitmap are kept (no setStatus("rendering"),
   // no cache wipe). Only missing keys raster; the full overlay is for a group
   // with nothing painted yet (first open or a true jump to an uncached sheet).
+  const renderSheetGroupInputsRef = useRef(null);
+  renderSheetGroupInputsRef.current = {
+    active,
+    docFor,
+    fitToView,
+    focusKey,
+    groupKeys,
+    hiResKeys,
+    openTabs,
+    selectShape,
+    sheetKey,
+    sheets,
+  };
+  const hiResSig = hiResKeys.join(" ");
   useEffect(() => {
+    const {
+      active,
+      docFor,
+      fitToView,
+      focusKey,
+      groupKeys,
+      hiResKeys,
+      openTabs,
+      selectShape,
+      sheetKey,
+      sheets,
+    } = renderSheetGroupInputsRef.current;
+    const renderSeq = renderSeqRef;
+    const renderTasks = renderTasksRef;
     if (!openTabs.length) {
       if (statusRef.current === "loading" || statusRef.current === "rendering") {
         setStatus(sheets.length ? "ready" : "empty");
@@ -2871,16 +3015,14 @@ export default function TakeoffCanvas() {
     // cleanup MUST read the LIVE refs, not a mount-time copy: bumping the current
     // renderSeqRef invalidates in-flight renders. Only cancel tasks for keys this
     // chain was rastering — keep-key tasks (already finished) stay put.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     return () => {
-      renderSeqRef.current++;
+      renderSeq.current++;
       for (const k of missing) {
-        const rt = renderTasksRef.current.get(k);
-        if (rt) { try { rt.cancel(); } catch { /* done */ } renderTasksRef.current.delete(k); }
+        const rt = renderTasks.current.get(k);
+        if (rt) { try { rt.cancel(); } catch { /* done */ } renderTasks.current.delete(k); }
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupSig, hiResKeys.join(" ")]);
+  }, [groupSig, hiResSig]);
 
   // Liveness watchdog: if status is stuck in "loading" or "rendering", transition to "ready"
   useEffect(() => {
@@ -2909,8 +3051,14 @@ export default function TakeoffCanvas() {
     }));
   }, [conditions, symbolEpoch, symbolKbEpoch, sheets, galleryLabels]);
 
-  const roomLabelsBySheet = useMemo(() => ({ ...roomLabelsRawRef.current }), [symbolEpoch]);
-  const scheduleKb = useMemo(() => new Map(scheduleKbRef.current), [symbolKbEpoch]);
+  const roomLabelsBySheet = useMemo(() => {
+    void symbolEpoch;
+    return { ...roomLabelsRawRef.current };
+  }, [symbolEpoch]);
+  const scheduleKb = useMemo(() => {
+    void symbolKbEpoch;
+    return new Map(scheduleKbRef.current);
+  }, [symbolKbEpoch]);
 
   // Stable name set — listSheets / manifest refresh often rebuilds the sheets
   // array with identical names; depending on array identity would cancel the
@@ -3623,6 +3771,15 @@ export default function TakeoffCanvas() {
   useEffect(() => { if (MEASURE_TOOLS.some((t) => t.id === tool)) lastMeasureRef.current = tool; }, [tool]);
   useEffect(() => { if (CUT_TOOLS.some((t) => t.id === tool)) lastCutRef.current = tool; }, [tool]);
   useEffect(() => { if (MARKUP_IDS.includes(tool)) lastMarkupRef.current = tool; }, [tool]);
+  const hideCrosshair = useCallback(() => {
+    for (const ref of [crossVRef, crossHRef, rubberRef, rectRef, cloudRef, highlightRef, snapMarkRef, aimMarkRef, aimChipRef]) if (ref.current) ref.current.style.display = "none";
+    if (hlRef.current == null && hlPathRef.current) hlPathRef.current.style.display = "none";
+    if (hoverRef.current) hoverRef.current.style.display = "none";
+    hoverIdRef.current = "";
+    if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
+    angleRef.current = null;
+    if (containerRef.current && !spaceRef.current && !panRef.current) containerRef.current.style.cursor = "";
+  }, [shapeBoqFocus]);
 
   // Number keys 1–9 switch the active condition (material) fast — through
   // activateCondition with reassign:false: a digit press has no visual
@@ -3720,7 +3877,7 @@ export default function TakeoffCanvas() {
   useEffect(() => {
     if (tool !== "select" && tool !== "pan") return;
     hideCrosshair();
-  }, [tool]);
+  }, [tool, hideCrosshair]);
 
   function canFinishCurrentDraw() {
     return canFinishDraw(tool, poly.length, { zoneCross: zoneTraceCross });
@@ -4491,15 +4648,6 @@ export default function TakeoffCanvas() {
       } else highlightRef.current.style.display = "none";
     }
   }
-  function hideCrosshair() {
-    for (const ref of [crossVRef, crossHRef, rubberRef, rectRef, cloudRef, highlightRef, snapMarkRef, aimMarkRef, aimChipRef]) if (ref.current) ref.current.style.display = "none";
-    if (hlRef.current == null && hlPathRef.current) hlPathRef.current.style.display = "none";
-    if (hoverRef.current) hoverRef.current.style.display = "none";
-    hoverIdRef.current = "";
-    if (!shapeBoqFocus && !shapeBoqHoverStickyRef.current) setShapeBoqHover(null);
-    angleRef.current = null;
-    if (containerRef.current && !spaceRef.current && !panRef.current) containerRef.current.style.cursor = "";
-  }
   // Pointer left the canvas: hide the aim chrome AND kill the voice-deixis aim —
   // a pointer parked off-canvas must not leave a ghost seed for "this room".
   // (Other hideCrosshair callers — e.g. the inline editor — keep the aim: the
@@ -5190,6 +5338,8 @@ export default function TakeoffCanvas() {
     }
     setCommitMsg("Autoscale couldn't detect a scale — pick one from Standard or calibrate two points.");
   }
+  const applyAutoscaleRef = useRef(applyAutoscale);
+  applyAutoscaleRef.current = applyAutoscale;
 
   const autoscaleTriedRef = useRef(new Set());
   useEffect(() => {
@@ -5199,7 +5349,7 @@ export default function TakeoffCanvas() {
     const src = scaleSources[key];
     if (src === "standard" || src === "calibrated" || src === "detected") return;
     autoscaleTriedRef.current.add(key);
-    void applyAutoscale(key);
+    void applyAutoscaleRef.current(key);
   }, [status, focusPanel?.key, scales, scaleSources]);
 
   function applyCalibration() {
@@ -5763,13 +5913,6 @@ export default function TakeoffCanvas() {
     }
     return best;
   }
-  function insertPointOnRunPx(pts, segIndex, point) {
-    const idx = Math.max(1, Math.min(segIndex, pts.length - 1));
-    return [...pts.slice(0, idx), [point[0], point[1]], ...pts.slice(idx)];
-  }
-  function hasVertexNearPx(pts, point, eps = 1.5) {
-    return pts.some((p) => Math.hypot(p[0] - point[0], p[1] - point[1]) < eps);
-  }
   function dedupeRunPx(pts, eps = 0.5) {
     if (!pts.length) return pts;
     const out = [pts[0]];
@@ -5797,18 +5940,6 @@ export default function TakeoffCanvas() {
     if (ai === 0 && bi === 0) return dedupeRunPx([...aPts.slice(1).reverse(), ...bPts]);
     if (ai === 0 && bi === bPts.length - 1) return dedupeRunPx([...bPts.slice(0, -1), ...aPts.slice(1)]);
     return null;
-  }
-  function surfaceEndpointsPx(sheetKey, condId, excludeId = null) {
-    const tp = panelByKey(sheetKey);
-    if (!tp?.img?.w) return [];
-    const out = [];
-    for (const s of shapesRef.current) {
-      if (s.sheet_id !== sheetKey || s.condition_id !== condId || s.measure_role !== "surface_area") continue;
-      if (excludeId && s.id === excludeId) continue;
-      const pts = s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
-      if (pts.length >= 2) out.push(...[pts[0], pts[pts.length - 1]]);
-    }
-    return out;
   }
   // Snap onto peer run endpoints OR any point along a peer segment (T-attach).
   // `thrOverride` — Wall Area live-draw uses a tight radius so corners don't yank from far away.
@@ -5995,18 +6126,6 @@ export default function TakeoffCanvas() {
     }
     return false;
   }
-  function surfaceRunsCanJoin(idA, idB) {
-    const a = shapesRef.current.find((s) => s.id === idA);
-    const b = shapesRef.current.find((s) => s.id === idB);
-    if (!a || !b || a.measure_role !== "surface_area" || b.measure_role !== "surface_area") return false;
-    if (a.sheet_id !== b.sheet_id || a.condition_id !== b.condition_id) return false;
-    const tp = panelByKey(a.sheet_id);
-    if (!tp?.img?.w) return false;
-    const toPx = (s) => s.verts_norm.map(([nx, ny]) => [nx * tp.img.w, ny * tp.img.h]);
-    const aPx = toPx(a), bPx = toPx(b);
-    if (aPx.length < 2 || bPx.length < 2) return false;
-    return surfaceRunsNear(aPx, bPx, surfaceJoinThr());
-  }
   function tryCloseSurfaceLoopAtEndpoints(shapeId) {
     const s = shapesRef.current.find((x) => x.id === shapeId);
     if (!s || s.measure_role !== "surface_area" || s.origin?.closed_loop) return false;
@@ -6126,32 +6245,6 @@ export default function TakeoffCanvas() {
         if (merged) primaryId = merged.id;
       }
     } else if (added && tool !== "wallarea") tryMergeSurfaceRun(added.id);
-  }
-  function commitWallPoly(points) {
-    if (points.length < 3) return;
-    const tp = panelAt(points[0][0]);
-    const upp = uppFor(tp.key);
-    if (!upp) { setCommitMsg(`Set the scale for ${labelFor(tp)} first.`); return; }
-    if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
-    const h = Number(aCond?.height_ft) || 0;
-    if (!(h > 0)) {
-      setCommitMsg(`Set a height for ${aCond?.finish_tag || "this condition"} (H in the condition editor) — Wall Area needs height for face area and volume.`);
-      return;
-    }
-    const poly = points.map(([x, y]) => [x - tp.xOffset, y]);
-    const met = closedMetrics(poly);
-    const footprint_sf = +(met.area * upp * upp).toFixed(2);
-    const perimeter_lf = +(met.perim * upp).toFixed(2);
-    const wall_face_sf = +(perimeter_lf * h).toFixed(2);
-    const volume_cf = +(footprint_sf * h).toFixed(2);
-    dispatchShape({ type: "add", shapes: [{
-      sheet_id: tp.key, condition_id: activeCond, measure_role: "wall_area", height_ft: h,
-      verts_norm: poly.map(([x, y]) => [x / tp.img.w, y / tp.img.h]),
-      computed: { area_sf: wall_face_sf, footprint_sf, wall_face_sf, volume_cf, perimeter_lf },
-      ...(activeLabel ? { label: activeLabel } : {}),
-      origin: { method: "manual", reviewed: true },
-    }] });
-    setCommitMsg(`Wall area — ${fa(wall_face_sf)} face · ${fa(footprint_sf)} footprint · ${num(volume_cf, 1)} CF. Use Deduct on a selected wall to carve room holes.`);
   }
   function commitCount(p) {
     if (!activeCond) { setCommitMsg("Pick or add a condition first."); return; }
@@ -8950,7 +9043,6 @@ export default function TakeoffCanvas() {
   // resolve pinned ids to live conditions for the top-bar palette (a stale id
   // renders nothing — the persisted list is pruned on save/delete, this is the
   // render-time guard)
-  const paletteConds = palette.map((id) => condById[id]).filter(Boolean);
   const activeColor = aCond?.color || "#c96442";
   // Pattern id encodes the appearance so a hatch/color change yields a NEW paint
   // server — otherwise browsers keep painting the cached old pattern (the "it
@@ -8988,12 +9080,24 @@ export default function TakeoffCanvas() {
   // VISIBLE shapes through the same conditionTotals rules the Report uses —
   // one source of role math, two scopes. Memoized: visRowById is a prop of the
   // memoized panel, so its identity must only change when the totals can.
-  const visibleShapesMeasured = useMemo(() => drawableShapes.map((s) => {
-    if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
-      return { ...s, computed: recomputeShape(s) };
-    }
-    return s;
-  }), [drawableShapes, scales, conditions]);
+  const recomputeShapeRef = useRef(recomputeShape);
+  const panelByKeyRef = useRef(panelByKey);
+  const uppForRef = useRef(uppFor);
+  const layerGroupIdsForRef = useRef(layerGroupIdsFor);
+  recomputeShapeRef.current = recomputeShape;
+  panelByKeyRef.current = panelByKey;
+  uppForRef.current = uppFor;
+  layerGroupIdsForRef.current = layerGroupIdsFor;
+  const visibleShapesMeasured = useMemo(() => {
+    void scales;
+    void conditions;
+    return drawableShapes.map((s) => {
+      if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
+        return { ...s, computed: recomputeShapeRef.current(s) };
+      }
+      return s;
+    });
+  }, [drawableShapes, scales, conditions]);
   const visRows = useMemo(() => conditionTotals(conditions, visibleShapesMeasured), [conditions, visibleShapesMeasured]);
   const visRowById = useMemo(() => new Map(visRows.map((r) => [r.id, r])), [visRows]);
   // Zone check: the SAME conditionTotals rules on the shapes whose center point
@@ -9011,6 +9115,7 @@ export default function TakeoffCanvas() {
   const wallTotal = condRow?.wall_sf || 0;
   const borderTotal = condRow?.border_sf || 0;
   const condDeduction = useMemo(() => {
+    void scales;
     if (!activeCond) return { floorBefore: 0, floorAfter: 0, wallBefore: 0, wallAfter: 0 };
     const mult = condMult || 1;
     let floorGross = 0;
@@ -9023,8 +9128,8 @@ export default function TakeoffCanvas() {
       const cp = s.computed || {};
       if (s.measure_role === "floor_area") {
         floorNet += cp.area_sf || 0;
-        const sp = panelByKey(s.sheet_id);
-        const u = uppFor(s.sheet_id) || 0;
+        const sp = panelByKeyRef.current(s.sheet_id);
+        const u = uppForRef.current(s.sheet_id) || 0;
         if (sp?.img?.w && u && s.verts_norm?.length >= 3) {
           const pts = s.verts_norm.map(([nx, ny]) => [nx * sp.img.w, ny * sp.img.h]);
           floorGross += closedMetrics(pts).area * u * u;
@@ -9069,22 +9174,28 @@ export default function TakeoffCanvas() {
   const markupCount = markups.filter((m) => panelKeySet.has(m.sheet_id)).length;
   const selShapeRaw = selectedId ? visibleShapes.find((s) => s.id === selectedId) : null;
   const selShape = useMemo(() => {
+    void visibleShapes;
+    void scales;
+    void conditions;
     if (!selShapeRaw) return null;
     if (selShapeRaw.measure_role === "surface_area" || selShapeRaw.measure_role === "wall_area") {
-      return { ...selShapeRaw, computed: recomputeShape(selShapeRaw) };
+      return { ...selShapeRaw, computed: recomputeShapeRef.current(selShapeRaw) };
     }
     return selShapeRaw;
   }, [selShapeRaw, visibleShapes, scales, conditions]);
   const selectedLayerGroupMemberIds = useMemo(() => {
+    void layerForest;
     const picks = Object.keys(activeLayerPickIds(selectedId, layerPickIds));
     if (picks.length) return new Set(picks);
     if (!selectedId) return new Set();
-    return new Set(layerGroupIdsFor(selectedId));
+    return new Set(layerGroupIdsForRef.current(selectedId));
   }, [selectedId, layerPickIds, layerForest]);
   const selWallSegmentRows = useMemo(() => {
+    void scales;
+    void conditions;
     if (!selShape || selShape.measure_role !== "surface_area") return [];
-    const sp = panelByKey(selShape.sheet_id);
-    const upp = uppFor(selShape.sheet_id) || 0;
+    const sp = panelByKeyRef.current(selShape.sheet_id);
+    const upp = uppForRef.current(selShape.sheet_id) || 0;
     if (!sp?.img?.w || !upp) return [];
     return wallSegmentRows(selShape, sp.img.w, sp.img.h, upp, Number(condById[selShape.condition_id]?.height_ft) || 0);
   }, [selShape, scales, conditions, condById]);
@@ -9132,70 +9243,6 @@ export default function TakeoffCanvas() {
     const n = shape.verts_norm?.length || 0;
     if (n <= 2) return null;
     return vertIndex > 0 ? vertIndex - 1 : 0;
-  }
-  function vertsForClosedSplit(vn, vertIndex) {
-    const n = vn.length;
-    const out = [vn[vertIndex]];
-    let j = (vertIndex + 1) % n;
-    const stop = (vertIndex - 1 + n) % n;
-    while (j !== stop) {
-      out.push(vn[j]);
-      j = (j + 1) % n;
-    }
-    return out;
-  }
-  function separateSurfaceRunAtVertex(shapeId, vertIndex) {
-    const s = shapesRef.current.find((x) => x.id === shapeId);
-    if (!s || s.measure_role !== "surface_area") return false;
-    const vn = s.verts_norm || [];
-    const n = vn.length;
-    if (vertIndex == null || vertIndex < 1 || vertIndex > n - 2) return false;
-    const closed = !!s.origin?.closed_loop;
-    const condH = Number(condById[s.condition_id]?.height_ft) || 0;
-    const hs = segmentHeightsForShape(s, condH);
-    const vnA = vn.slice(0, vertIndex + 1);
-    const vnB = closed ? vertsForClosedSplit(vn, vertIndex) : vn.slice(vertIndex);
-    if (vnA.length < 2 || vnB.length < 2) return false;
-    const hsA = hs.slice(0, vertIndex);
-    const hsB = hs.slice(vertIndex);
-    const pick = (verts, segHs) => {
-      const origin = { ...(s.origin || {}), method: s.origin?.method || "manual" };
-      delete origin.closed_loop;
-      let draft = {
-        sheet_id: s.sheet_id,
-        condition_id: s.condition_id,
-        measure_role: "surface_area",
-        height_ft: s.height_ft,
-        height_override: s.height_override,
-        verts_norm: verts,
-        openings: [],
-        origin,
-        ...(s.label ? { label: s.label } : {}),
-      };
-      if (s.appearance_override) {
-        for (const k of ["color", "fill", "hatch", "line_style", "weight"]) {
-          if (s[k] != null) draft[k] = s[k];
-        }
-        draft.appearance_override = true;
-      }
-      if (segHs.length) draft = withSegmentHeights(draft, segHs);
-      return { ...draft, computed: recomputeShape(draft) };
-    };
-    const beforeIds = new Set(shapesRef.current.map((x) => x.id));
-    dispatchShape({ type: "delete", ids: [shapeId] });
-    const res = dispatchShape({ type: "add", shapes: [pick(vnA, hsA), pick(vnB, hsB)] });
-    const added = res.shapes.filter((x) => !beforeIds.has(x.id) && x.measure_role === "surface_area");
-    const partA = added.find((x) => x.verts_norm.length === vnA.length) || added[0];
-    if (partA) {
-      selectShape(partA.id);
-      setSelVert(partA.verts_norm.length - 1);
-      setWallSegmentFocus(Math.max(0, partA.verts_norm.length - 2));
-    } else {
-      setSelVert(null);
-      setWallSegmentFocus(null);
-    }
-    setCommitMsg("Separated wall line at selected corner.");
-    return true;
   }
   function flyToWallSegment(shapeId, segIndex) {
     const s = shapesRef.current.find((x) => x.id === shapeId);
@@ -9520,6 +9567,233 @@ export default function TakeoffCanvas() {
   const liveDrawLook = drawAppearance && aCond ? { ...aCond, ...drawAppearance } : aCond;
   const finishOk = canFinishDraw(tool, poly.length, { zoneCross: zoneTraceCross });
 
+  const writeMeasureRailLocalPos = useCallback((rail, pos) => {
+    if (!rail || !pos) return;
+    rail.style.left = `${pos.x}px`;
+    rail.style.top = `${pos.y}px`;
+    rail.style.transform = "none";
+  }, []);
+  const clampMeasureRailPos = useCallback((x, y) => {
+    const rail = measureRailRef.current;
+    if (!rail) return { x, y };
+    const stack = rail.querySelector(".canvas-left-stack");
+    const rw = stack?.offsetWidth || rail.offsetWidth || 48;
+    const rh = stack?.offsetHeight || rail.offsetHeight || 320;
+    const pad = 4;
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    const vw = vv?.width ?? window.innerWidth;
+    const vh = vv?.height ?? window.innerHeight;
+    const vx = vv?.offsetLeft ?? 0;
+    const vy = vv?.offsetTop ?? 0;
+    return {
+      x: Math.min(Math.max(vx + pad, x), vx + vw - rw - pad),
+      y: Math.min(Math.max(vy + pad, y), vy + vh - rh - pad),
+    };
+  }, []);
+  const getMeasureRailDefaultPos = useCallback(() => {
+    const rail = measureRailRef.current;
+    const stack = rail?.querySelector(".canvas-left-stack");
+    const stackH = stack?.getBoundingClientRect().height ?? stack?.offsetHeight ?? 240;
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    const vh = vv?.height ?? window.innerHeight;
+    const vy = vv?.offsetTop ?? 0;
+    const vx = vv?.offsetLeft ?? 0;
+    const inset = 12;
+    return {
+      x: vx + 16,
+      y: vy + Math.max(inset, (vh - stackH) / 2),
+    };
+  }, []);
+  const syncMeasureRailLayout = useCallback(() => {
+    const rail = measureRailRef.current;
+    if (!rail || measureRailDraggingRef.current || measureRailResettingRef.current) return;
+    const p = measureRailPosRef.current ?? getMeasureRailDefaultPos();
+    writeMeasureRailLocalPos(rail, p);
+  }, [getMeasureRailDefaultPos, writeMeasureRailLocalPos]);
+  const resetMeasureRailPos = useCallback((e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    const rail = measureRailRef.current;
+    if (!rail || !measureRailPosRef.current || measureRailResettingRef.current) return;
+
+    const stack = rail.querySelector(".canvas-left-stack");
+    const fromRect = stack?.getBoundingClientRect() ?? rail.getBoundingClientRect();
+    const to = getMeasureRailDefaultPos();
+    rail.style.left = `${fromRect.left}px`;
+    rail.style.top = `${fromRect.top}px`;
+    rail.style.transform = "none";
+    rail.classList.add("is-custom-pos", "is-rail-resetting");
+    rail.classList.remove("is-rail-dragging");
+    measureRailResettingRef.current = true;
+    measureRailDraggingRef.current = false;
+    setMeasureRailResetting(true);
+
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      rail.removeEventListener("transitionend", onTransitionEnd);
+      clearTimeout(fallback);
+      rail.classList.remove("is-rail-resetting", "is-rail-dragging");
+      measureRailResettingRef.current = false;
+      setMeasureRailResetting(false);
+      measureRailPosRef.current = null;
+      setMeasureRailPos(null);
+      try { localStorage.removeItem(MEASURE_RAIL_POS_KEY); } catch { /* private mode */ }
+      syncMeasureRailLayout();
+    };
+    const onTransitionEnd = (ev) => {
+      if (ev.target !== rail) return;
+      if (ev.propertyName !== "left" && ev.propertyName !== "top") return;
+      finish();
+    };
+    const fallback = setTimeout(finish, 420);
+    rail.addEventListener("transitionend", onTransitionEnd);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        rail.style.left = `${to.x}px`;
+        rail.style.top = `${to.y}px`;
+      });
+    });
+  }, [getMeasureRailDefaultPos, syncMeasureRailLayout]);
+  const finalizeMeasureRailDrag = useCallback((rawPos) => {
+    const rail = measureRailRef.current;
+    const d = measureRailDragRef.current;
+    if (!rail || !d || !rawPos) return;
+    const p = clampMeasureRailPos(rawPos.x, rawPos.y);
+    d.handle?.classList.remove("is-dragging");
+    rail.classList.add("is-rail-commit");
+    rail.classList.remove("is-rail-dragging");
+    rail.style.removeProperty("--rail-drag-x");
+    rail.style.removeProperty("--rail-drag-y");
+    writeMeasureRailLocalPos(rail, p);
+    requestAnimationFrame(() => rail.classList.remove("is-rail-commit"));
+    measureRailDragRef.current = null;
+    measureRailDragLiveRef.current = null;
+    measureRailDraggingRef.current = false;
+    measureRailPosRef.current = p;
+    try { localStorage.setItem(MEASURE_RAIL_POS_KEY, JSON.stringify(p)); } catch { /* private mode */ }
+    setMeasureRailPos(p);
+  }, [clampMeasureRailPos, writeMeasureRailLocalPos]);
+  const beginMeasureRailDrag = useCallback((e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rail = measureRailRef.current;
+    if (!rail) return;
+    if (measureRailDragRafRef.current) {
+      cancelAnimationFrame(measureRailDragRafRef.current);
+      measureRailDragRafRef.current = 0;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const railRect = rail.getBoundingClientRect();
+    const visual = { x: railRect.left, y: railRect.top };
+    measureRailDraggingRef.current = true;
+    measureRailDragLiveRef.current = { ...visual };
+    measureRailDragRef.current = {
+      pointerId: e.pointerId,
+      offX: e.clientX - visual.x,
+      offY: e.clientY - visual.y,
+      handle: e.currentTarget,
+      origin: { ...visual },
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      moved: false,
+      armed: false,
+    };
+    const armDrag = () => {
+      const d = measureRailDragRef.current;
+      if (!d || d.armed) return;
+      d.armed = true;
+      rail.style.setProperty("--rail-drag-x", `${d.origin.x}px`);
+      rail.style.setProperty("--rail-drag-y", `${d.origin.y}px`);
+      rail.classList.add("is-custom-pos", "is-rail-dragging");
+      d.handle?.classList.add("is-dragging");
+    };
+    const applyPos = (nx, ny) => {
+      const d = measureRailDragRef.current;
+      if (!d) return;
+      const c = clampMeasureRailPos(nx, ny);
+      measureRailDragLiveRef.current = c;
+      rail.style.setProperty("--rail-drag-x", `${c.x}px`);
+      rail.style.setProperty("--rail-drag-y", `${c.y}px`);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    const finishDrag = (pointerId) => {
+      const d = measureRailDragRef.current;
+      if (!d || d.ended || (pointerId != null && pointerId !== d.pointerId)) return;
+      d.ended = true;
+      cleanup();
+      if (!d.moved) {
+        d.handle?.classList.remove("is-dragging");
+        rail.classList.remove("is-rail-dragging", "is-rail-commit");
+        rail.style.removeProperty("--rail-drag-x");
+        rail.style.removeProperty("--rail-drag-y");
+        measureRailDragRef.current = null;
+        measureRailDragLiveRef.current = null;
+        measureRailDraggingRef.current = false;
+        return;
+      }
+      finalizeMeasureRailDrag(measureRailDragLiveRef.current);
+    };
+    const onMove = (ev) => {
+      const d = measureRailDragRef.current;
+      if (!d || d.ended || ev.pointerId !== d.pointerId) return;
+      if (!d.moved) {
+        const dx = ev.clientX - d.startClientX;
+        const dy = ev.clientY - d.startClientY;
+        if (dx * dx + dy * dy < 25) return;
+        d.moved = true;
+        armDrag();
+      }
+      applyPos(ev.clientX - d.offX, ev.clientY - d.offY);
+    };
+    const onUp = (ev) => {
+      finishDrag(ev.pointerId);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }, [clampMeasureRailPos, finalizeMeasureRailDrag]);
+  useEffect(() => {
+    if (!measureRailPos) return undefined;
+    const onResize = () => {
+      if (measureRailDraggingRef.current || measureRailResettingRef.current) return;
+      setMeasureRailPos((p) => (p ? clampMeasureRailPos(p.x, p.y) : p));
+    };
+    window.addEventListener("resize", onResize);
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", onResize);
+    vv?.addEventListener("scroll", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      vv?.removeEventListener("resize", onResize);
+      vv?.removeEventListener("scroll", onResize);
+    };
+  }, [measureRailPos, clampMeasureRailPos]);
+  useLayoutEffect(() => {
+    if (view !== "canvas" || status !== "ready") return;
+    syncMeasureRailLayout();
+    requestAnimationFrame(() => syncMeasureRailLayout());
+  }, [view, status, measureRailPos, syncMeasureRailLayout]);
+  useEffect(() => {
+    if (view !== "canvas" || status !== "ready") return undefined;
+    const onReflow = () => syncMeasureRailLayout();
+    window.addEventListener("resize", onReflow);
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", onReflow);
+    vv?.addEventListener("scroll", onReflow);
+    return () => {
+      window.removeEventListener("resize", onReflow);
+      vv?.removeEventListener("resize", onReflow);
+      vv?.removeEventListener("scroll", onReflow);
+    };
+  }, [view, status, syncMeasureRailLayout]);
+
   const RAIL_ICO = { size: 15, strokeWidth: 1.5 };
   const railBtn = (onClick, icon, label, isOn, extraClass = "") => (
     <button type="button" className={`canvas-circle-btn${isOn ? " is-on" : ""}${extraClass ? ` ${extraClass}` : ""}`} onClick={onClick} data-tip={label} aria-label={label}>
@@ -9541,8 +9815,6 @@ export default function TakeoffCanvas() {
       <span className="canvas-rail-kbd" aria-hidden="true">{t.shortcut}</span>
     </button>
   );
-  const vRule = <span style={{ width: 1, alignSelf: "stretch", background: "var(--ink-faint)", margin: "0 3px" }} />;
-
   // The panel's condition-list VIEW (search / natural sort / grouping / the
   // ⌘/⇧ multi-select) lives in components/TakeoffsPanel.jsx.
 
@@ -9569,39 +9841,10 @@ export default function TakeoffCanvas() {
     setActiveLabel(value);
   };
 
-  // ── top-bar quick-access palette (pinned conditions) ──────────────────────
-  // A palette chip is a shortcut, not a new activation path: single-click routes
-  // through activateCondition (same reassign/clear-selection semantics as the
-  // strip and panel row); double-click opens the docked Takeoffs panel on that
-  // condition — the "don't open the sidebar unless double-clicked" contract.
-  const pinToPalette = (id) => {
-    if (palette.includes(id)) return;   // already pinned — silent no-op (dropping a chip back on the band)
-    if (palette.length >= PALETTE_MAX) { setCommitMsg(`Palette is full (${PALETTE_MAX}) — unpin one first.`); return; }
-    setPalette((p) => (p.includes(id) || p.length >= PALETTE_MAX ? p : [...p, id]));
-  };
   const unpinFromPalette = (id) => setPalette((p) => p.filter((x) => x !== id));
   // togglePin: the panel row's pushpin — pin if absent (respecting the cap),
-  // unpin if already pinned. movePalette: drag one chip onto another to reorder
-  // it to the target index (splice out, splice back in), which also renumbers
-  // the 1–9 hotkeys since they follow palette order.
+  // unpin if already pinned.
   const togglePin = (id) => setPalette((p) => (p.includes(id) ? p.filter((x) => x !== id) : (p.length >= PALETTE_MAX ? p : [...p, id])));
-  const movePalette = (id, toIndex) => setPalette((p) => {
-    const from = p.indexOf(id);
-    if (from < 0 || toIndex < 0 || toIndex >= p.length || from === toIndex) return p;
-    const next = p.slice();
-    next.splice(from, 1);
-    next.splice(toIndex, 0, id);
-    return next;
-  });
-  const openConditionInPanel = (id) => {
-    setPanelPrefs((p) => (p.collapsed ? { ...p, collapsed: false } : p));   // reveal the docked panel; no-op if already open
-    activateCondition(id);   // highlight the row (reassigns a selected shape iff Select is armed, like every activation surface)
-    // scroll the docked row into view AFTER the uncollapse paints — two rAFs so
-    // the panel has mounted its list (the row carries data-cond-id)
-    // CSS.escape the id — hydrate accepts hand-edited/older payloads, so an id
-    // with quotes/brackets must not break the attribute selector
-    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector(`[data-cond-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" })));
-  };
 
   // Bulk mutations — the multi-selection is TakeoffsPanel view state; every
   // callback takes the LIVE id set the panel computed (conditions ∩ checked),
@@ -9865,32 +10108,12 @@ export default function TakeoffCanvas() {
     return stable;
   });
 
-  // ── two-deck toolbar (issue #61) ───────────────────────────────────────────
-  // drafting-style group caption floated above a deck-2 cluster
-  const cluster = (cap, children, style) => (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, position: "relative", paddingTop: 2, ...style }}>
-      <span style={{ position: "absolute", top: -13, left: 1, fontFamily: "var(--f-mono)", fontSize: 8, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--ink-muted)", whiteSpace: "nowrap", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>{cap}</span>
-      {children}
-    </span>
-  );
-  // MODE segmented control — shared border, ink-filled active (cobalt stays
-  // reserved for the armed DRAW face so only one control ever claims it)
-  const segBtn = (key, iconName, hint, last = false) => (
-    <button key={key} type="button" onClick={() => setTool(key)} title={hint}
-      style={{ display: "inline-flex", alignItems: "center", padding: "6px 9px", border: "none", borderRight: last ? "none" : "1px solid var(--ink-faint)", background: tool === key ? "var(--ink)" : "transparent", color: tool === key ? "var(--paper-bright)" : "var(--ink)", cursor: "pointer", lineHeight: 1 }}>
-      <Icon name={iconName} size={15} />
-    </button>
-  );
-
   // deck-1 sheet-nav chip — ONE home for "which sheet am I on": pages, files,
   // group/ungroup and the gallery all live in its dropdown. Ungroup/Regroup
   // are sheet-set operations, so they move in here instead of appearing
   // mid-row and shifting everything after them.
   // assigned floor/level rides the sheet chip + page entries (sheet key: page 1 is the bare file name)
   const levelOfPage = (n) => sheetLevels[n > 1 ? `${active}#${n}` : active] || "";
-  const sheetChipLabel = sheetGroup.length
-    ? `${sheetGroup.length} sheets side-by-side`
-    : `${levelOfPage(page) ? `${levelOfPage(page)} · ` : ""}${pageLabels[page] || (pageCount > 1 ? `Sheet ${page}` : active)}${pageCount > 1 ? ` · ${page}/${pageCount}` : ""}`;
   const sheetMenuItems = [];
   if (!sheetGroup.length && pageCount > 1) {
     sheetMenuItems.push({ section: "Sheets in this set" });
@@ -10038,6 +10261,17 @@ export default function TakeoffCanvas() {
   const canvasReady = view === "canvas" && status === "ready";
   const sheetTools = status !== "loading" && status !== "rendering";
   const workspaceBarShown = canvasReady && toolbarChrome.workspaceVisible;
+  useEffect(() => {
+    if (!canvasReady) return undefined;
+    try {
+      window.parent?.postMessage({
+        source: "opentakeoff",
+        type: "adicc:canvas-ready-state",
+        ready: true,
+      }, "*");
+    } catch { /* cross-origin embed */ }
+    return undefined;
+  }, [canvasReady]);
   const workspaceBg = darkMode ? "#0b0e14" : "var(--surface-pop)";
 
   return (
@@ -10453,21 +10687,19 @@ export default function TakeoffCanvas() {
         </div>
       )}
 
-      {/* Measure Rail lives on the app shell — not inside the overflow-hidden
-          canvas row — so its top cannot be clipped by the Workspace Bar. */}
-       {canvasReady && (
+      {/* Measure Rail — portaled to body so fixed positioning is viewport-local
+          inside the canvas iframe (drag stays within the canvas bounds). */}
+       {canvasReady && createPortal(
        <div
-         className={`measure-rail-chrome${toolbarChrome.measureVisible ? " is-visible" : " is-hidden"}`}
+         ref={measureRailRef}
+         className={`measure-rail-chrome is-portaled is-custom-pos${toolbarChrome.measureVisible ? " is-visible" : " is-hidden"}${leftPanelPresentation === "menu" && leftDesk.shown ? " has-host-menu" : ""}${measureRailResetting ? " is-rail-resetting" : ""}`}
          onPointerDown={(e) => e.stopPropagation()}
          style={{
-           position: "absolute",
-           left: 16,
-           top: 12,
-           bottom: 12,
-           zIndex: 120,
+           position: "fixed",
+           zIndex: 10000,
            display: "flex",
            flexDirection: "row",
-           alignItems: "center",
+           alignItems: "flex-start",
            gap: 6,
            pointerEvents: "none",
          }}
@@ -10479,21 +10711,47 @@ export default function TakeoffCanvas() {
            onDoubleClick={(e) => e.stopPropagation()}
          >
            <div className="canvas-glass-cluster">
-             {railBtn(() => {
-                lastLeftTabRef.current = "summary";
-                setIllLayersOpen(false);
-                setLeftTab((cur) => (cur === "summary" ? null : "summary"));
-              }, <Icon name="sheets" size={16} />, "Summary table — hierarchical takeoff", leftTab === "summary")}
-             {railBtn(toggleLeftDesk, leftTab && leftTab !== "summary" ? <FolderOpen {...RAIL_ICO} /> : <Folder {...RAIL_ICO} />, "Files, sheets, markups, stamps, RFIs", !!leftTab && leftTab !== "summary")}
+             <button
+               type="button"
+               className="canvas-circle-btn canvas-adicc-rail-drag"
+               data-tip="Drag to move toolbar"
+               aria-label="ADICC — drag to move measure toolbar"
+               onPointerDown={beginMeasureRailDrag}
+             >
+               <span className="canvas-adicc-rail-mark__clip">
+                 <img
+                   src={`${import.meta.env.BASE_URL || "/"}images/logos/adicc-logo.png`}
+                   alt=""
+                   draggable={false}
+                 />
+               </span>
+               <span className="canvas-adicc-rail-drag__grip" aria-hidden="true">
+                 <svg width="14" height="5" viewBox="0 0 14 5" fill="none">
+                   <circle cx="2.5" cy="1.5" r="1" fill="currentColor" />
+                   <circle cx="7" cy="1.5" r="1" fill="currentColor" />
+                   <circle cx="11.5" cy="1.5" r="1" fill="currentColor" />
+                   <circle cx="2.5" cy="3.5" r="1" fill="currentColor" />
+                   <circle cx="7" cy="3.5" r="1" fill="currentColor" />
+                   <circle cx="11.5" cy="3.5" r="1" fill="currentColor" />
+                 </svg>
+               </span>
+             </button>
+             <button
+               type="button"
+               className={`canvas-circle-btn${measureRailPos ? " is-rail-reset-ready" : " is-rail-reset-idle"}`}
+               onClick={resetMeasureRailPos}
+               disabled={!measureRailPos || measureRailResetting}
+               data-tip={measureRailResetting ? "Returning toolbar to default position…" : (measureRailPos ? "Reset measure toolbar to default position" : "Toolbar is at default position")}
+               aria-label={measureRailResetting ? "Returning toolbar to default position" : (measureRailPos ? "Reset measure toolbar to default position" : "Toolbar is at default position")}
+             >
+               <RotateCcw {...RAIL_ICO} />
+             </button>
+             <span className="canvas-rail-rule" aria-hidden="true" />
              {railBtn(toggleLayersPanel, <Icon name="layers" size={16} />, "Layers panel", illLayersOpen)}
              <span className="canvas-rail-rule" aria-hidden="true" />
              {MEASURE_TOOLS.map((t) => measureRailBtn(t))}
-             {!isEmbedded && (
-               <>
-                 <span className="canvas-rail-rule" aria-hidden="true" />
-                 {railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
-               </>
-             )}
+             <span className="canvas-rail-rule" aria-hidden="true" />
+             {!isEmbedded && railBtn(() => setDarkMode((d) => !d), <Contrast {...RAIL_ICO} />, darkMode ? "Sheet back to positive print" : "Invert sheet — negative print (affects marked-set export)", false, darkMode ? "is-sheet-dark" : "")}
            </div>
            <button
              type="button"
@@ -10523,8 +10781,12 @@ export default function TakeoffCanvas() {
                </svg>
              </button>
         </div>
-        {/* One dock slot beside the rail — Files desk OR Layers, never both side-by-side. */}
-        <div className={`left-panel-slot${(layersMotion.shown || leftDesk.shown) ? " is-open" : ""}`}>
+        {/* Shared content: rail triggers dock it; host secondary-nav triggers present it as a menu. */}
+        <div
+          ref={hostMenuRef}
+          className={`left-panel-slot${(layersMotion.shown || leftDesk.shown) ? " is-open" : ""}${leftPanelPresentation === "menu" && leftDesk.shown ? " is-host-menu" : ""}${hostMenuSwitching ? " is-switching" : ""}`}
+          style={leftPanelPresentation === "menu" ? { "--host-menu-left": `${hostPanelAnchorLeft}px` } : undefined}
+        >
           {layersMotion.shown && (
             <div className={`left-window${layersMotion.entered ? " is-open" : ""}`}>
               {renderLiveLayersPanel({ onClose: () => setIllLayersOpen(false) })}
@@ -10547,7 +10809,15 @@ export default function TakeoffCanvas() {
               height: "100%",
             }}
           >
-           {/* tab strip — tabs scroll in their own track; close is a pinned end-cap */}
+           {leftPanelPresentation === "menu" ? (
+             <div className="host-project-menu-head">
+               <span key={deskTab} className="host-project-menu-title">{LP_TAB_LABELS[deskTab] || "Project desk"}</span>
+               <button type="button" onClick={() => setLeftTab(null)} aria-label={`Close ${LP_TAB_LABELS[deskTab] || "project desk"} menu`}>
+                 <Icon name="close" size={14} />
+               </button>
+             </div>
+           ) : (
+           /* Dock-only tab strip — host navbar already acts as the menu's section switcher. */
            <div className={`left-panel-glass-tabs${lpTabsOverflow.start ? " has-overflow-start" : ""}${lpTabsOverflow.end ? " has-overflow-end" : ""}`} style={{ color: "var(--accent-contrast)", flexShrink: 0 }}>
              <div className="lp-tabs-track">
                <button
@@ -10632,14 +10902,15 @@ export default function TakeoffCanvas() {
                <Icon name="close" size={14} />
              </button>
            </div>
+           )}
            {/* body of the active tab */}
-           <div className="left-panel-scroll" style={{ flex: 1, overflowX: "hidden", overflowY: "auto", minHeight: 0 }}>
+           <div ref={lpScrollRef} className="left-panel-scroll" style={{ flex: 1, overflowX: "hidden", overflowY: "auto", minHeight: 0 }}>
              <div
                id="lp-tab-panel"
                role="tabpanel"
                aria-labelledby={`lp-tab-${deskTab}`}
                key={deskTab}
-               className={`lp-tab-pane${lpTabMotionRef.current.animate ? (lpTabMotionRef.current.dir < 0 ? " is-back" : " is-fwd") : ""}`}
+               className={`lp-tab-pane${leftPanelPresentation === "menu" ? " is-host-menu-pane" : ""}${lpTabMotionRef.current.animate ? (lpTabMotionRef.current.dir < 0 ? " is-back" : " is-fwd") : ""}`}
              >
              {deskTab === "summary" && (
                 <SummaryPanel
@@ -10990,11 +11261,11 @@ export default function TakeoffCanvas() {
              </div>
            </div>
          </div>
-         </div>
+           </div>
          )}
         </div>
-       </div>
-       )}
+       </div>,
+       document.body)}
       {/* canvas + issue desk */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0, position: "relative" }}>
        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
@@ -11128,23 +11399,23 @@ export default function TakeoffCanvas() {
                 data-tip={canvasExpanded ? "Exit fullscreen · Esc" : "Fullscreen"}
                 aria-label={canvasExpanded ? "Exit fullscreen" : "Fullscreen"}
                 aria-pressed={canvasExpanded}
-                onClick={() => {
+                onClick={async () => {
                   if (isEmbedded) {
                     const active = !canvasExpanded;
-                    try {
-                      window.parent?.postMessage({
-                        source: "opentakeoff",
-                        type: "adicc:canvas-expand-state",
-                        active,
-                      }, "*");
-                    } catch { /* cross-origin embed */ }
+                    window.parent?.postMessage({
+                      source: "opentakeoff",
+                      type: "adicc:canvas-expand-state",
+                      active,
+                    }, "*");
                     setCanvasExpanded(active);
                     return;
                   }
                   const el = containerRef.current?.closest(".canvas-workspace") || containerRef.current;
                   if (!el) return;
-                  if (document.fullscreenElement) document.exitFullscreen?.();
-                  else el.requestFullscreen?.();
+                  try {
+                    if (document.fullscreenElement) await document.exitFullscreen?.();
+                    else await el.requestFullscreen?.();
+                  } catch { /* browser denied standalone fullscreen */ }
                 }}>
                 {canvasExpanded ? <Minimize2 size={15} strokeWidth={1.6} /> : <Maximize2 size={15} strokeWidth={1.6} />}
               </button>
@@ -11586,7 +11857,7 @@ export default function TakeoffCanvas() {
             {/* high-res detail overlay — a crop of the visible region re-rendered at the current zoom (see the detail-view effect) */}
             <canvas ref={detailCanvasRef} style={{ position: "absolute", left: 0, top: 0, display: "none", pointerEvents: "none" }} />
             {viewPrefs.grid && <div className="canvas-view-grid" aria-hidden="true" />}
-            <svg width={stage.w} height={stage.h} viewBox={`0 0 ${stage.w} ${stage.h}`} style={{ position: "absolute", top: 0, left: 0, overflow: "visible", pointerEvents: "none" }}>
+            <svg width={stage.w} height={stage.h} viewBox={`0 0 ${stage.w} ${stage.h}`} style={{ position: "absolute", top: 0, left: 0, zIndex: 2, overflow: "visible", pointerEvents: "none" }}>
               <defs>
                 {conditions.map((c) => <HatchPattern key={patId(c)} id={patId(c)} type={c.hatch || "solid"} line={c.color} fill={c.fill} dark={darkMode} />)}
                 {shapes.filter((s) => s.appearance_override).map((s) => {

@@ -4,7 +4,7 @@ import { areaUnit, lenUnit } from "./units";
 import { distToSeg, pointInPoly } from "./geometry.js";
 import { shapeLabelValue } from "./shapeLabels.js";
 import { resolveSymbolFields, symbolNoteKey } from "./planSymbols";
-import { lookupScheduleKb, lookupScheduleKbForRoom, roomMatchScore, normRoomKey } from "./symbolScheduleKb";
+import { lookupScheduleKb, lookupScheduleKbForRoom, roomMatchScore } from "./symbolScheduleKb";
 import { parseOpeningSize, openingsDeductSfLinear, openingsDeductSfFloorPerim } from "./wallOpenings.js";
 
 export function rowKey(shapeId) {
@@ -403,12 +403,6 @@ function polyCentroid(poly) {
   let sx = 0, sy = 0;
   for (const [x, y] of poly) { sx += x; sy += y; }
   return [sx / poly.length, sy / poly.length];
-}
-
-function pointInHolePx(x, y, holeNorm, dims) {
-  if (!dims?.w || !dims?.h) return false;
-  const hp = holeNorm.map(([nx, ny]) => [nx * dims.w, ny * dims.h]);
-  return hp.length >= 3 && pointInPoly(x, y, hp);
 }
 
 /** Room label / symbol lookup inside a single hole polygon (wall poché void). */
