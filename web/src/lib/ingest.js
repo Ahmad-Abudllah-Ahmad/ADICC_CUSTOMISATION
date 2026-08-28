@@ -391,6 +391,17 @@ export async function ingestFiles(
     }
   }
 
-  for (const f of incoming) await process(f, 0);
+  const yieldToUi = () => new Promise((resolve) => {
+    if (typeof globalThis.scheduler?.yield === "function") {
+      globalThis.scheduler.yield().then(resolve, () => setTimeout(resolve, 0));
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+  for (let i = 0; i < incoming.length; i++) {
+    await process(incoming[i], 0);
+    if (incoming.length > 100 && i % 16 === 15) await yieldToUi();
+    else if (incoming.length > 12 && i % 4 === 3) await yieldToUi();
+  }
   return { pdfs, skipped };
 }

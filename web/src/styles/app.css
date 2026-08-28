@@ -225,6 +225,80 @@ textarea {
   }
 }
 
+/* Centered save-progress pill — continuous running border during folder upload */
+.upload-progress-pill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 20;
+  pointer-events: none;
+  border-radius: 9999px;
+  padding: 2px;
+  overflow: hidden;
+  isolation: isolate;
+  animation: upload-progress-pill-in 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  box-shadow: 0 10px 40px rgba(28, 40, 51, 0.14);
+  will-change: transform, opacity;
+}
+.upload-progress-pill::before {
+  content: "";
+  position: absolute;
+  width: 220%;
+  height: 220%;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    from 0deg,
+    rgba(30, 107, 74, 0.12) 0deg,
+    rgba(30, 107, 74, 0.12) 300deg,
+    var(--c-positive) 320deg,
+    rgba(46, 204, 113, 0.85) 340deg,
+    var(--c-positive) 360deg
+  );
+  animation: upload-progress-pill-border 1.35s linear infinite;
+}
+.upload-progress-pill__label {
+  position: relative;
+  z-index: 1;
+  display: block;
+  padding: 12px 24px;
+  border-radius: 9999px;
+  background: var(--paper-bright);
+  font-family: var(--f-body);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--c-positive);
+  white-space: nowrap;
+}
+@keyframes upload-progress-pill-border {
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+@keyframes upload-progress-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 96px)) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .upload-progress-pill::before {
+    animation: none;
+    background: var(--c-positive);
+    width: 100%;
+    height: 100%;
+    opacity: 0.35;
+  }
+  .upload-progress-pill {
+    animation: none;
+  }
+}
+
 /* ── motion utilities ─────────────────────────────────────────────────────── */
 
 .fade-in       { animation: fadeUp var(--t) var(--ease); }

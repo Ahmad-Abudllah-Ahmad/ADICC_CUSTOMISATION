@@ -138,7 +138,7 @@ import {
   MEASURE_TOOLS, CUT_TOOLS, MARKUP_TOOLS, MARKUP_IDS, HL_INKS, HL_SIZES,
 } from "../lib/canvasConstants.js";
 import { LETTER_TO_TOOL, SHIFT_LETTER_TO_TOOL, canFinishDraw } from "../lib/canvasTools.js";
-import { autoRenderScale, invertCanvasPixels, uid, clamp, isDangerMsg, instantiateTemplate, seedConditions } from "../lib/canvasUtil.js";
+import { autoRenderScale, invertCanvasPixels, uid, clamp, isDangerMsg, isSaveProgressMsg, instantiateTemplate, seedConditions } from "../lib/canvasUtil.js";
 // Shape provenance policy now lives in ONE place: lib/shapeCommands.js. Every
 // meaningful mutation of `shapes` (create / reshape / reassign / relabel /
 // delete) is a COMMAND applied through dispatchShape below — the chokepoint
@@ -1182,8 +1182,8 @@ export default function TakeoffCanvas() {
   const [drawingsChatSeed, setDrawingsChatSeed] = useState("");      // question handed to side panel
   const drawingsChatInputRef = useRef(null);
   const closeDrawingsChatPill = useCallback(() => {
-    setDrawingsChatPill(false);
-    setDrawingsChatDraft("");
+        setDrawingsChatPill(false);
+        setDrawingsChatDraft("");
   }, []);
   const submitDrawingsAsk = useCallback((raw) => {
     const q = (raw || "").trim();
@@ -1710,9 +1710,9 @@ export default function TakeoffCanvas() {
   function goToSheet(key) {
     if (sheetGroup.includes(key)) {
       setFocusKey(key);
-      const t = parseSheetKey(key);
-      if (t.file !== active) setActive(t.file);
-      setPage(t.page);
+    const t = parseSheetKey(key);
+    if (t.file !== active) setActive(t.file);
+    setPage(t.page);
       const keys = sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []);
       let xOff = 0, pw = 0, ph = 0;
       for (const k of keys) {
@@ -2240,6 +2240,7 @@ export default function TakeoffCanvas() {
       pathHints.push({ folder, base: base.toLowerCase(), stem: stem.toLowerCase() });
     }
     setCommitMsg("Reading files…");
+    setView("canvas");
     let pdfs = [], skipped = [];
     try { ({ pdfs, skipped } = await ingestFiles(incoming, { onProgress: setCommitMsg })); }
     catch (e) { setCommitMsg(`Couldn't read those files: ${e.message || e}`); return; }
@@ -2267,6 +2268,18 @@ export default function TakeoffCanvas() {
         const res = await store.addPdf(f, { folderPath: folderForPdf(f), skipRemote: batchRemote });
         sheetNameOf.set(f, res?.name || f.name);
       } catch (e) { setCommitMsg(`Couldn't open ${f.name}: ${e.message || e}`); }
+    }
+    const names = pdfs.map((f) => sheetNameOf.get(f) || f.name);
+    if (names.length) {
+      await refreshSheets();
+      if (names.length === 1) {
+        setOpenTabs((t) => (t.includes(names[0]) ? t : [...t, names[0]]));
+        goToSheet(names[0]);
+      } else if (!active) {
+        setOpenTabs((t) => (t.includes(names[0]) ? t : [...t, names[0]]));
+        goToSheet(names[0]);
+      }
+      setStatus("ready");
     }
     if (batchRemote) {
       try {
@@ -2296,15 +2309,7 @@ export default function TakeoffCanvas() {
       });
     }
     await refreshSheets();
-    const names = pdfs.map((f) => sheetNameOf.get(f) || f.name);
     const tail = skipped.length ? ` · ${skipped.length} skipped` : "";
-    if (names.length === 1) {
-      setOpenTabs((t) => (t.includes(names[0]) ? t : [...t, names[0]]));
-      goToSheet(names[0]);
-      setView("canvas");
-    } else {
-      setView("canvas");
-    }
     setCommitMsg(`Opened ${names.length} sheet${names.length === 1 ? "" : "s"}${tail}.`);
     const suggested = projectNameFromFiles(incoming);
     if (suggested && isDefaultProjectName(projectName)) setProjectName(suggested);
@@ -2473,11 +2478,11 @@ export default function TakeoffCanvas() {
     setSheetGroup(grp);
     setLastGroup(lgFinal);
     // Canvas opens empty — no sheet on the plan until the user picks one.
-    setOpenTabs([]);
+      setOpenTabs([]);
     setActive("");
     setPage(1);
     setFocusKey("");
-    noTabsRef.current = true;
+      noTabsRef.current = true;
     if (sheetsLoadedRef.current) {
       setView("canvas");
       setStatus(hasSheetsRef.current ? "ready" : "empty");
@@ -2859,9 +2864,9 @@ export default function TakeoffCanvas() {
     };
 
     if (blank) {
-      setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
-      try { detailTaskRef.current?.cancel(); } catch { /* done */ }
-      if (detailCanvasRef.current) detailCanvasRef.current.style.display = "none";
+    setStatus("rendering"); setErr(""); setPoly([]); setCalib([]); setPendingLen(""); setCheck([]); setCheckStated(""); setScaleGuide(null); setPrevScale(null); selectShape(null); setProposal(null); setWallProposal(null); resetZone();
+    try { detailTaskRef.current?.cancel(); } catch { /* done */ }
+    if (detailCanvasRef.current) detailCanvasRef.current.style.display = "none";
     } else {
       // A keep bitmap is on screen — chrome stays up (plan). If we arrived from
       // mount "loading", lift it now so the overlay cannot sit on a painted sheet.
@@ -3643,7 +3648,7 @@ export default function TakeoffCanvas() {
         if (glideOnMinimap) zoomFromMinimap(gx, gy, Math.exp(d));
         else {
           const r = cont.getBoundingClientRect();
-          zoomAround(gx - r.left, gy - r.top, Math.exp(d));
+        zoomAround(gx - r.left, gy - r.top, Math.exp(d));
         }
       }
       if (glide) {
@@ -4228,7 +4233,7 @@ export default function TakeoffCanvas() {
           if (lockedMove) return;
           if (memberIds.length > 1) armGroupMoveDrag(msh, p, e, memberIds);
           else dragRef.current = { kind: "move", shapeId: selectedId, start: p, orig: sel.verts_norm, prev: geomSnapshot(sel), shape: sel, gx: e.clientX, gy: e.clientY };
-          e.currentTarget.setPointerCapture(e.pointerId); return;
+      e.currentTarget.setPointerCapture(e.pointerId); return;
         }
       }
     }
@@ -4266,13 +4271,13 @@ export default function TakeoffCanvas() {
         const endpointSelected = selVert === 0 || selVert === last;
         const shouldJoin = endpointSelected || surfaceEndpointJoin(selectedId, hit.id);
         if (shouldJoin) {
-          dragRef.current = null;
-          setSelVert(null);
-          setSelHole(null);
-          joinSurfaceRuns(selectedId, hit.id);
-          revealSheetInFilesSidebar(hit.sheet_id);
-          return;
-        }
+        dragRef.current = null;
+        setSelVert(null);
+        setSelHole(null);
+        joinSurfaceRuns(selectedId, hit.id);
+        revealSheetInFilesSidebar(hit.sheet_id);
+        return;
+      }
       }
     }
     if (hit && tool === "select" && (e.shiftKey || e.ctrlKey || e.metaKey)
@@ -4903,8 +4908,8 @@ export default function TakeoffCanvas() {
           ));
           // Suppress the BOQ hover card when showing the edge length label (never while pinned or selected).
           if (!shapeBoqFocus && !(tool === "select" && selectedId === _sel.id)) {
-            setShapeBoqHover(null);
-            shapeBoqHoverStickyRef.current = false;
+          setShapeBoqHover(null);
+          shapeBoqHoverStickyRef.current = false;
           }
           _foundEdge = true;
           break;
@@ -5166,7 +5171,7 @@ export default function TakeoffCanvas() {
             setSelVert(null);
             setSelHole(null);
           }
-        }
+          }
         }
       }
       try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* gone */ }
@@ -5925,7 +5930,7 @@ export default function TakeoffCanvas() {
     const dPt = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
     let best = null;
     for (const ai of [0, a.length - 1]) {
-      for (const bi of [0, b.length - 1]) {
+    for (const bi of [0, b.length - 1]) {
         const d = dPt(a[ai], b[bi]);
         if (d < thr && (!best || d < best.d)) best = { ai, bi, d };
       }
@@ -6159,7 +6164,7 @@ export default function TakeoffCanvas() {
     if (aPx.length < 2 || bPx.length < 2) return false;
     let best = null;
     for (const ai of [0, aPx.length - 1]) {
-      for (const bi of [0, bPx.length - 1]) {
+    for (const bi of [0, bPx.length - 1]) {
         const d = dPt(aPx[ai], bPx[bi]);
         if (d < thr && (!best || d < best.d)) best = { ai, bi, d };
       }
@@ -9092,10 +9097,10 @@ export default function TakeoffCanvas() {
     void scales;
     void conditions;
     return drawableShapes.map((s) => {
-      if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
+    if (s.measure_role === "surface_area" || s.measure_role === "wall_area") {
         return { ...s, computed: recomputeShapeRef.current(s) };
-      }
-      return s;
+    }
+    return s;
     });
   }, [drawableShapes, scales, conditions]);
   const visRows = useMemo(() => conditionTotals(conditions, visibleShapesMeasured), [conditions, visibleShapesMeasured]);
@@ -10061,13 +10066,13 @@ export default function TakeoffCanvas() {
     if (kind === "deleteLibMaterial") {
       const libId = pl.libId;
       const n = linkedCount(libId);
-      persistMatLib(matLib.filter((x) => x.id !== libId));
-      if (n) setConditions((cs) => cs.map((c) => ({ ...c, materials: (c.materials || []).map((m) => { if (m.lib_id !== libId) return m; const { lib_id: _l, ...rest } = m; return rest; }) })));
-      // condition templates carry lib_id too (so applying re-links to a live
-      // entry) — detach them here as well, or a deleted entry would leave
-      // dangling links inside saved templates
-      if (templates.some((t) => (t.materials || []).some((m) => m.lib_id === libId))) {
-        persistTemplates(templates.map((t) => ({ ...t, materials: (t.materials || []).map((m) => { if (m.lib_id !== libId) return m; const { lib_id: _l, ...rest } = m; return rest; }) })));
+    persistMatLib(matLib.filter((x) => x.id !== libId));
+    if (n) setConditions((cs) => cs.map((c) => ({ ...c, materials: (c.materials || []).map((m) => { if (m.lib_id !== libId) return m; const { lib_id: _l, ...rest } = m; return rest; }) })));
+    // condition templates carry lib_id too (so applying re-links to a live
+    // entry) — detach them here as well, or a deleted entry would leave
+    // dangling links inside saved templates
+    if (templates.some((t) => (t.materials || []).some((m) => m.lib_id === libId))) {
+      persistTemplates(templates.map((t) => ({ ...t, materials: (t.materials || []).map((m) => { if (m.lib_id !== libId) return m; const { lib_id: _l, ...rest } = m; return rest; }) })));
       }
     }
   };
@@ -10292,9 +10297,9 @@ export default function TakeoffCanvas() {
         className={`toolbar-glass-bar workspace-chrome${workspaceBarShown ? " is-visible" : " is-hidden"}${darkMode ? " is-sheet-invert" : ""}`}
         style={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: workspaceBarShown ? "12px 12px 4px" : 0, width: "100%", userSelect: "none", ...(darkMode ? { background: workspaceBg } : {}) }}
       >
-        <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-        <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-
+          <input name="sheet-file" ref={fileInputRef} type="file" accept=".pdf,application/pdf,image/*,.zip,application/zip,application/x-zip-compressed,.dwg,application/acad,image/vnd.dwg" multiple style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+          <input name="sheet-folder" ref={folderInputRef} type="file" multiple webkitdirectory="" directory="" style={{ display: "none" }} onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+          
         {workspaceBarShown && sheetTools && (
         <div className="toolbar-glass-pills-row" style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "center", width: "100%" }}>
           {/* Tools — icon row + Auto-Takeoff / Takeoff Tool Palette */}
@@ -10310,17 +10315,17 @@ export default function TakeoffCanvas() {
                 <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
               </>
             )}
-
+            
             {/* Mode */}
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
               <button type="button" onClick={() => setTool("select")} data-tip="Select · V" aria-label="Select · V"
                 className={`mode-circle-btn${tool === "select" ? " is-on" : ""}`}>
                 <Icon name="select" size={15} />
-              </button>
+                </button>
               <button type="button" onClick={() => setTool("pan")} data-tip="Pan · P — or hold right-click / Space" aria-label="Pan · P — or hold right-click / Space mid-measure"
                 className={`mode-circle-btn${tool === "pan" ? " is-on" : ""}`}>
                 <Icon name="pan" size={15} />
-              </button>
+                </button>
             </div>
 
             <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
@@ -10425,7 +10430,7 @@ export default function TakeoffCanvas() {
                     aria-label="Angle guides · Shift (45°/90°)"
                   >
                     45°
-                  </button>
+                </button>
                   <svg className="angle-dial-arc" width="14" height="28" viewBox="0 0 14 28" aria-hidden="true">
                     <path d="M 2 26 A 12 12 0 0 1 2 2" fill="none" stroke="var(--ink-faint)" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
@@ -10441,7 +10446,7 @@ export default function TakeoffCanvas() {
             <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
 
             {/* Condition & Label */}
-            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 {aCond ? (
                   <button type="button" onClick={() => setShowCondEdit(true)} data-tip={`Edit appearance for ${aCond.finish_tag}`} aria-label={`Edit appearance for ${aCond.finish_tag}`} className={`toolbar-glass-btn-cond${showCondEdit ? " is-on" : ""}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "0 12px", border: "1px solid var(--ink-faint)", borderRadius: 16, color: "var(--ink)", cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "var(--f-mono)", lineHeight: 1 }}>
                     <span style={{ borderRadius: 4, overflow: "hidden", lineHeight: 0, marginTop: 1 }}><HatchSwatch type={aCond.hatch || "solid"} line={aCond.color} fill={aCond.fill} /></span>
@@ -10471,7 +10476,7 @@ export default function TakeoffCanvas() {
                 </button>
                 <ToolMenu title={scaleTitle} onOpenChange={onScaleMenuDepth} faceStyle={{ borderRadius: 16, fontFamily: "var(--f-mono)", fontSize: 11, fontWeight: 600, ...scaleFaceStyle }} face={scaleFace} menuStyle={{ minWidth: 250 }} items={scaleItems} />
             </div>
-
+            
             <div className="toolbar-glass-divider" style={{ width: 1, alignSelf: "stretch", margin: "4px 0" }} />
 
             <div className="takeoff-sticky-stack">
@@ -10554,13 +10559,13 @@ export default function TakeoffCanvas() {
                       >
                         <Icon name="document" size={15} /> Report
                       </button>
-                    </div>
-                    </div>
+          </div>
+        </div>
                   </div>
                 )}
               </span>
-            </div>
-            
+      </div>
+
           </div>
         </div>
         )}
@@ -10780,7 +10785,7 @@ export default function TakeoffCanvas() {
                  <circle cx="15" cy="10" r="1" fill="currentColor"/>
                </svg>
              </button>
-        </div>
+         </div>
         {/* Shared content: rail triggers dock it; host secondary-nav triggers present it as a menu. */}
         <div
           ref={hostMenuRef}
@@ -10796,16 +10801,16 @@ export default function TakeoffCanvas() {
           <div className={`left-window${leftDesk.entered ? " is-open" : ""}`}>
           <div
             className="left-panel-glass"
-            role="dialog"
+           role="dialog"
             aria-label={`${LP_TAB_LABELS[deskTab] || "Project desk"} panel`}
-            style={{
+           style={{
               width: "100%",
-              alignSelf: "stretch",
-              display: "flex",
-              flexDirection: "column",
+             alignSelf: "stretch",
+             display: "flex",
+             flexDirection: "column",
               borderRadius: 5,
-              overflow: "hidden",
-              minHeight: 0,
+             overflow: "hidden",
+             minHeight: 0,
               height: "100%",
             }}
           >
@@ -10886,7 +10891,7 @@ export default function TakeoffCanvas() {
                  {t.n ? <span className="lp-tab-count">{t.n}</span> : null}
                </button>
              ))}
-             </div>
+           </div>
                <button
                  type="button"
                  className="lp-tabs-shift is-end"
@@ -10937,14 +10942,14 @@ export default function TakeoffCanvas() {
                    <div className="lp-action-row" role="group" aria-label="File actions">
                      <button type="button" className="lp-btn-primary" onClick={() => fileInputRef.current?.click()} title="Add PDF, image, or .zip plan set">
                        Add files
-                     </button>
+                   </button>
                      <button type="button" className="lp-btn-ghost" onClick={() => folderInputRef.current?.click()} title="Upload a whole project folder">
                        Folder
-                     </button>
+                   </button>
                      <button type="button" className="lp-btn-ghost" onClick={openGallery} title="Open the visual plan-set gallery">
-                       Gallery
-                     </button>
-                   </div>
+                     Gallery
+                   </button>
+                 </div>
                  </div>
                  <div className="lp-find-wrap">
                    <label className={`lp-find${filesSearch ? " is-filled" : ""}`}>
@@ -11260,10 +11265,10 @@ export default function TakeoffCanvas() {
              )}
              </div>
            </div>
-         </div>
            </div>
+         </div>
          )}
-        </div>
+       </div>
        </div>,
        document.body)}
       {/* canvas + issue desk */}
@@ -12456,7 +12461,7 @@ export default function TakeoffCanvas() {
             </svg>
           </div>
 
-          {status !== "ready" && (
+          {status !== "ready" && !isSaveProgressMsg(commitMsg) && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, pointerEvents: "none" }}>
               {(status === "loading" || status === "rendering" || status === "empty") ? (
                 <div className="canvas-loading-mark" aria-busy="true" aria-label={status === "empty" ? "ADICC" : status === "loading" ? "Reading the sheet" : "Rendering the sheet"}>
@@ -12470,7 +12475,7 @@ export default function TakeoffCanvas() {
                 </div>
               ) : (
                 <div style={{ color: "var(--ink-muted)", fontSize: 15, textAlign: "center" }}>
-                  {status === "error" && <span style={{ color: "var(--c-danger)" }}>Error: {err}</span>}
+              {status === "error" && <span style={{ color: "var(--c-danger)" }}>Error: {err}</span>}
                 </div>
               )}
             </div>
@@ -12726,21 +12731,21 @@ export default function TakeoffCanvas() {
 
               {/* Action items */}
               <div style={{ paddingTop: 4 }}>
-                {isCut ? (
-                  <>
-                    {item("Apply cutout to parent", () => applyCutoutsToParents(
-                      selectedCutoutIds.has(hit.id) && selectedCutoutIds.size ? [...selectedCutoutIds] : [hit.id],
-                    ))}
-                    {item("Remove cutout", () => {
+              {isCut ? (
+                <>
+                  {item("Apply cutout to parent", () => applyCutoutsToParents(
+                    selectedCutoutIds.has(hit.id) && selectedCutoutIds.size ? [...selectedCutoutIds] : [hit.id],
+                  ))}
+                  {item("Remove cutout", () => {
                       const ids = (selectedCutoutIds.has(hit.id) && selectedCutoutIds.size > 1 ? [...selectedCutoutIds] : [hit.id])
                         .filter((id) => !shapeIsLocked(id));
                       if (!ids.length) return;
-                      dispatchShape({ type: "delete", ids });
-                      setSelectedCutoutIds(new Set());
-                      setSelectedId(null);
-                    }, true)}
-                  </>
-                ) : (
+                    dispatchShape({ type: "delete", ids });
+                    setSelectedCutoutIds(new Set());
+                    setSelectedId(null);
+                  }, true)}
+                </>
+              ) : (
                   <>
                     {item("Open in BOQ", () => openBoqForShape(hit.id), false, "B")}
                     {item("Duplicate", duplicateSelected, false, "Ctrl+D")}
@@ -12800,8 +12805,15 @@ export default function TakeoffCanvas() {
           );
         })()}
 
+        {/* save progress — centered pill with running border during folder upload */}
+        {commitMsg && isSaveProgressMsg(commitMsg) && (
+          <div className="upload-progress-pill" role="status" aria-live="polite" aria-busy="true">
+            <span className="upload-progress-pill__label">{commitMsg}</span>
+          </div>
+        )}
+
         {/* status line — floats above the scale bar so they never share a corner */}
-        {commitMsg && (
+        {commitMsg && !isSaveProgressMsg(commitMsg) && (
           <div style={{ position: "absolute", left: "50%", bottom: (status === "ready" && unitsPerPx && focusPanel?.img?.w && viewPrefs.scaleBar ? 78 : 14) + (viewPrefs.rulers ? 24 : 0), transform: "translateX(-50%)", maxWidth: "70%", zIndex: 6, pointerEvents: "none", padding: "6px 12px", background: "var(--paper-bright)", border: "1px solid var(--ink-faint)", boxShadow: "var(--shadow-1)", fontSize: 12, color: isDangerMsg(commitMsg) ? "var(--c-danger)" : "var(--c-positive)" }}>
             {commitMsg}
           </div>
@@ -12896,15 +12908,15 @@ export default function TakeoffCanvas() {
         {/* Standalone builds retain a click-only drawer affordance. The ADICC
             embed is controlled exclusively by the host's Tools eye button. */}
         {canvasReady && !isEmbedded && !takeoffsOpen && (
-          <button
-            type="button"
+              <button
+                type="button"
             className="chrome-edge-trigger is-right"
             aria-label="Show Takeoffs Drawer"
             onPointerDown={(e) => e.stopPropagation()}
             onClick={() => setToolbarVisible("takeoffs", true)}
           >
             <span>Takeoffs Drawer</span>
-          </button>
+              </button>
         )}
 
         {/* Drawings Q&A — centered ask box. Trigger lives in the left stack. */}
@@ -12929,12 +12941,12 @@ export default function TakeoffCanvas() {
                 </span>
                 <label className="drawings-ask-field">
                   <span className="drawings-ask-k">Ask the drawings</span>
-                  <input
+                <input
                     ref={drawingsChatInputRef}
                     className="drawings-ask-input"
-                    autoFocus
-                    value={drawingsChatDraft}
-                    onChange={(e) => setDrawingsChatDraft(e.target.value)}
+                  autoFocus
+                  value={drawingsChatDraft}
+                  onChange={(e) => setDrawingsChatDraft(e.target.value)}
                     placeholder="A scale, a door tag, a spec…"
                   />
                 </label>
@@ -13011,7 +13023,7 @@ export default function TakeoffCanvas() {
             clearSelectionRef={panelSelectionRef}
             {...panelHandlers}
           />
-        </div>
+          </div>
         )}
 
        </div>
@@ -13140,7 +13152,7 @@ export default function TakeoffCanvas() {
           >
             <SummaryPanel
               shapes={boqShapes}
-              conditions={conditions}
+          conditions={conditions}
               sheetLevels={sheetLevels}
               sheetLabel={tabLabel}
               hiddenShapeIds={hiddenShapeIds}

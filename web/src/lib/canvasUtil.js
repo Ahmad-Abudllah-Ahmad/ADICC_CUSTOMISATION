@@ -52,6 +52,14 @@ export const clamp = (s) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, s));
 // shared by the status-bar tone AND the auto-dismiss skip (in the canvas) — one
 // definition of "this message is bad news" for both readers
 export const isDangerMsg = (s) => s === STALE_TAB_MESSAGE || s.startsWith("Commit failed") || s.startsWith("Couldn't");
+export const isSaveProgressMsg = (s) => {
+  if (!s || !s.endsWith("…")) return false;
+  if (/^Reading files( \(\d+\/\d+\))?…$/.test(s)) return true;
+  if (s === "Checking what's already saved…") return true;
+  if (/^Saving to database \(\d+\/\d+\)…$/.test(s)) return true;
+  if (/^(Converting|Unzipping) .+…$/.test(s)) return true;
+  return false;
+};
 
 // A template is a condition minus ids (finish_tag, colors, hatch, waste,
 // H/T params, materials) — instantiation mints fresh condition/material ids.

@@ -10,6 +10,14 @@ export const PLANS_BUCKET = "project-plans";
 const SMALL_FILE_BYTES = 2 * 1024 * 1024;
 const SMALL_LANE_CONCURRENCY = 12;
 const LARGE_LANE_CONCURRENCY = 3;
+/** Scale upload fan-out with batch size — small plans are latency-bound at 1000+. */
+function uploadLaneConcurrency(total) {
+  if (total >= 1000) return { smallConc: 24, largeConc: 4, yieldEvery: 20 };
+  if (total >= 500) return { smallConc: 20, largeConc: 4, yieldEvery: 16 };
+  if (total >= 200) return { smallConc: 16, largeConc: 3, yieldEvery: 12 };
+  if (total >= 40) return { smallConc: 10, largeConc: 2, yieldEvery: 8 };
+  return { smallConc: SMALL_LANE_CONCURRENCY, largeConc: LARGE_LANE_CONCURRENCY, yieldEvery: 4 };
+}
 /** Land metadata while a big upload is still running, not only at the end — whichever
  *  of the two limits trips first, so a slow lane still checkpoints on time. */
 const META_FLUSH_EVERY = 75;
@@ -478,14 +486,25 @@ export async function deleteAllProjectFiles(projectId) {
   if (error) throw error;
 }
 
-async function runPool(items, worker, concurrency) {
+const yieldToUi = () => new Promise((resolve) => {
+  if (typeof globalThis.scheduler?.yield === "function") {
+    globalThis.scheduler.yield().then(resolve, () => setTimeout(resolve, 0));
+    return;
+  }
+  setTimeout(resolve, 0);
+});
+
+async function runPool(items, worker, concurrency, { yieldEvery = 1 } = {}) {
   if (!items.length) return;
   let i = 0;
+  let completed = 0;
   const n = Math.min(concurrency, items.length);
   const workers = Array.from({ length: n }, async () => {
     while (i < items.length) {
       const idx = i++;
       await worker(items[idx], idx);
+      completed += 1;
+      if (yieldEvery <= 1 || completed % yieldEvery === 0) await yieldToUi();
     }
   });
   await Promise.all(workers);
@@ -494,14 +513,15 @@ async function runPool(items, worker, concurrency) {
 /** Two pools at once, split on transfer size: the wide lane keeps small plans
  *  flowing at full rate while the narrow lane moves the heavy ones without them
  *  fighting each other for the same upstream. */
-async function runSizeAwarePool(items, sizeOf, worker) {
+async function runSizeAwarePool(items, sizeOf, worker, { smallConc, largeConc, yieldEvery } = {}) {
   if (!items.length) return;
   const small = [];
   const large = [];
   for (const item of items) (Number(sizeOf(item)) >= SMALL_FILE_BYTES ? large : small).push(item);
+  const poolOpts = yieldEvery != null ? { yieldEvery } : undefined;
   await Promise.all([
-    runPool(small, worker, SMALL_LANE_CONCURRENCY),
-    runPool(large, worker, LARGE_LANE_CONCURRENCY),
+    runPool(small, worker, smallConc ?? SMALL_LANE_CONCURRENCY, poolOpts),
+    runPool(large, worker, largeConc ?? LARGE_LANE_CONCURRENCY, poolOpts),
   ]);
 }
 
@@ -554,15 +574,21 @@ export function hydrateLocalPlansFromDbBackground(projectId, localStore, opts = 
 /** Upload many files after local ingest (Storage parallel + batched Postgres metadata).
  *  Per-file isolation: one rejected object can't strand the other 1000. Re-running
  *  the same folder skips objects already stored at the same size, so it gap-fills. */
-export async function uploadProjectFilesBatch(projectId, files, { folderFor, onProgress } = {}) {
-  const total = files.length;
-  if (!total) return;
+export async function uploadProjectFilesBatch(projectId, files, {
+  folderFor,
+  onProgress,
+  progressOffset = 0,
+  progressTotal = null,
+} = {}) {
+  const batchSize = files.length;
+  if (!batchSize) return;
+  const total = progressTotal ?? batchSize;
 
   const folderOf = (file) => normalizeFolderPath(typeof folderFor === "function" ? folderFor(file) : "");
 
   // Resume scan: only the folders this batch touches, listed in parallel.
   const storedSizes = new Map();
-  if (total >= PRESCAN_MIN_FILES) {
+  if (batchSize >= PRESCAN_MIN_FILES && !progressTotal) {
     onProgress?.("Checking what's already saved…");
     const folders = [...new Set(files.map(folderOf))];
     await runPool(folders, async (fp) => {
@@ -584,7 +610,8 @@ export async function uploadProjectFilesBatch(projectId, files, { folderFor, onP
   let lastFlushAt = Date.now();
   // One repaint per percent: on 1000+ files a tick every couple of files spends the
   // main thread re-rendering instead of feeding the connection.
-  const tickEvery = Math.max(2, Math.floor(total / 100));
+  const tickEvery = Math.max(2, Math.floor(batchSize / 100));
+  const lanes = uploadLaneConcurrency(total);
 
   const flushMeta = async () => {
     if (!pendingMeta.length) return;
@@ -618,7 +645,8 @@ export async function uploadProjectFilesBatch(projectId, files, { folderFor, onP
           });
         }
         pendingMeta.push(metaRow(projectId, file.name, path, folderPath, mime, byteLength));
-        if (pendingMeta.length >= META_FLUSH_EVERY || Date.now() - lastFlushAt >= META_FLUSH_MS) {
+        const metaFlushEvery = total >= 500 ? 150 : META_FLUSH_EVERY;
+        if (pendingMeta.length >= metaFlushEvery || Date.now() - lastFlushAt >= META_FLUSH_MS) {
           await flushMeta();
         }
       } catch (e) {
@@ -626,11 +654,11 @@ export async function uploadProjectFilesBatch(projectId, files, { folderFor, onP
         console.warn(`[ADICC] upload failed "${file.name}"`, e?.message || e);
       }
       done += 1;
-      if (onProgress && (done === total || done - lastTick >= tickEvery)) {
+      if (onProgress && (done === batchSize || done - lastTick >= tickEvery)) {
         lastTick = done;
-        onProgress(`Saving to database (${done}/${total})…`);
+        onProgress(`Saving to database (${progressOffset + done}/${total})…`);
       }
-    });
+    }, { smallConc: lanes.smallConc, largeConc: lanes.largeConc, yieldEvery: lanes.yieldEvery });
   } finally {
     await flushMeta();
   }

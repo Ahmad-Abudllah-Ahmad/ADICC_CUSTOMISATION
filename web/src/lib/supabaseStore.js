@@ -209,11 +209,17 @@ export function createSupabaseStore(projectId = null) {
     },
 
     /** Save many plans to Storage + project_files after a folder ingest (batched). */
-    async persistPlansBatch(files, folderFor, onProgress) {
+    async persistPlansBatch(files, folderFor, onProgress, opts = {}) {
       if (!isSupabaseConfigured() || !files?.length) return;
       const projectId = await ensureProjectId();
-      await uploadProjectFilesBatch(projectId, files, { folderFor, onProgress });
+      await uploadProjectFilesBatch(projectId, files, { folderFor, onProgress, ...opts });
+      if (!opts.deferManifestInvalidate) invalidatePlanManifestCache();
+    },
+
+    /** Call once after a deferred multi-chunk folder upload finishes. */
+    finishPlansBatchUpload() {
       invalidatePlanManifestCache();
+      notifyPlanManifestReady();
     },
 
     async removePdf(name) {

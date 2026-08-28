@@ -21,7 +21,7 @@ import { sanitizeStampLibrary } from "./stamps.js";
 
 const DB_NAME = "opentakeoff";
 const DB_VERSION = 2;
-const PDF_STORE = "pdfs";          // key: file name -> { name, bytes: ArrayBuffer }
+const PDF_STORE = "pdfs";          // key: file name -> { name, bytes: Blob | ArrayBuffer }
 const META_STORE = "meta";         // key: "annotations" -> payload object
 const SNAP_STORE = "snapshots";    // key: id -> { id, ts, label, payload }
 const ANN_KEY = "annotations";
@@ -140,6 +140,15 @@ function tx(db, store, mode, fn) {
   });
 }
 
+/** IndexedDB keeps the File/Blob; only the sheet that is opening copies bytes into RAM. */
+async function pdfRecordToU8(bytes) {
+  if (bytes instanceof Blob) return new Uint8Array(await bytes.arrayBuffer());
+  if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
+  if (bytes instanceof Uint8Array) return new Uint8Array(bytes);
+  if (ArrayBuffer.isView(bytes)) return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return new Uint8Array(bytes || []);
+}
+
 export const localStore = {
   async listSheets() {
     const names = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.getAllKeys()));
@@ -158,17 +167,16 @@ export const localStore = {
     const rec = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.get(name)));
     if (!rec) throw new Error(`PDF not found in local store: ${name}`);
     // hand pdf.js a fresh view each call — getDocument({data}) may detach it
-    return new Uint8Array(rec.bytes);
+    return pdfRecordToU8(rec.bytes);
   },
 
   // `key` overrides the cache key when the caller identifies sheets by their
   // folder-relative path (two folders may hold the same basename).
   async addPdf(file, { key } = {}) {
-    // read the bytes BEFORE opening — don't hold a connection across an
-    // unrelated (possibly slow, file-sized) await
-    const bytes = await file.arrayBuffer();
     const name = key || file.name;
-    // de-dupe by name: a re-dropped file replaces the old bytes
+    const bytes = file instanceof Blob
+      ? file
+      : (typeof file?.arrayBuffer === "function" ? await file.arrayBuffer() : new Blob([file]));
     await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name, bytes })));
     return { name };
   },
@@ -349,19 +357,24 @@ export function createLocalStore(folderId = null) {
   return {
     ...localStore,
     async listSheets() {
-      const all = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.getAll()));
-      return (all || [])
-        .filter((rec) => rec?.name?.startsWith(pdfPrefix))
-        .map((rec) => ({ name: unscopedPdfFileName(scope, rec.name) }));
+      // Keys only — getAll() would load every plan's bytes into the heap. A
+      // folder ingest of 100+ PDFs then a listSheets (manifest, Files panel,
+      // refresh) was OOM-killing the tab (Chrome "Aw, Snap" / error 5).
+      const keys = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.getAllKeys()));
+      return (keys || [])
+        .filter((name) => typeof name === "string" && name.startsWith(pdfPrefix))
+        .map((name) => ({ name: unscopedPdfFileName(scope, name) }));
     },
     async loadPdfData(name) {
       const rec = await withDb((db) => tx(db, PDF_STORE, "readonly", (os) => os.get(scopedPdfStorageName(scope, name))));
       if (!rec) throw new Error(`PDF not found in local store: ${name}`);
-      return new Uint8Array(rec.bytes);
+      return pdfRecordToU8(rec.bytes);
     },
     async addPdf(file, { key } = {}) {
-      const bytes = await file.arrayBuffer();
       const name = key || file.name;
+      const bytes = file instanceof Blob
+        ? file
+        : (typeof file?.arrayBuffer === "function" ? await file.arrayBuffer() : new Blob([file]));
       await withDb((db) => tx(db, PDF_STORE, "readwrite", (os) => os.put({ name: scopedPdfStorageName(scope, name), bytes })));
       return { name };
     },
