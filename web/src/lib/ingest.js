@@ -119,6 +119,62 @@ async function imageToPdf(file) {
   return new File([await doc.save()], name, { type: "application/pdf" });
 }
 
+const RENDER_SCALE = 2.0;
+const safeFilePart = (s) => String(s).replace(/[\\/:*?"<>|]/g, "-").trim();
+
+/** Title-block sheet numbers per 1-based page (e.g. A003), when readable. */
+async function readSheetLabels(pdfBytes, pageCount) {
+  const labels = {};
+  if (pageCount <= 1) return labels;
+  try {
+    const pdfjsLib = await import("pdfjs-dist");
+    const { extractSheetNumber } = await import("./sheets.ts");
+    const { pdfjsWorkerSrc } = await import("./pdfWorkerSrc.js");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc();
+    const pdf = await pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise;
+    for (let n = 1; n <= pageCount; n++) {
+      try {
+        const page = await pdf.getPage(n);
+        const tc = await page.getTextContent();
+        const vp = page.getViewport({ scale: RENDER_SCALE });
+        const lbl = extractSheetNumber(tc, vp);
+        if (lbl) labels[n] = lbl;
+      } catch { /* skip unreadable page */ }
+    }
+    await pdf.destroy?.();
+  } catch { /* fall back to numeric page suffixes */ }
+  return labels;
+}
+
+/** Multi-page plan PDFs become one file per page, named with the sheet/page id. */
+async function expandPdfPages(file, onProgress) {
+  try {
+    const { PDFDocument } = await import("pdf-lib");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    const pageCount = src.getPageCount();
+    if (pageCount <= 1) return [file];
+
+    const bn = baseName(file.name);
+    onProgress?.(`Splitting ${bn} (${pageCount} pages)…`);
+    const stem = bn.replace(/\.pdf$/i, "");
+    const labels = await readSheetLabels(bytes, pageCount);
+    const out = [];
+    for (let i = 0; i < pageCount; i++) {
+      const doc = await PDFDocument.create();
+      const [copied] = await doc.copyPages(src, [i]);
+      doc.addPage(copied);
+      const pageNum = i + 1;
+      const suffix = safeFilePart(labels[pageNum] || String(pageNum));
+      const name = `${stem} - ${suffix}.pdf`;
+      out.push(new File([await doc.save()], name, { type: "application/pdf" }));
+    }
+    return out;
+  } catch {
+    return [file];
+  }
+}
+
 let libredwgPromise = null;
 async function getLibreDwg() {
   if (!libredwgPromise) {
@@ -360,11 +416,15 @@ export async function ingestFiles(
     const name = uniqueName(file.name);
     pdfs.push(name === file.name ? file : new File([file], name, { type: "application/pdf" }));
   };
+  const pushPdfFile = async (file) => {
+    const expanded = await expandPdfPages(file, onProgress);
+    for (const p of expanded) pushPdf(p);
+  };
 
   async function process(file, depth) {
     const name = file.name || "file";
     try {
-      if (isPdf(name, file.type)) { pushPdf(file); return; }
+      if (isPdf(name, file.type)) { await pushPdfFile(file); return; }
       if (isDwg(name, file.type) || (await looksLikeDwg(file))) { onProgress?.(`Converting ${baseName(name)}…`); pushPdf(await dwgToPdf(file)); return; }
       if (isImage(name, file.type)) { onProgress?.(`Converting ${baseName(name)}…`); pushPdf(await imageToPdf(file)); return; }
       if (isZip(name, file.type) || (await looksLikeZip(file))) {
@@ -378,7 +438,7 @@ export async function ingestFiles(
         if (!paths.length) { skipped.push({ name: baseName(name), reason: "no plans found in zip" }); return; }
         for (const path of paths) {
           const bn = baseName(path);
-          if (isPdf(bn)) pushPdf(new File([entries[path]], bn, { type: "application/pdf" }));
+          if (isPdf(bn)) await pushPdfFile(new File([entries[path]], bn, { type: "application/pdf" }));
           else if (isDwg(bn)) { onProgress?.(`Converting ${bn}…`); pushPdf(await dwgToPdf(new File([entries[path]], bn))); }
           else if (isImage(bn)) { onProgress?.(`Converting ${bn}…`); pushPdf(await imageToPdf(new File([entries[path]], bn))); }
           else if (isZip(bn)) await process(new File([entries[path]], bn, { type: "application/zip" }), depth + 1);
