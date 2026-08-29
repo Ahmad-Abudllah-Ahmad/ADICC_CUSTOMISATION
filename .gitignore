@@ -18,6 +18,10 @@ server/.venv/
 .env.*
 !.env.example
 
+# This-machine Vite port (5180). Others keep committed 5173.
+web/vite.config.local.js
+web/dev-5180.cmd
+
 # Netlify CLI local state (never commit; the root netlify.toml IS committed)
 .netlify/
 **/.netlify/
