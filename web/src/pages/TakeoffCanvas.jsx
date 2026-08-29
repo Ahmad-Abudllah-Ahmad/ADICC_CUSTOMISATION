@@ -101,7 +101,7 @@ import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
 import AdiccLoadingLogo from "../components/AdiccLoadingLogo.jsx";
-import { ChevronLeft, ChevronRight, Contrast, FileStack, Map as MapIcon, Maximize2, Minimize2, Minus, Plus, Redo2, RotateCcw, Scan, Search, Undo2, X } from "lucide-react";
+import { Contrast, FileStack, Map as MapIcon, Maximize2, Minimize2, Minus, Plus, Redo2, RotateCcw, Scan, Search, Undo2, X } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
 import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
@@ -219,6 +219,15 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc();
 // by the panel itself — ONE clamp, so a future range change can't diverge
 // between the panel's own drag clamp and the load-time clamp here.)
 const PANEL_PREFS_KEY = "opentakeoff_panel";
+const MEASURE_RAIL_ICON_SIZE_KEY = "opentakeoff_measure_rail_icon_size";
+const MEASURE_RAIL_ICON_SIZES = ["small", "medium", "large"];
+const readMeasureRailIconSize = () => {
+  try {
+    const stored = localStorage.getItem(MEASURE_RAIL_ICON_SIZE_KEY);
+    if (MEASURE_RAIL_ICON_SIZES.includes(stored)) return stored;
+  } catch { /* private mode */ }
+  return "small";
+};
 // The docked panel now starts COLLAPSED: the top-bar palette band (pinned chips
 // + the restored active-condition appearance editor) is the primary condition
 // surface, so the sidebar stays out of the way until you ask for it — via the
@@ -473,7 +482,6 @@ export default function TakeoffCanvas() {
   const measureRailDraggingRef = useRef(false);
   const [measureRailResetting, setMeasureRailResetting] = useState(false);
   useEffect(() => { measureRailPosRef.current = measureRailPos; }, [measureRailPos]);
-  const [lpTabsOverflow, setLpTabsOverflow] = useState({ start: false, end: false });
   const leftDesk = useOpenMotion(!!leftTab);
   const [illLayersOpen, setIllLayersOpen] = useState(false); // Illustrator-style Layers panel (live shapes)
   const lastLeftTabRef = useRef("files");
@@ -501,44 +509,8 @@ export default function TakeoffCanvas() {
   useEffect(() => {
     const el = lpTabsScrollRef.current;
     if (!el || !leftTab) return;
-    const wrap = el.closest(".left-panel-glass-tabs");
-    const sync = () => {
-      const start = el.scrollLeft > 2;
-      const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
-      setLpTabsOverflow((prev) => (prev.start === start && prev.end === end ? prev : { start, end }));
-      if (wrap) {
-        wrap.classList.toggle("has-overflow-start", start);
-        wrap.classList.toggle("has-overflow-end", end);
-      }
-    };
-    sync();
-    const ro = new ResizeObserver(sync);
-    ro.observe(el);
-    const mo = new MutationObserver(sync);
-    mo.observe(el, { childList: true, subtree: true, characterData: true });
-    el.addEventListener("scroll", sync, { passive: true });
-    const onWheel = (e) => {
-      if (el.scrollWidth <= el.clientWidth) return;
-      e.preventDefault();
-      e.stopPropagation();
-      el.scrollLeft += (e.deltaX || e.deltaY);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    const on = el.querySelector(".lp-tab.is-on");
-    on?.scrollIntoView({ inline: "nearest", block: "nearest" });
-    sync();
-    return () => {
-      ro.disconnect();
-      mo.disconnect();
-      el.removeEventListener("scroll", sync);
-      el.removeEventListener("wheel", onWheel);
-    };
+    el.querySelector(".lp-desk-index-item.is-on")?.scrollIntoView({ inline: "nearest", block: "nearest" });
   }, [leftTab, leftDesk.shown]);
-  const shiftLpTabs = (dir) => {
-    const el = lpTabsScrollRef.current;
-    if (!el) return;
-    el.scrollBy({ left: dir * Math.max(96, el.clientWidth * 0.55), behavior: "smooth" });
-  };
   const [sheetsSearch, setSheetsSearch] = useState("");
   const toggleSheetsTab = useCallback(() => {
     const fromHostMenu = leftPanelPresentationRef.current === "menu";
@@ -651,6 +623,9 @@ export default function TakeoffCanvas() {
   const toolbarChromeRef = useRef(toolbarChrome);
   const workspaceBarRef = useRef(null);
   toolbarChromeRef.current = toolbarChrome;
+  const [measureRailIconSize, setMeasureRailIconSize] = useState(readMeasureRailIconSize);
+  const measureRailIconSizeRef = useRef(measureRailIconSize);
+  measureRailIconSizeRef.current = measureRailIconSize;
   // Panel VIEW state (tab, filter, collapsed groups, ⌘/⇧ multi-select) lives
   // in the TakeoffsPanel component. Two hooks back into it from here:
   const [panelEpoch, setPanelEpoch] = useState(0);   // bumped by hydrate — the panel clears the transients that described the replaced conditions
@@ -1271,7 +1246,10 @@ export default function TakeoffCanvas() {
         source: "opentakeoff",
         type: "adicc:toolbar-state",
         tools: {
-          measure: { visible: current.measureVisible },
+          measure: {
+            visible: current.measureVisible,
+            iconSize: measureRailIconSizeRef.current,
+          },
           workspace: { visible: current.workspaceVisible },
           takeoffs: { visible: current.takeoffsVisible },
         },
@@ -1285,7 +1263,11 @@ export default function TakeoffCanvas() {
     toolbarChrome.measureVisible,
     toolbarChrome.workspaceVisible,
     takeoffsOpen,
+    measureRailIconSize,
   ]);
+  useEffect(() => {
+    try { localStorage.setItem(MEASURE_RAIL_ICON_SIZE_KEY, measureRailIconSize); } catch { /* private mode */ }
+  }, [measureRailIconSize]);
   useLayoutEffect(() => {
     const bar = workspaceBarRef.current;
     const shell = bar?.closest(".app-shell");
@@ -1308,6 +1290,10 @@ export default function TakeoffCanvas() {
       if (!d || d.source !== "adicc-platform" || d.type !== "adicc:toolbar-control") return;
       if (d.action === "request-state") {
         postToolbarState();
+        return;
+      }
+      if (d.action === "set-measure-icon-size") {
+        if (MEASURE_RAIL_ICON_SIZES.includes(d.size)) setMeasureRailIconSize(d.size);
         return;
       }
       if (!["measure", "workspace", "takeoffs"].includes(d.tool)) return;
@@ -1443,9 +1429,7 @@ export default function TakeoffCanvas() {
   const [clientInfo, setClientInfo] = useState({});      // per-project client/job fields for branded output; additive payload field
   const fileInputRef = useRef(null);                    // hidden <input type=file> for "Open PDF"
   const folderInputRef = useRef(null);                  // hidden folder picker — whole project tree upload
-  const lpTabsScrollRef = useRef(null);                 // Files panel tab strip — overflow + drag-scroll
-  const lpTabsDragRef = useRef(null);                   // { x, sl, moved }
-  const lpTabsSkipClickRef = useRef(false);
+  const lpTabsScrollRef = useRef(null);                 // desk index — keep the active section in view
 
   const containerRef = useRef(null);
   const stageRef = useRef(null);
@@ -9784,7 +9768,7 @@ export default function TakeoffCanvas() {
     if (view !== "canvas" || status !== "ready") return;
     syncMeasureRailLayout();
     requestAnimationFrame(() => syncMeasureRailLayout());
-  }, [view, status, measureRailPos, syncMeasureRailLayout]);
+  }, [view, status, measureRailPos, measureRailIconSize, syncMeasureRailLayout]);
   useEffect(() => {
     if (view !== "canvas" || status !== "ready") return undefined;
     const onReflow = () => syncMeasureRailLayout();
@@ -10697,7 +10681,7 @@ export default function TakeoffCanvas() {
        {canvasReady && createPortal(
        <div
          ref={measureRailRef}
-         className={`measure-rail-chrome is-portaled is-custom-pos${toolbarChrome.measureVisible ? " is-visible" : " is-hidden"}${leftPanelPresentation === "menu" && leftDesk.shown ? " has-host-menu" : ""}${measureRailResetting ? " is-rail-resetting" : ""}`}
+         className={`measure-rail-chrome is-portaled is-custom-pos is-rail-icons-${measureRailIconSize}${toolbarChrome.measureVisible ? " is-visible" : " is-hidden"}${leftPanelPresentation === "menu" && leftDesk.shown ? " has-host-menu" : ""}${measureRailResetting ? " is-rail-resetting" : ""}`}
          onPointerDown={(e) => e.stopPropagation()}
          style={{
            position: "fixed",
@@ -10822,90 +10806,63 @@ export default function TakeoffCanvas() {
                </button>
              </div>
            ) : (
-           /* Dock-only tab strip — host navbar already acts as the menu's section switcher. */
-           <div className={`left-panel-glass-tabs${lpTabsOverflow.start ? " has-overflow-start" : ""}${lpTabsOverflow.end ? " has-overflow-end" : ""}`} style={{ color: "var(--accent-contrast)", flexShrink: 0 }}>
-             <div className="lp-tabs-track">
-               <button
-                 type="button"
-                 className="lp-tabs-shift is-start"
-                 onClick={() => shiftLpTabs(-1)}
-                 disabled={!lpTabsOverflow.start}
-                 data-tip="Earlier tabs"
-                 aria-label="Earlier tabs"
-               >
-                 <ChevronLeft size={14} strokeWidth={2.6} />
-               </button>
-             <div
-               ref={lpTabsScrollRef}
-               className="lp-tabs-scroller"
-               role="tablist"
-               aria-label="Project desk sections"
-               onPointerDown={(e) => {
-                 if (e.button !== 0) return;
-                 const el = lpTabsScrollRef.current;
-                 if (!el || el.scrollWidth <= el.clientWidth) return;
-                 lpTabsDragRef.current = { x: e.clientX, sl: el.scrollLeft, moved: false, id: e.pointerId };
-               }}
-               onPointerMove={(e) => {
-                 const d = lpTabsDragRef.current;
-                 const el = lpTabsScrollRef.current;
-                 if (!d || !el) return;
-                 const dx = e.clientX - d.x;
-                 if (!d.moved && Math.abs(dx) > 10) {
-                   d.moved = true;
-                   try { el.setPointerCapture(d.id); } catch { /* not all targets capture */ }
-                 }
-                 if (d.moved) el.scrollLeft = d.sl - dx;
-               }}
-               onPointerUp={() => {
-                 if (lpTabsDragRef.current?.moved) {
-                   lpTabsSkipClickRef.current = true;
-                   setTimeout(() => { lpTabsSkipClickRef.current = false; }, 120);
-                 }
-                 lpTabsDragRef.current = null;
-               }}
-               onPointerCancel={() => { lpTabsSkipClickRef.current = false; lpTabsDragRef.current = null; }}
-               onClickCapture={(e) => {
-                 if (!lpTabsSkipClickRef.current) return;
-                 e.preventDefault();
-                 e.stopPropagation();
-                 lpTabsSkipClickRef.current = false;
-               }}
-             >
-             {[{ id: "summary", label: "Summary", n: boqShapes.length }, { id: "files", label: "Files", n: sheets.length }, { id: "sheets", label: "Sheets", n: openTabs.length }, { id: "markup", label: "Markups", n: markupCount }, { id: "stamp", label: "Stamps", n: stampLib.stamps.length }, { id: "rfi", label: "RFIs", n: rfis.length }].map((t) => (
-               <button
-                 key={t.id}
-                 id={`lp-tab-${t.id}`}
-                 type="button"
-                 role="tab"
-                 aria-selected={deskTab === t.id}
-                 aria-controls="lp-tab-panel"
-                 className={`lp-tab${deskTab === t.id ? " is-on" : ""}`}
-                 onClick={() => {
-                   lastLeftTabRef.current = t.id;
-                   setLeftTab(t.id);
-                 }}
-                 title={t.label}
-               >
-                 <span>{t.label}</span>
-                 {t.n ? <span className="lp-tab-count">{t.n}</span> : null}
-               </button>
-             ))}
-           </div>
-               <button
-                 type="button"
-                 className="lp-tabs-shift is-end"
-                 onClick={() => shiftLpTabs(1)}
-                 disabled={!lpTabsOverflow.end}
-                 data-tip="More tabs"
-                 aria-label="More tabs"
-               >
-                 <ChevronRight size={14} strokeWidth={2.6} />
-               </button>
-             </div>
-             <button type="button" className="lp-tab-close" onClick={() => setLeftTab(null)} aria-label="Close panel">
-               <Icon name="close" size={14} />
-             </button>
+           /* Dock titleblock — current section is the title; the rest is a quiet index. */
+           <div className="left-panel-glass-tabs lp-desk-head">
+             {(() => {
+               const deskSections = [
+                 { id: "summary", label: "Summary", n: boqShapes.length },
+                 { id: "files", label: "Files", n: sheets.length },
+                 { id: "sheets", label: "Sheets", n: openTabs.length },
+                 { id: "markup", label: "Markups", n: markupCount },
+                 { id: "stamp", label: "Stamps", n: stampLib.stamps.length },
+                 { id: "rfi", label: "RFIs", n: rfis.length },
+               ];
+               const current = deskSections.find((t) => t.id === deskTab) || deskSections[0];
+               return (
+                 <>
+                   <div className="lp-desk-mast">
+                     <div className="lp-desk-mast-id">
+                       <span key={current.id} id={`lp-tab-${current.id}`} className="lp-desk-title">{current.label}</span>
+                       {current.n ? <span className="lp-desk-count">{Number(current.n).toLocaleString()}</span> : null}
+                     </div>
+                     <button
+                       type="button"
+                       className="lp-desk-close"
+                       onClick={() => setLeftTab(null)}
+                       aria-label={`Close ${current.label}`}
+                     >
+                       Close
+                     </button>
+                   </div>
+                   <nav
+                     ref={lpTabsScrollRef}
+                     className="lp-desk-index"
+                     role="tablist"
+                     aria-label="Project desk sections"
+                   >
+                     {deskSections.filter((t) => t.id !== current.id).map((t) => (
+                       <button
+                         key={t.id}
+                         id={`lp-tab-${t.id}`}
+                         type="button"
+                         role="tab"
+                         aria-selected={deskTab === t.id}
+                         aria-controls="lp-tab-panel"
+                         className="lp-desk-index-item"
+                         aria-label={t.n ? `${t.label}, ${t.n}` : t.label}
+                         onClick={() => {
+                           lastLeftTabRef.current = t.id;
+                           setLeftTab(t.id);
+                         }}
+                       >
+                         <span className="lp-desk-index-label">{t.label}</span>
+                         {t.n ? <span className="lp-desk-index-n">{Number(t.n).toLocaleString()}</span> : null}
+                       </button>
+                     ))}
+                   </nav>
+                 </>
+               );
+             })()}
            </div>
            )}
            {/* body of the active tab */}
