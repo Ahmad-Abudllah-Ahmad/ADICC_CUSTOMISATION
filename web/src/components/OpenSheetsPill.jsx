@@ -1,7 +1,7 @@
 // Open sheets on the canvas — docked above the bottom-left sheets FAB.
 // Parent owns goToSheet / toggleInGroup / closeTab / gallery; this view only calls them.
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Columns2, Eye, EyeOff, FileStack, Plus, Search, X } from "lucide-react";
+import { Columns2, FileStack, Plus, Search, X } from "lucide-react";
 
 const ICO = { size: 15, strokeWidth: 2 };
 
@@ -60,12 +60,6 @@ export default function OpenSheetsPill({
     return openTabs[0] || "";
   })();
 
-  const onEye = (e, k, eyeDisabled) => {
-    e.stopPropagation();
-    if (eyeDisabled) return;
-    onToggleInGroup(k);
-  };
-
   const list = (
       <div className="left-panel-scroll open-sheets-list">
         {shown.length === 0 ? (
@@ -78,13 +72,6 @@ export default function OpenSheetsPill({
           const selected = k === activeKey;
           const lbl = tabLabel ? tabLabel(k) : k;
           const n = String(i + 1).padStart(2, "0");
-          const canHide = visible && inGroup && sheetGroup.length >= 2;
-          const eyeDisabled = visible && sheetGroup.length < 2;
-          const eyeTip = eyeDisabled
-            ? "On canvas"
-            : canHide
-              ? "Hide from view"
-              : "Show in pair";
           // Split makes/keeps a side-by-side pair. Removing (in-group) is always
           // allowed; adding is a dead action when the group is already full, or
           // when it would try to pair the only/active sheet with itself — disable
@@ -113,17 +100,6 @@ export default function OpenSheetsPill({
               <span className="open-sheets-name">{lbl}</span>
               <span className={`open-sheets-now${selected ? " is-on" : ""}`}>{selected ? "Now" : ""}</span>
               <span className="open-sheets-tools">
-                <button
-                  type="button"
-                  className={`open-sheets-ico${visible ? " is-eye" : ""}`}
-                  onClick={(e) => onEye(e, k, eyeDisabled)}
-                  disabled={eyeDisabled}
-                  data-tip={eyeTip}
-                  data-tip-at="left"
-                  aria-label={eyeTip}
-                >
-                  {visible ? <Eye {...ICO} /> : <EyeOff {...ICO} />}
-                </button>
                 <button
                   type="button"
                   className={`open-sheets-ico${inGroup ? " is-pair" : ""}`}

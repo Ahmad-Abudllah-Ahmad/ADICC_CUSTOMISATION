@@ -472,7 +472,6 @@ export default function PastProjectsPanel({
               const busy = busyId === p.id;
               const highlighted = highlightId === p.id;
               const when = fmtCardDate(p.lastOpenedAt || p.updatedAt || p.createdAt);
-              const sheets = Number(p.sheetCount) || 0;
               const takeoffs = Number(p.shapeCount) || 0;
               return (
                 <BlurReveal key={p.id} delay={Math.min(i * 100, 480)} style={{ height: "100%", minWidth: 0, overflow: "visible", paddingTop: 2 }}>
@@ -489,12 +488,6 @@ export default function PastProjectsPanel({
                   <div className="home-project-card-shell">
                     <div className="home-project-preview-wrap">
                       <ProjectPdfSlider projectId={p.id} sheetCount={p.sheetCount} />
-                      {sheets > 0 && (
-                        <span className="home-project-index-tab" aria-hidden="true">
-                          <b className="home-project-index-tab-n">{sheets}</b>
-                          <span className="home-project-index-tab-l">{sheets === 1 ? "sheet" : "sheets"}</span>
-                        </span>
-                      )}
                       {active && <span className="home-project-card-now">Current</span>}
                     </div>
 
