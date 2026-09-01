@@ -104,6 +104,201 @@ export function extractSheetNumber(textContent: TextContentLike, viewport: Viewp
   return best;
 }
 
+// ── drawing title: left title strip + DRAWING TITLE / Drg.Title table ────────
+// Multi-page ingest names each split sheet from this (not "file - page N").
+export interface TitleTok { str: string; x: number; y: number; h: number }
+
+const TITLE_LABEL_RE = /^(?:DRAWING|DRG\.?|SHEET|DWG\.?)\s*TITLE\s*:?$/i;
+const TITLE_INLINE_RE = /^(?:DRAWING|DRG\.?|SHEET|DWG\.?)\s*TITLE\s*:?\s+(.+)$/i;
+const TITLE_STOP_RE = /^(DRAWING\s*(NO\.?|NUMBER|SIZE)|REVISION|REV\.?\s*NO\.?|SCALE|SUBMISSION|PROJECT(\s*ID|\s*NAME)?|DATE|CLIENT|ARCHITECT|ZONE|SECTOR|PLOT(\s*NO)?|AREA|FLOORTYPE|OFFICIAL\s*USE|OWNER|CONSULTANT|DEVELOPER|MASTER\s*DEVELOPER)\b/i;
+
+function positionedTitleToks(textContent: TextContentLike, viewport: Viewport): TitleTok[] {
+  const out: TitleTok[] = [];
+  for (const it of textContent.items || []) {
+    const str = (it.str || "").trim();
+    if (!str) continue;
+    const t = pdfjsLib.Util.transform(viewport.transform, it.transform);
+    out.push({
+      str,
+      x: t[4],
+      y: t[5],
+      h: Math.hypot(t[2], t[3]) || it.height || 0,
+    });
+  }
+  return out;
+}
+
+function isTitleLabel(str: string): boolean {
+  return TITLE_LABEL_RE.test(str.trim());
+}
+
+function isTitleStop(str: string): boolean {
+  const s = str.trim();
+  if (isTitleLabel(s) || TITLE_INLINE_RE.test(s)) return false;
+  return TITLE_STOP_RE.test(s);
+}
+
+/** User-chosen Files label (right-click Rename). Does not change the stored PDF key. */
+export function cleanFileDisplayName(raw: string): string | null {
+  let s = String(raw || "").replace(/\s+/g, " ").trim();
+  s = s.replace(/\.pdf$/i, "");
+  s = s.replace(/[\\/:*?"<>|]/g, "-").trim();
+  if (s.length < 1 || s.length > 120) return null;
+  return s;
+}
+
+/** Collapse OCR / PDF-text title fragments into a safe file-name stem, or null. */
+export function cleanDrawingTitle(raw: string): string | null {
+  let s = String(raw || "").replace(/\s+/g, " ").trim();
+  s = s.replace(/^[:.\-–—]+\s*/, "").replace(/\s*[:.\-–—]+$/, "");
+  s = s.replace(/[\\/:*?"<>|]/g, "-");
+  if (s.length < 3 || s.length > 120) return null;
+  if (!/[A-Za-z]{3,}/.test(s)) return null;
+  if (/^(title|drawing title|drg\.?\s*title|sheet title|untitled)$/i.test(s)) return null;
+  // BOQ / schedule column headers glued together ("Item Item Item…")
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length >= 3) {
+    const uniq = new Set(words.map((w) => w.toLowerCase()));
+    if (uniq.size === 1) return null;
+  }
+  if (/^(item|qty|unit|description|amount|total|no\.?|code)(\s+\1)+$/i.test(s)) return null;
+  return s;
+}
+
+function joinTitleToks(toks: TitleTok[]): string | null {
+  if (!toks.length) return null;
+  const rows: TitleTok[][] = [];
+  const sorted = [...toks].sort((a, b) => a.y - b.y || a.x - b.x);
+  for (const t of sorted) {
+    const row = rows.find((r) => Math.abs(r[0].y - t.y) <= Math.max(r[0].h, t.h, 8) * 0.75);
+    if (row) row.push(t);
+    else rows.push([t]);
+  }
+  const text = rows
+    .map((r) => r.sort((a, b) => a.x - b.x).map((t) => t.str).join(" "))
+    .join(" ")
+    .replace(/\s+-\s+/g, " - ");
+  return cleanDrawingTitle(text);
+}
+
+function titleFromLabeledField(toks: TitleTok[], W: number, H: number): string | null {
+  for (const lab of toks) {
+    const inline = lab.str.match(TITLE_INLINE_RE);
+    if (inline) {
+      const cleaned = cleanDrawingTitle(inline[1]);
+      if (cleaned) return cleaned;
+    }
+    if (!isTitleLabel(lab.str) && !inline) continue;
+
+    const lineTol = Math.max(lab.h * 0.7, 6);
+    const sameLine = toks.filter((t) =>
+      t !== lab
+      && t.x > lab.x + 6
+      && Math.abs(t.y - lab.y) <= lineTol
+      && !isTitleStop(t.str)
+      && !isTitleLabel(t.str),
+    );
+    const same = joinTitleToks(sameLine);
+    if (same) return same;
+
+    const nextFieldY = toks
+      .filter((t) => isTitleStop(t.str) && t.y > lab.y + 2 && Math.abs(t.x - lab.x) < W * 0.28)
+      .reduce((min, t) => Math.min(min, t.y), lab.y + Math.max(H * 0.10, 90));
+    const below = toks.filter((t) =>
+      t !== lab
+      && t.y > lab.y + lab.h * 0.25
+      && t.y < nextFieldY - 1
+      && t.x > lab.x - 20
+      && t.x < W
+      && !isTitleStop(t.str)
+      && !isTitleLabel(t.str),
+    );
+    const under = joinTitleToks(below);
+    if (under) return under;
+  }
+  return null;
+}
+
+function isTitleLike(str: string): boolean {
+  const s = str.trim();
+  if (s.length < 4 || s.length > 70) return false;
+  if (!/[A-Za-z]{3,}/.test(s)) return false;
+  if (isTitleStop(s) || isTitleLabel(s)) return false;
+  if (/^\d+([.:]\d+)?$/.test(s)) return false;
+  if (/^PROPOSED\b/i.test(s)) return false;
+  return true;
+}
+
+/** Largest title-like line in the bottom-left title-strip table (SCALE nearby). */
+function titleFromLeftStrip(toks: TitleTok[], W: number, H: number): string | null {
+  const band = toks.filter((t) => t.x < W * 0.22 && t.y > H * 0.80);
+  if (!band.some((t) => /^SCALE\b/i.test(t.str))) return null;
+  const candidates = band.filter((t) => t.h >= 8 && isTitleLike(t.str));
+  if (!candidates.length) return null;
+  const maxH = Math.max(...candidates.map((t) => t.h));
+  return joinTitleToks(candidates.filter((t) => t.h >= maxH * 0.78));
+}
+
+const RIGHT_TITLE_HINT =
+  /\b(PLAN|DETAILS?|SECTION|ELEVATION|SCHEDULE|LAYOUT|WATERPROOFING|HANDRAIL|LADDER|CEILING|FLOOR|ROOF|PARKING|STAIR|DOOR|WINDOW|GARBAGE|LIFT|PLATFORM|POOL|RECEPTION|ENTRANCE|FINISHING|TYPICAL)\b/i;
+
+/** Unlabeled title in the lower-right block (e.g. "LIFT DETAILS 1/2"). */
+function titleFromRightBlock(toks: TitleTok[], W: number, H: number): string | null {
+  const band = toks.filter((t) =>
+    t.x > W * 0.68
+    && t.y > H * 0.62
+    && t.y < H * 0.90
+    && t.h >= 8
+    && isTitleLike(t.str)
+    && RIGHT_TITLE_HINT.test(t.str),
+  );
+  if (!band.length) return null;
+  const maxH = Math.max(...band.map((t) => t.h));
+  return joinTitleToks(band.filter((t) => t.h >= maxH * 0.78));
+}
+
+/**
+ * Drawing title from the title-block table. Prefers a DRAWING TITLE / Drg.Title
+ * field; then the left title-strip table; then an unlabeled right-block title.
+ */
+export function drawingTitleFromTokens(toks: TitleTok[], width: number, height: number): string | null {
+  return titleFromLabeledField(toks, width, height)
+    || titleFromLeftStrip(toks, width, height)
+    || titleFromRightBlock(toks, width, height);
+}
+
+export function extractDrawingTitle(textContent: TextContentLike, viewport: Viewport): string | null {
+  return drawingTitleFromTokens(positionedTitleToks(textContent, viewport), viewport.width, viewport.height);
+}
+
+/** Parse Tesseract / OCR dump of a title-block crop into a drawing title. */
+export function parseDrawingTitleFromOcr(text: string): string | null {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const inline = lines[i].match(TITLE_INLINE_RE);
+    if (inline) {
+      const cleaned = cleanDrawingTitle(inline[1]);
+      if (cleaned) return cleaned;
+    }
+    if (TITLE_LABEL_RE.test(lines[i])) {
+      const next = lines[i + 1];
+      if (next && !isTitleStop(next) && !TITLE_LABEL_RE.test(next)) {
+        const cleaned = cleanDrawingTitle(next);
+        if (cleaned) return cleaned;
+      }
+    }
+  }
+  // Left-strip OCR often has the title as the largest remaining line, no label.
+  const candidates = lines.filter((l) =>
+    !TITLE_LABEL_RE.test(l) && !isTitleStop(l) && /[A-Za-z]{4,}/.test(l) && l.length <= 80,
+  );
+  if (candidates.length === 1) return cleanDrawingTitle(candidates[0]);
+  return null;
+}
+
 // ── scale detect: read the drawn scale note off the page text ────────────────
 // Plans state their scale ("SCALE: 1/8" = 1'-0"") in the title block and under
 // viewports. Match the page text against STANDARD_SCALES — wrong scale is the
