@@ -4,6 +4,11 @@ All notable changes to OpenTakeoff. Dates are release/merge dates on `main`.
 
 ## Unreleased — canvas chrome: theme next to Pan
 
+### Changed
+- **Multi-page ingest names each split sheet from the drawing title.** The left title-strip table and the DRAWING TITLE / Drg.Title field are read from the PDF text layer; scanned pages OCR that crop in the browser. Files list the title (for example `STAIRCASE HANDRAIL DETAILS`) instead of `Plan set - 1`. Page-number suffixes remain only when no title is readable. No store or project-file schema change.
+- **Files shows drawing titles for sheets already in the project.** A background text-layer scan fills display labels from DRAWING TITLE / Drg.Title (and the left title strip) without renaming IndexedDB or cloud keys — so cloud-loaded splits still labeled `… - 1` update to `TYPICAL CEILING DETAILS` once the title block is read.
+- **Right-click Rename on Files is display-only.** Custom labels persist as additive `file_display_names` and override auto titles, but the PDF store key / `sheet_id` / cloud path never change — so a bad OCR read can be corrected without takeoff or scale mismatches.
+
 ### Added
 - **Measure Rail icon size in the host Tools menu.** Under the existing Measure Rail hide/show row, Small (5% tighter than the original rail), Medium, and Large scale only the left-rail icons and buttons in short optical steps. Visibility toggles and `Alt+Shift+1…3` are unchanged; the size persists per browser.
 - **Summary is a Takeoff Register, designed around actions instead of an ambiguous table.** Source Sans 3 on a four-step type scale (10 / 11 / 12 / 13) keeps labels, codes, and quantities in one engineered family—no poster numbers. Each finish is a color-owned material strip with its total, description, and an explicit “Review rooms” disclosure. Expanded locations use numbered rows with permanent target (locate on plan) and eye (show / hide) buttons—nothing important is hover-only. The floor-header eye hides that floor’s register body while the header and a high-contrast eye stay put (cobalt when showing, filled red when hidden) so the control cannot vanish into the ink bar. Finish and room eyes use the same on/off coloring; swatches recolor and codes still rename on double-click. Same finish tags on a floor combine.
