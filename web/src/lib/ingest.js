@@ -122,31 +122,52 @@ async function imageToPdf(file) {
 const RENDER_SCALE = 2.0;
 const safeFilePart = (s) => String(s).replace(/[\\/:*?"<>|]/g, "-").trim();
 
-/** Title-block sheet numbers per 1-based page (e.g. A003), when readable. */
-async function readSheetLabels(pdfBytes, pageCount) {
+/** Drawing titles (or sheet numbers) per 1-based page, when readable. */
+async function readSheetLabels(pdfBytes, pageCount, onProgress) {
   const labels = {};
   if (pageCount <= 1) return labels;
+  let ocr = null;
   try {
     const pdfjsLib = await import("pdfjs-dist");
-    const { extractSheetNumber } = await import("./sheets.ts");
+    const { extractDrawingTitle, extractSheetNumber, parseDrawingTitleFromOcr } = await import("./sheets.ts");
     const { pdfjsWorkerSrc } = await import("./pdfWorkerSrc.js");
     pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerSrc();
     const pdf = await pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise;
     for (let n = 1; n <= pageCount; n++) {
       try {
+        onProgress?.(`Reading drawing title (page ${n}/${pageCount})…`);
         const page = await pdf.getPage(n);
         const tc = await page.getTextContent();
         const vp = page.getViewport({ scale: RENDER_SCALE });
-        const lbl = extractSheetNumber(tc, vp);
-        if (lbl) labels[n] = lbl;
+        let title = extractDrawingTitle(tc, vp);
+        if (!title) {
+          try {
+            if (!ocr) {
+              const { createSheetTitleOcr } = await import("./sheetTitleOcr.js");
+              ocr = await createSheetTitleOcr();
+            }
+            if (ocr) {
+              const text = await ocr.readPage(page, vp);
+              title = parseDrawingTitleFromOcr(text);
+            }
+          } catch { /* OCR is best-effort */ }
+        }
+        if (title) labels[n] = title;
+        else {
+          const num = extractSheetNumber(tc, vp);
+          if (num) labels[n] = num;
+        }
       } catch { /* skip unreadable page */ }
     }
     await pdf.destroy?.();
   } catch { /* fall back to numeric page suffixes */ }
+  finally {
+    try { await ocr?.terminate?.(); } catch { /* ignore */ }
+  }
   return labels;
 }
 
-/** Multi-page plan PDFs become one file per page, named with the sheet/page id. */
+/** Multi-page plan PDFs become one file per page, named from the drawing title. */
 async function expandPdfPages(file, onProgress) {
   try {
     const { PDFDocument } = await import("pdf-lib");
@@ -158,15 +179,17 @@ async function expandPdfPages(file, onProgress) {
     const bn = baseName(file.name);
     onProgress?.(`Splitting ${bn} (${pageCount} pages)…`);
     const stem = bn.replace(/\.pdf$/i, "");
-    const labels = await readSheetLabels(bytes, pageCount);
+    const labels = await readSheetLabels(bytes, pageCount, onProgress);
     const out = [];
     for (let i = 0; i < pageCount; i++) {
       const doc = await PDFDocument.create();
       const [copied] = await doc.copyPages(src, [i]);
       doc.addPage(copied);
       const pageNum = i + 1;
-      const suffix = safeFilePart(labels[pageNum] || String(pageNum));
-      const name = `${stem} - ${suffix}.pdf`;
+      const title = labels[pageNum];
+      const name = title
+        ? `${safeFilePart(title)}.pdf`
+        : `${stem} - ${pageNum}.pdf`;
       out.push(new File([await doc.save()], name, { type: "application/pdf" }));
     }
     return out;

@@ -111,7 +111,7 @@ survives a flaky network — see [`docs/SYNC_ARCHITECTURE.md`](docs/SYNC_ARCHITE
 
 | Area | What you get |
 |---|---|
-| **Ingest** | PDF, image, or `.zip` plan set — unpacked in-browser, multi-page, up to 4 sheets side-by-side |
+| **Ingest** | PDF, image, or `.zip` plan set — unpacked in-browser, multi-page (each page named from the title-block drawing title), up to 4 sheets side-by-side |
 | **Scale** | Auto-detect the drawn scale note, or calibrate from a known dimension — per sheet |
 | **Measure** | One-Click Area (flood-fill), Area, Rectangle, Linear, Surface-Area (walls), Count, Eraser (deduct), Zone check (per-region breakdown) — imperial or metric (m²/m, 1:50-style scales) |
 | **Drawing aids** | 45°/90° angle lock with ⇧ hard-lock, live angle + segment-length readout at the cursor, endpoint Snap (beta) |

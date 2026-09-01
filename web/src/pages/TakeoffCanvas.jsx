@@ -34,7 +34,7 @@ import RevisionsPanel from "../components/RevisionsPanel.jsx";
 import TakeoffsPanel, { clampPanelW, CONDITION_DND_MIME, ConditionAppearanceEditor } from "../components/TakeoffsPanel.jsx";
 import { HATCHES, PALETTE, NO_FILL, HatchPattern, HatchSwatch } from "../components/hatches.jsx";
 import { Icon } from "../brand/icons.jsx";
-import { RENDER_SCALE, MAX_GROUP, STANDARD_SCALES, parseSheetKey, compareSheetKeys, extractSheetNumber, detectScale, extractRegionText } from "../lib/sheets";
+import { RENDER_SCALE, MAX_GROUP, STANDARD_SCALES, parseSheetKey, compareSheetKeys, extractSheetNumber, extractDrawingTitle, cleanFileDisplayName, detectScale, extractRegionText } from "../lib/sheets";
 import { normalizeLoadedGroups } from "../lib/sheetGroups";
 import { isCanvasBusy } from "../lib/canvasBusy";
 import { parseSchedule, rowToSeed } from "../lib/scheduleParse";
@@ -100,6 +100,7 @@ import EstimatePanel from "../components/EstimatePanel.jsx";
 import FinishesSchedulePanel from "../components/FinishesSchedulePanel.jsx";
 import FloatingWindow from "../components/FloatingWindow.jsx";
 import ConfirmDeleteModal from "../components/ConfirmDeleteModal.jsx";
+import FileRenameModal from "../components/FileRenameModal.jsx";
 import AdiccLoadingLogo from "../components/AdiccLoadingLogo.jsx";
 import { Contrast, FileStack, Map as MapIcon, Maximize2, Minimize2, Minus, Plus, Redo2, RotateCcw, Scan, Search, Undo2, X } from "lucide-react";
 import LiveReadoutBar from "../components/LiveReadoutBar.jsx";
@@ -415,6 +416,17 @@ export default function TakeoffCanvas() {
   const [openTabs, setOpenTabs] = useState([]);   // sheetKeys open as tabs across the top
   const [galleryLabels, setGalleryLabels] = useState({}); // sheetKey → title-block number, all files
   const [pageLabels, setPageLabels] = useState({}); // { pageNum: "A003" } from the title block
+  // PDF file name → drawing title from the title-block table (Files display only;
+  // does not rename stored/DB keys). Filled by a background text-layer scan.
+  const [fileTitles, setFileTitles] = useState({});
+  const fileTitleScanRef = useRef(new Set());
+  // PDF file name → user Files label (right-click Rename). Persisted as additive
+  // `file_display_names`. Overrides auto titles; never changes the PDF store key,
+  // sheet_id, or cloud path — so takeoffs/scales cannot desync.
+  const [fileDisplayNames, setFileDisplayNames] = useState({});
+  const [fileMenu, setFileMenu] = useState(null); // { x, y, name } right-click menu (portaled)
+  const [fileRename, setFileRename] = useState(null); // { name, value } in-app rename dialog
+  const fileMenuRef = useRef(null);
   const [sheetGroup, setSheetGroup] = useState([]);   // sheetKeys shown side-by-side; [] = single-sheet mode
   const [sheetLevels, setSheetLevels] = useState({}); // sheetKey → level label ("L1") — persisted (additive `sheet_levels` key); groups the gallery for multi-floor sets
   // sheet PDF name → relative folder path from a Folder upload (webkitRelativePath).
@@ -2184,6 +2196,15 @@ export default function TakeoffCanvas() {
       if (!(name in m)) return m;
       const next = { ...m }; delete next[name]; return next;
     });
+    setFileDisplayNames((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
+    setFileTitles((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
+    fileTitleScanRef.current.delete(name);
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
   // UI-only gate in front of closePdf — does not change closePdf behavior.
@@ -2194,6 +2215,83 @@ export default function TakeoffCanvas() {
     if (name) closePdf(name);
   }, [pendingPdfClose, closePdf]);
   const cancelClosePdf = useCallback(() => { setPendingPdfClose(null); }, []);
+  // Files label only — never renames the PDF store key / sheet_id / cloud path.
+  const openFileRename = useCallback((name) => {
+    setFileMenu(null);
+    if (!name) return;
+    const base = name.split("/").pop().replace(/\.pdf$/i, "");
+    const current = fileDisplayNames[name] || fileTitles[name] || base;
+    setFileRename({ name, value: current });
+  }, [fileDisplayNames, fileTitles]);
+  const confirmFileRename = useCallback((typed) => {
+    const name = fileRename?.name;
+    setFileRename(null);
+    if (!name) return;
+    const cleaned = cleanFileDisplayName(typed);
+    if (!cleaned) {
+      setCommitMsg("Name can't be empty.");
+      return;
+    }
+    setFileDisplayNames((m) => (m[name] === cleaned ? m : { ...m, [name]: cleaned }));
+  }, [fileRename]);
+  const clearFileDisplayName = useCallback((name) => {
+    setFileMenu(null);
+    if (!name) return;
+    setFileDisplayNames((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
+  }, []);
+  const useDetectedFileTitle = useCallback((name) => {
+    setFileMenu(null);
+    if (!name) return;
+    const detected = fileTitles[name];
+    if (!detected) {
+      setCommitMsg("No drawing title detected for this sheet yet.");
+      return;
+    }
+    setFileDisplayNames((m) => (m[name] === detected ? m : { ...m, [name]: detected }));
+  }, [fileTitles]);
+  // Keep the Files context menu on-screen (flip up/left near edges).
+  useLayoutEffect(() => {
+    if (!fileMenu || !fileMenuRef.current) return;
+    const el = fileMenuRef.current;
+    const r = el.getBoundingClientRect();
+    const pad = 8;
+    let left = fileMenu.x;
+    let top = fileMenu.y;
+    if (left + r.width > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - r.width - pad);
+    if (top + r.height > window.innerHeight - pad) top = Math.max(pad, fileMenu.y - r.height);
+    if (left !== fileMenu.x || top !== fileMenu.y) {
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    }
+  }, [fileMenu]);
+  useEffect(() => {
+    if (!fileMenu) return undefined;
+    // Capture phase: Files/Measure Rail stopPropagation, so bubble never reaches window.
+    const onPointerDown = (e) => {
+      if (fileMenuRef.current?.contains(e.target)) return;
+      setFileMenu(null);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setFileMenu(null); };
+    // Defer so the opening right-click doesn't immediately dismiss the menu.
+    const t = window.setTimeout(() => {
+      window.addEventListener("pointerdown", onPointerDown, true);
+    }, 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [fileMenu]);
+  // Files desk closed or switched away — drop portaled menu + rename dialog.
+  useEffect(() => {
+    if (leftTab === "files") return;
+    setFileMenu(null);
+    setFileRename(null);
+  }, [leftTab]);
   // Remove-from-project (cloud only): the DESTRUCTIVE variant — delete the Drive
   // file, then drop it from the working set.
   const removeFromProject = useCallback(async (name) => {
@@ -2203,6 +2301,15 @@ export default function TakeoffCanvas() {
       if (!(name in m)) return m;
       const next = { ...m }; delete next[name]; return next;
     });
+    setFileDisplayNames((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
+    setFileTitles((m) => {
+      if (!(name in m)) return m;
+      const next = { ...m }; delete next[name]; return next;
+    });
+    fileTitleScanRef.current.delete(name);
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
   // open dropped/picked files of any kind: PDFs, images, and .zip plan sets all
@@ -2436,6 +2543,19 @@ export default function TakeoffCanvas() {
       }
       setFileFolders(next);
       setOpenFolderPaths({}); // collapsed by default — user expands folders manually
+    }
+    // additive file_display_names — user Files labels (display only; keys stay the real PDF names)
+    {
+      const raw = a.file_display_names;
+      const next = {};
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const [k, v] of Object.entries(raw)) {
+          if (typeof k !== "string" || typeof v !== "string") continue;
+          const cleaned = cleanFileDisplayName(v);
+          if (cleaned) next[k] = cleaned;
+        }
+      }
+      setFileDisplayNames(next);
     }
     // additive symbol_notes — manual fills for plan marks with no schedule data
     {
@@ -2962,6 +3082,11 @@ export default function TakeoffCanvas() {
         if (stale()) return;
         const lbl = extractSheetNumber(tc, lead.viewport);
         if (lbl) setPageLabels((m) => (m[lead.pageNum] === lbl ? m : { ...m, [lead.pageNum]: lbl }));
+        const title = extractDrawingTitle(tc, lead.viewport);
+        if (title) {
+          fileTitleScanRef.current.add(active);
+          setFileTitles((m) => (m[active] === title ? m : { ...m, [active]: title }));
+        }
       }).catch(() => {});
       if (labeledFileRef.current !== active) {
         labeledFileRef.current = active;
@@ -3056,6 +3181,63 @@ export default function TakeoffCanvas() {
     () => sheets.map((s) => s.name).slice().sort().join("\0"),
     [sheets],
   );
+
+  // Background: read each sheet's DRAWING TITLE / Drg.Title (or left title strip)
+  // so the Files list can show the drawing title even for PDFs that were uploaded
+  // before ingest renamed splits — display-only; store keys are unchanged.
+  useEffect(() => {
+    if (!sheetsSig) {
+      fileTitleScanRef.current = new Set();
+      setFileTitles({});
+      return;
+    }
+    const names = sheetsSig.split("\0");
+    const nameSet = new Set(names);
+    for (const k of [...fileTitleScanRef.current]) {
+      if (!nameSet.has(k)) fileTitleScanRef.current.delete(k);
+    }
+    setFileTitles((m) => {
+      let changed = false;
+      const next = {};
+      for (const [k, v] of Object.entries(m)) {
+        if (nameSet.has(k)) next[k] = v;
+        else changed = true;
+      }
+      return changed ? next : m;
+    });
+    setFileDisplayNames((m) => {
+      let changed = false;
+      const next = {};
+      for (const [k, v] of Object.entries(m)) {
+        if (nameSet.has(k)) next[k] = v;
+        else changed = true;
+      }
+      return changed ? next : m;
+    });
+    let cancelled = false;
+    (async () => {
+      for (const name of names) {
+        if (cancelled) return;
+        if (fileTitleScanRef.current.has(name)) continue;
+        try {
+          const pdf = await docFor(name);
+          if (cancelled) return;
+          const page = await pdf.getPage(1);
+          const tc = await page.getTextContent();
+          const vp = page.getViewport({ scale: RENDER_SCALE });
+          const title = extractDrawingTitle(tc, vp);
+          fileTitleScanRef.current.add(name);
+          if (title) {
+            setFileTitles((m) => (m[name] === title ? m : { ...m, [name]: title }));
+          }
+        } catch {
+          fileTitleScanRef.current.add(name);
+        }
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [sheetsSig, docFor]);
 
   // Background: scan uploaded PDFs whose filenames look like door / window /
   // finish schedules (or detail sheets) and build a mark → detail knowledge base
@@ -3366,7 +3548,7 @@ export default function TakeoffCanvas() {
     // units is additive and diff-only (the sheet_levels convention): imperial —
     // the default — omits the key, so an old imperial project's payload is
     // byte-identical on round-trip; only a metric project carries the field.
-    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}), ...layerPersistSlice({ layerForest, hiddenShapeIds, lockedShapeIds }) };
+    return { project_name: projectName, ...(units === "metric" ? { units } : {}), currency: projectCurrency, markup_pct: markupPct, overhead_pct: overheadPct, ...(Object.values(clientInfo).some((v) => v && String(v).trim()) ? { client_info: clientInfo } : {}), sheets: Object.entries(scales).map(([sheet_id, units_per_px]) => ({ sheet_id, units_per_px, ...(scaleSources[sheet_id] ? { scale_source: scaleSources[sheet_id] } : {}) })), conditions, ...(conditionColumns.length ? { condition_columns: conditionColumns } : {}), ...(shapeLabels.length ? { shape_labels: shapeLabels } : {}), ...(pinned.length ? { palette: pinned } : {}), shapes, markups, rfis, sheet_group: sheetGroup, last_group: lastGroup, sheet_tabs: openTabs, ...(Object.keys(sheetLevels).length ? { sheet_levels: sheetLevels } : {}), ...(Object.keys(fileFolders).length ? { file_folders: fileFolders } : {}), ...(Object.keys(fileDisplayNames).length ? { file_display_names: fileDisplayNames } : {}), ...(Object.keys(symbolNotes).length ? { symbol_notes: symbolNotes } : {}), ...(boqLines.length ? { boq_lines: boqLines } : {}), ...(Object.keys(provCounters.shapes_deleted).length ? { provenance_counters: provCounters } : {}), ...layerPersistSlice({ layerForest, hiddenShapeIds, lockedShapeIds }) };
   };
   // Runtime restore of a saved payload — the Revisions panel's Restore lands
   // here. A runtime load (unlike mount) can interrupt work in
@@ -3425,7 +3607,7 @@ export default function TakeoffCanvas() {
     // state it serializes, so listing buildPayload (a new identity each render)
     // would fire a save on every render instead of only on a real change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units, layerForest, hiddenShapeIds, lockedShapeIds]);
+  }, [shapes, conditions, conditionColumns, shapeLabels, palette, scales, scaleSources, markups, rfis, provCounters, sheetGroup, sheetLevels, fileFolders, fileDisplayNames, symbolNotes, boqLines, lastGroup, openTabs, projectName, clientInfo, units, layerForest, hiddenShapeIds, lockedShapeIds]);
   useEffect(() => { saveStateRef.current = saveState; }, [saveState]);
 
   // Flush a pending debounced save on navigate-away (unmount), and warn before a
@@ -10952,7 +11134,14 @@ export default function TakeoffCanvas() {
                      node.files.push(s);
                    }
                    const fileName = (s) => s.name.split("/").pop();
-                   const fileMatches = (s) => !q || fileName(s).toLowerCase().includes(q);
+                   // User rename > auto title-block title > basename
+                   const displayTitle = (s) => fileDisplayNames[s.name] || fileTitles[s.name] || "";
+                   const fileMatches = (s) => {
+                     if (!q) return true;
+                     const full = fileName(s).toLowerCase();
+                     const title = displayTitle(s).toLowerCase();
+                     return full.includes(q) || (!!title && title.includes(q));
+                   };
                    const filterNode = (node) => {
                      const files = node.files.filter(fileMatches);
                      const folders = {};
@@ -10988,12 +11177,27 @@ export default function TakeoffCanvas() {
                      const dot = full.lastIndexOf(".");
                      const base = dot > 0 ? full.slice(0, dot) : full;
                      const ext = dot > 0 ? full.slice(dot + 1) : "";
+                     const shown = displayTitle(s) || base;
+                     const tip = fileDisplayNames[s.name]
+                       ? `${shown} (custom name · stored as ${full})`
+                       : fileTitles[s.name]
+                         ? `${shown} (drawing title · stored as ${full})`
+                         : (open ? `Open ${s.name}` : `Add ${s.name} to the canvas`);
                      return (
-                       <div key={s.name} className={`left-panel-glass-file-row${on ? " is-active" : ""}${match ? " is-match" : ""}`} style={{ "--file-indent": `${depth * 14}px`, boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : undefined }}>
+                       <div
+                         key={s.name}
+                         className={`left-panel-glass-file-row${on ? " is-active" : ""}${match ? " is-match" : ""}`}
+                         style={{ "--file-indent": `${depth * 14}px`, boxShadow: match ? "inset 2px 0 0 var(--cobalt)" : undefined }}
+                         onContextMenu={(e) => {
+                           e.preventDefault();
+                           e.stopPropagation();
+                           setFileMenu({ x: e.clientX, y: e.clientY, name: s.name });
+                         }}
+                       >
                          <button type="button" onClick={() => { openSheets([s.name]); setLeftTab("files"); }}
-                           title={open ? `Open ${s.name}` : `Add ${s.name} to the canvas`}>
+                           title={tip}>
                            <span className="left-panel-glass-file-title">
-                             <span className="left-panel-glass-file-name">{highlightName(base)}</span>
+                             <span className="left-panel-glass-file-name">{highlightName(shown)}</span>
                              {ext ? <span className="left-panel-glass-file-ext">{ext}</span> : null}
                            </span>
                            <span className={`left-panel-glass-file-meta${on ? " is-viewing" : open ? " is-open" : ""}`}>{on ? "open · viewing" : open ? "open" : "in project"}</span>
@@ -13187,6 +13391,48 @@ export default function TakeoffCanvas() {
           palette={PALETTE} startIndex={conditions.length}
           onCreate={createFromSchedule}
           onClose={() => setImportRows(null)}
+        />
+      )}
+
+      {fileMenu && createPortal(
+        <div
+          ref={fileMenuRef}
+          className="files-ctx-menu"
+          style={{ left: fileMenu.x, top: fileMenu.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button type="button" className="ill-menu-item" onClick={() => openFileRename(fileMenu.name)}>
+            <span>Rename…</span>
+          </button>
+          <button
+            type="button"
+            className="ill-menu-item"
+            disabled={!fileTitles[fileMenu.name]}
+            onClick={() => useDetectedFileTitle(fileMenu.name)}
+          >
+            <span>Use detected drawing title</span>
+          </button>
+          <button
+            type="button"
+            className="ill-menu-item"
+            disabled={!fileDisplayNames[fileMenu.name]}
+            onClick={() => clearFileDisplayName(fileMenu.name)}
+          >
+            <span>Clear custom name</span>
+          </button>
+          <div className="ill-menu-sep" />
+          <button type="button" className="ill-menu-item is-danger" onClick={() => { setFileMenu(null); requestClosePdf(fileMenu.name); }}>
+            <span>Remove from project…</span>
+          </button>
+        </div>,
+        document.body,
+      )}
+
+      {fileRename && (
+        <FileRenameModal
+          initialValue={fileRename.value}
+          onConfirm={confirmFileRename}
+          onCancel={() => setFileRename(null)}
         />
       )}
 
