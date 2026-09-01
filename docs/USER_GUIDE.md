@@ -45,7 +45,7 @@ That's the whole loop: open → scale → condition → measure → report. Ever
 
 Drag onto the canvas (or click the **Open your plans** target on the empty screen):
 
-- **PDF** plan sets — multi-page, multiple files at once.
+- **PDF** plan sets — multi-page, multiple files at once. A multi-page PDF is split into one file per sheet; each file is named from the drawing title in the title-block table (left strip or DRAWING TITLE / Drg.Title). Scanned sheets use on-device OCR of that table. If no title is readable, the original name plus the page number is kept. The **Files** list also reads that title block for sheets already in the project (including cloud-loaded ones) and shows the drawing title as the label without renaming the stored file. Right-click a file → **Rename…** to set your own label (or clear it / use the detected title). Custom names are display-only — takeoffs, scales, and cloud storage keep the real file key, so nothing desyncs if OCR was wrong.
 - **Images** — scans, screenshots, photos of a sheet. They're wrapped into PDF pages in your browser.
 - **`.zip` plan sets** — the whole download off a bid platform. Unzipped in the browser; every PDF inside opens. (Hostile-archive guards cap entry counts, sizes, and nesting, so a malformed zip fails cleanly instead of ballooning the tab.)
 
