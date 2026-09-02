@@ -16,6 +16,7 @@ export default function OpenSheetsPill({
   onCloseTab,
   onAdd,
   onClose,
+  onContextMenu,
   embedded = false,
   hideFind = false,
   hideActions = false,
@@ -95,6 +96,7 @@ export default function OpenSheetsPill({
               tabIndex={0}
               aria-current={selected ? "true" : undefined}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onGoToSheet(k); } }}
+              onContextMenu={onContextMenu ? (e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(k, e); } : undefined}
             >
               <span className="open-sheets-idx" aria-hidden="true">{n}</span>
               <span className="open-sheets-name">{lbl}</span>

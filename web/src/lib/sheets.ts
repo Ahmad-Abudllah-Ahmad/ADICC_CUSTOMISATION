@@ -300,9 +300,79 @@ export function parseDrawingTitleFromOcr(text: string): string | null {
 }
 
 // ── scale detect: read the drawn scale note off the page text ────────────────
-// Plans state their scale ("SCALE: 1/8" = 1'-0"") in the title block and under
-// viewports. Match the page text against STANDARD_SCALES — wrong scale is the
-// top takeoff error source, and the note is sitting right there.
+// Plans state their scale ("SCALE: 1/8" = 1'-0"" / "1 : 200") in the title block
+// and under viewports. Prefer the labeled SCALE field; fall back to page-wide
+// note matching against STANDARD_SCALES.
+const SCALE_LABEL_RE = /^SCALE\s*:?\s*$/i;
+const SCALE_INLINE_RE = /^SCALE\s*:?\s*(.+)$/i;
+
+function scaleFromScaleField(raw: string): DetectedScale | null {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  return scaleFromLabel(s);
+}
+
+/** Read the SCALE row from a positioned title-block table (text layer). */
+function extractScaleFromTitleBlock(textContent: TextContentLike, viewport: Viewport): DetectedScale | null {
+  const W = viewport.width, H = viewport.height;
+  const toks = positionedTitleToks(textContent, viewport);
+  const inTitleBlock = (t: TitleTok) =>
+    (t.x > W * 0.55 && t.y > H * 0.50) || (t.x < W * 0.30 && t.y > H * 0.75);
+  const band = toks.filter(inTitleBlock).sort((a, b) => a.y - b.y || a.x - b.x);
+  for (let i = 0; i < band.length; i++) {
+    const str = band[i].str.trim();
+    const inline = str.match(SCALE_INLINE_RE);
+    if (inline) {
+      const det = scaleFromScaleField(inline[1]);
+      if (det) return det;
+    }
+    if (!SCALE_LABEL_RE.test(str)) continue;
+    const row = band.filter((t) =>
+      Math.abs(t.y - band[i].y) <= Math.max(band[i].h, t.h) * 0.75 && t.x > band[i].x + 1,
+    );
+    if (row.length) {
+      const det = scaleFromScaleField(row.map((t) => t.str.trim()).join(" "));
+      if (det) return det;
+    }
+    for (let j = i + 1; j < band.length; j++) {
+      const t = band[j];
+      if (t.y > band[i].y + band[i].h * 2.8) break;
+      if (Math.abs(t.x - band[i].x) > W * 0.20) continue;
+      if (TITLE_STOP_RE.test(t.str) && !SCALE_INLINE_RE.test(t.str)) break;
+      const det = scaleFromScaleField(t.str);
+      if (det) return det;
+    }
+  }
+  return null;
+}
+
+/** Parse Tesseract / OCR dump of a title-block crop into a drawn scale. */
+export function parseScaleFromOcr(text: string): DetectedScale | null {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const inline = lines[i].match(SCALE_INLINE_RE);
+    if (inline) {
+      const det = scaleFromScaleField(inline[1]);
+      if (det) return det;
+    }
+    if (SCALE_LABEL_RE.test(lines[i])) {
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        if (/^(DRAWING|REVISION|PROJECT|SUBMISSION|DRAWING\s*SIZE)/i.test(lines[j])) break;
+        const det = scaleFromScaleField(lines[j]);
+        if (det) return det;
+      }
+    }
+  }
+  const m = String(text || "").match(/SCALE\s*:?\s*([^\n\r]{1,48})/i);
+  if (m) {
+    const det = scaleFromScaleField(m[1]);
+    if (det) return det;
+  }
+  return null;
+}
 const _canonScaleText = (s: string): string => s
   .replace(/[“”″]/g, '"').replace(/[‘’′]/g, "'")
   .replace(/\s+/g, "").toUpperCase();
@@ -338,6 +408,8 @@ function _findScales(canon: string): ScaleWithKeys[] {
 // page-wide note is accepted; several distinct scales with no title-block note
 // is ambiguous (details are often drawn larger) → suggest nothing.
 export function detectScale(textContent: TextContentLike, viewport: Viewport): DetectedScale | null {
+  const labeled = extractScaleFromTitleBlock(textContent, viewport);
+  if (labeled) return labeled;
   const W = viewport.width, H = viewport.height;
   let all = "", tb = "";
   for (const it of textContent.items || []) {

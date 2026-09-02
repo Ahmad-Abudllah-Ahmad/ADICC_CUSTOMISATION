@@ -3,6 +3,7 @@
 // against the original drawing without leaving the takeoff canvas.
 
 import React, { useEffect, useRef, useState } from "react";
+import { Columns2 } from "lucide-react";
 import { RENDER_SCALE, parseSheetKey } from "../lib/sheets";
 import { lookupScheduleRoomHighlight } from "../lib/symbolScheduleKb";
 
@@ -19,10 +20,11 @@ import { lookupScheduleRoomHighlight } from "../lib/symbolScheduleKb";
  *   scheduleKb?: Map<string, unknown> | Record<string, unknown> | null,
  *   getDoc: (file: string) => Promise<any>,
  *   onClose: () => void,
+ *   onOpenSplit?: () => void,
  * }} props
  */
 export default function SymbolSourceViewer({
-  sheetId, title, bbox, spaceBbox, markBbox, room, tag, sheetFloor, scheduleKb, getDoc, onClose,
+  sheetId, title, bbox, spaceBbox, markBbox, room, tag, sheetFloor, scheduleKb, getDoc, onClose, onOpenSplit,
 }) {
   const wrapRef = useRef(null);
   const canvasRef = useRef(null);
@@ -241,6 +243,17 @@ export default function SymbolSourceViewer({
             +
           </button>
         </div>
+        {onOpenSplit && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onOpenSplit(); }}
+            title="Open side-by-side on canvas"
+            aria-label="Open side-by-side on canvas"
+            style={{ border: "1px solid var(--ink-faint)", background: "var(--paper-bright)", cursor: "pointer", color: "var(--ink)", width: 28, height: 28, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+          >
+            <Columns2 size={15} strokeWidth={2} />
+          </button>
+        )}
         <button
           type="button"
           onClick={onClose}

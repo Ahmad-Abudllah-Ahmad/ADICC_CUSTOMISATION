@@ -19,7 +19,7 @@ import * as pdfjsLib from "pdfjs-dist";
 import { pdfjsWorkerSrc } from "../lib/pdfWorkerSrc.js";
 import { store, isStaleTabError, STALE_TAB_MESSAGE, projectIdFromUrl } from "../lib/store.js";
 import { isSupabaseConfigured } from "../lib/supabaseStore.js";
-import { aiFloorSheetKeysMatch } from "../lib/supabase/persist.js";
+import { aiFloorSheetKeysMatch, resolveAiFloorSheetId } from "../lib/supabase/persist.js";
 import { goSupabaseHome } from "../lib/supabase/projects.js";
 import { consumePendingIngest } from "../lib/pendingIngest.js";
 import { isDefaultProjectName, projectNameFromFiles } from "../lib/projectNaming.js";
@@ -34,14 +34,14 @@ import RevisionsPanel from "../components/RevisionsPanel.jsx";
 import TakeoffsPanel, { clampPanelW, CONDITION_DND_MIME, ConditionAppearanceEditor } from "../components/TakeoffsPanel.jsx";
 import { HATCHES, PALETTE, NO_FILL, HatchPattern, HatchSwatch } from "../components/hatches.jsx";
 import { Icon } from "../brand/icons.jsx";
-import { RENDER_SCALE, MAX_GROUP, STANDARD_SCALES, parseSheetKey, compareSheetKeys, extractSheetNumber, extractDrawingTitle, cleanFileDisplayName, detectScale, extractRegionText } from "../lib/sheets";
+import { RENDER_SCALE, MAX_GROUP, STANDARD_SCALES, parseSheetKey, compareSheetKeys, extractSheetNumber, extractDrawingTitle, cleanFileDisplayName, detectScale, parseScaleFromOcr, extractRegionText } from "../lib/sheets";
 import { normalizeLoadedGroups } from "../lib/sheetGroups";
 import { isCanvasBusy } from "../lib/canvasBusy";
 import { parseSchedule, rowToSeed } from "../lib/scheduleParse";
 import { normalizeScanRows, postScanWithRetry, SCAN_ENDPOINT, scanRasterScale } from "../lib/scheduleScan";
 import { normalizeTag } from "../lib/scheduleEdit";
 import {
-  extractPlanSymbols, extractRoomLabels, buildPlanSymbolIndex, enrichSymbolsWithSchedule,
+  extractPlanSymbols, buildPlanSymbolIndex, enrichSymbolsWithSchedule,
   resolveSymbolFields, hitPlanSymbol, symbolNoteKey, SYMBOL_KIND_LABEL,
 } from "../lib/planSymbols";
 import {
@@ -108,7 +108,7 @@ import TakeoffFeatureGuide from "../components/TakeoffFeatureGuide.jsx";
 import WallSegmentHeightsEditor from "../components/WallSegmentHeightsEditor.jsx";
 import { segmentHeightsForShape, grossFaceFromSegments, wallSegmentRows, withSegmentHeights, concatSegmentHeightsForMerge, defaultWallHeightFt } from "../lib/wallSegmentHeights.js";
 import ShapeBoqHoverCard from "../components/ShapeBoqHoverCard.jsx";
-import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty, floorLabelFromSheetId } from "../lib/boqDetect.js";
+import { resolveShapeBoq, rowKey, detectRoomName, gatherShapeScheduleRefs, shapeQuantities, primaryQty, floorLabelFromSheetId, resolveSectionSplitPair, isA3101SectionSheet, shapeMatchesSectionFloorSplit, extractSheetRoomLabels } from "../lib/boqDetect.js";
 import { parseOpeningSize, openingsDeductSf, openingsDeductSfLinear, netWallFaceSf, openingDimsFromCutoutPx, bboxIntersectRing } from "../lib/wallOpenings.js";
 import { queryChat, finishForRoom, sheetKeyForCitation, buildProjectChatContext, buildLiveCountsSummary, answerFromLiveDetections, resolveChatAnswer } from "../lib/rag.js";
 import { priceMaskRow, pricedGrandTotals, pricedConditionTotals } from "../lib/pricing.js";
@@ -1099,7 +1099,7 @@ export default function TakeoffCanvas() {
   const [showReport, setShowReport] = useState(false);  // Reports overlay (STACK-style breakdown + export)
   const [showBoq, setShowBoq] = useState(false);       // BOQ sidebar — floor masked data (right, opposite Files)
   const [showSummary, setShowSummary] = useState(false); // Summary table — hierarchical floor -> type -> code -> qty
-  // AI Detection — ONLY A1105–A1109 floor plans. Keep mask DATA intact;
+  // AI Detection — A1105–A1109 floor plans + A3101 section. Keep mask DATA intact;
   // those sheets show no masks until the nav button runs, then reveal one-by-one.
   // All other PDFs keep normal always-visible masks + hover (untouched).
   const AI_DETECT_FLOOR_PLAN_FILES = useMemo(() => new Set([
@@ -1108,11 +1108,27 @@ export default function TakeoffCanvas() {
     "a1107-3rd floor plan.pdf",
     "a1108-4th floor plan.pdf",
     "a1109-5th & 6th floor plan.pdf",
+    "a3101-section a-a.pdf",
+    "ground floor plan (reflected false ceiling).pdf",
+    "1st podium floor (floor finishing).pdf",
+    "roof floor (floor finishing).pdf",
+  ]), []);
+  const AI_DETECT_FLOOR_TITLES = useMemo(() => new Set([
+    "ground floor plan (reflected false ceiling)",
+    "1st podium floor (floor finishing)",
+    "roof floor (floor finishing)",
   ]), []);
   const isAiDetectFloorPlan = useCallback((sheetKey) => {
-    const file = parseSheetKey(String(sheetKey || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
-    return AI_DETECT_FLOOR_PLAN_FILES.has(file);
-  }, [AI_DETECT_FLOOR_PLAN_FILES]);
+    const fullFile = parseSheetKey(String(sheetKey || "")).file;
+    const file = fullFile.replace(/^.*[/\\]/, "").toLowerCase();
+    if (AI_DETECT_FLOOR_PLAN_FILES.has(file)) return true;
+    const stem = file.replace(/\.pdf$/i, "").replace(/ \(\d+\)$/i, "").trim();
+    if (AI_DETECT_FLOOR_TITLES.has(stem)) return true;
+    if (file.replace(/\.pdf$/i, "").startsWith("a3101-section")) return true;
+    const titled = (fileDisplayNames[fullFile] || fileTitles[fullFile] || "").toLowerCase().trim();
+    if (titled && AI_DETECT_FLOOR_TITLES.has(titled)) return true;
+    return false;
+  }, [AI_DETECT_FLOOR_PLAN_FILES, AI_DETECT_FLOOR_TITLES, fileDisplayNames, fileTitles]);
   // Per-sheet reveal counts persist when switching files among A1105–A1109.
   // Clicking AI Detection always restarts the sequential reveal on the viewed sheet.
   const [aiDetectShownBySheet, setAiDetectShownBySheet] = useState({});
@@ -1450,6 +1466,7 @@ export default function TakeoffCanvas() {
   const prevHiResJoinRef = useRef("");
   const prevGroupSigRef = useRef("");
   const pageObjsRef = useRef(new Map());     // sheetKey → pdf.js page object (kept for on-demand detail-view re-render)
+  const scaleOcrRef = useRef(null);          // shared Tesseract worker for title-block scale OCR (lazy)
   const renderScalesRef = useRef(new Map()); // sheetKey → base raster pdf scale (detail view renders at a multiple of it)
   const detailCanvasRef = useRef(null);      // single high-res viewport detail canvas (positioned imperatively)
   const detailTaskRef = useRef(null);        // in-flight detail render task (cancel stale on re-zoom)
@@ -1697,6 +1714,7 @@ export default function TakeoffCanvas() {
   // canvas back without re-picking every sheet in the gallery.
   const regroup = () => {
     if (lastGroup.length < 2) return;
+    noTabsRef.current = false;
     setOpenTabs((t) => { const m = [...t]; for (const k of lastGroup) if (!m.includes(k)) m.push(k); return m; });
     setSheetGroup(lastGroup);
     setFocusKey(lastGroup.includes(sheetKey) ? sheetKey : lastGroup[0]);
@@ -1704,6 +1722,8 @@ export default function TakeoffCanvas() {
   // Row click: if the sheet is already in the side-by-side group, focus that
   // panel (no ungroup, no re-raster). Otherwise switch to that tab alone.
   function goToSheet(key) {
+    if (!key) return;
+    noTabsRef.current = false;
     if (sheetGroup.includes(key)) {
       setFocusKey(key);
     const t = parseSheetKey(key);
@@ -1740,6 +1760,7 @@ export default function TakeoffCanvas() {
   // gallery open: every key becomes a tab; side-by-side also groups (2–4)
   function openSheets(keys, sideBySide) {
     if (!keys.length) return;
+    noTabsRef.current = false;
     setOpenTabs((t) => { const merged = [...t]; for (const k of keys) if (!merged.includes(k)) merged.push(k); return merged; });
     if (sideBySide && keys.length >= 2) { setSheetGroup(keys.slice(0, MAX_GROUP)); setFocusKey(keys[0]); }
     else goToSheet(keys[0]);
@@ -1770,6 +1791,71 @@ export default function TakeoffCanvas() {
     }
     setView("canvas");
   }
+  function openSourceSheetSplit(sourceKey, originKey) {
+    if (!sourceKey) return;
+    const sheetNames = sheets.map((s) => s.name);
+    const resolveProjectKey = (key) => {
+      if (!key) return key;
+      let k = resolveAiFloorSheetId(key, fileFolders);
+      const file = parseSheetKey(k).file;
+      if (sheetNames.includes(file)) return k;
+      const base = file.split("/").pop()?.toLowerCase();
+      const match = sheetNames.find((n) => n.split("/").pop()?.toLowerCase() === base);
+      if (!match) return k;
+      const { page } = parseSheetKey(key);
+      return page > 1 ? `${match}#${page}` : match;
+    };
+    const resolvedSource = resolveProjectKey(sourceKey);
+    const groupHas = (k) => sheetGroup.some((g) => g === k || aiFloorSheetKeysMatch(g, k));
+    if (groupHas(resolvedSource)) {
+      const existing = sheetGroup.find((g) => g === resolvedSource || aiFloorSheetKeysMatch(g, resolvedSource)) || resolvedSource;
+      setFocusKey(existing);
+      const t = parseSheetKey(existing);
+      if (t.file !== active) setActive(t.file);
+      setPage(t.page);
+      setLeftTab("sheets");
+      setView("canvas");
+      return;
+    }
+    if (sheetGroup.length >= MAX_GROUP) {
+      setCommitMsg(`Side-by-side holds up to ${MAX_GROUP} sheets — close one first.`);
+      setLeftTab("sheets");
+      return;
+    }
+    if (sheetGroup.length >= 2) {
+      const nextGroup = [...sheetGroup, resolvedSource];
+      setOpenTabs((tabs) => {
+        const merged = [...tabs];
+        for (const k of nextGroup) {
+          if (k && !merged.includes(k)) merged.push(k);
+        }
+        return merged;
+      });
+      setSheetGroup(nextGroup);
+      setFocusKey(resolvedSource);
+      setLeftTab("sheets");
+      setView("canvas");
+      return;
+    }
+    const canvasKey = (() => {
+      const origin = originKey ? resolveProjectKey(originKey) : null;
+      if (origin && origin !== resolvedSource) return origin;
+      if (focusKey && focusKey !== resolvedSource) return focusKey;
+      if (sheetKey && sheetKey !== resolvedSource) return sheetKey;
+      return openTabs.find((k) => k !== resolvedSource && k !== sourceKey) || null;
+    })();
+    if (!canvasKey || canvasKey === resolvedSource) {
+      setCommitMsg("Open another sheet to place it side-by-side.");
+      setOpenTabs((tabs) => (tabs.includes(resolvedSource) ? tabs : [...tabs, resolvedSource]));
+      goToSheet(resolvedSource);
+      setLeftTab("sheets");
+      setView("canvas");
+      return;
+    }
+    openSheets([canvasKey, resolvedSource], true);
+    setFocusKey(resolvedSource);
+    setLeftTab("sheets");
+  }
   function openCitationInWorkspace(citation) {
     if (!citation) return;
     const names = sheets.map((s) => s.name);
@@ -1797,6 +1883,7 @@ export default function TakeoffCanvas() {
       setSheetGroup([]);
       setPanelImgs({});
       panelPaintRef.current.clear();
+      noTabsRef.current = true;
       setStatus("ready");
       setView("canvas");
       return;
@@ -1825,11 +1912,19 @@ export default function TakeoffCanvas() {
     const lvl = sheetLevels[k] ? `${sheetLevels[k]} · ` : "";   // assigned floor/level rides every tab label
     if (galleryLabels[k]) return lvl + galleryLabels[k];
     const t = parseSheetKey(k);
+    const fileKey = t.file;
+    const named = fileDisplayNames[fileKey] || fileTitles[fileKey];
+    if (named) return lvl + (t.page > 1 ? `${named} · ${t.page}` : named);
     if (t.file === active && pageLabels[t.page]) return lvl + pageLabels[t.page];
     // Foldered sheets carry their relative path as an id — label the sheet, not the path.
     const base = t.file.split("/").pop().replace(/\.pdf$/i, "");
     return lvl + (t.page > 1 ? `${base} · ${t.page}` : base);
   };
+  const openSheetFileMenu = useCallback((k, e) => {
+    const file = parseSheetKey(k).file;
+    if (!file) return;
+    setFileMenu({ x: e.clientX, y: e.clientY, name: file });
+  }, []);
 
   // ── panels: the ONE rendering model — single-sheet mode is a group of one ──
   // Every coordinate on screen lives in "stage space": panel i's image px plus
@@ -1839,6 +1934,36 @@ export default function TakeoffCanvas() {
     () => (openTabs.length === 0 ? [] : (sheetGroup.length ? sheetGroup : (sheetKey ? [sheetKey] : []))),
     [openTabs.length, sheetGroup, sheetKey],
   );
+  // A3101 section + floor plan in split — Auto-Takeoff reveals only the matched floor band.
+  const sectionSplitPair = useMemo(
+    () => (sheetGroup.length >= 2 ? resolveSectionSplitPair(sheetGroup) : null),
+    [sheetGroup],
+  );
+  // Sheets desk lists/counts every panel on canvas — split group can outpace openTabs.
+  const deskSheetTabs = useMemo(() => {
+    if (sheetGroup.length >= 2) {
+      const merged = [...sheetGroup];
+      for (const k of openTabs) {
+        if (k && !merged.includes(k)) merged.push(k);
+      }
+      return merged;
+    }
+    if (openTabs.length) return openTabs;
+    return sheetKey ? [sheetKey] : [];
+  }, [sheetGroup, openTabs, sheetKey]);
+  useEffect(() => {
+    if (noTabsRef.current || sheetGroup.length < 2) return;
+    setOpenTabs((tabs) => {
+      let next = tabs;
+      for (const k of sheetGroup) {
+        if (k && !next.includes(k)) {
+          if (next === tabs) next = [...tabs];
+          next.push(k);
+        }
+      }
+      return next === tabs ? tabs : next;
+    });
+  }, [sheetGroup]);
   const groupSig = JSON.stringify(groupKeys);
   let _px = 0;
   const panels = groupKeys.map((key) => {
@@ -1872,15 +1997,35 @@ export default function TakeoffCanvas() {
     : sheetKey);
   const aiDetectShapeRevealed = useCallback((shape) => {
     if (!shape || !isAiDetectFloorPlan(shape.sheet_id)) return true;
-    // Manual cutouts stay visible on top of the parent until the user applies them.
-    if (shape.measure_role === "deduct") return true;
-    const list = shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, shape.sheet_id) && s.measure_role !== "deduct");
+    const roomLabels = roomLabelsRawRef.current;
+    const sectionSplit = sectionSplitPair && isA3101SectionSheet(shape.sheet_id);
+    if (sectionSplit) {
+      if (shape.measure_role === "deduct") {
+        const shown = aiDetectShownBySheet[shape.sheet_id]
+          ?? Object.entries(aiDetectShownBySheet).find(([k]) => aiFloorSheetKeysMatch(shape.sheet_id, k))?.[1]
+          ?? 0;
+        if (!shown) return false;
+        return shapeMatchesSectionFloorSplit(shape, sectionSplitPair, roomLabels, panelImgs, aiFloorSheetKeysMatch);
+      }
+      if (!shapeMatchesSectionFloorSplit(shape, sectionSplitPair, roomLabels, panelImgs, aiFloorSheetKeysMatch)) {
+        return false;
+      }
+    } else if (shape.measure_role === "deduct") {
+      return true;
+    }
+    const list = shapes.filter((s) => {
+      if (!aiFloorSheetKeysMatch(s.sheet_id, shape.sheet_id) || s.measure_role === "deduct") return false;
+      if (sectionSplitPair && isA3101SectionSheet(s.sheet_id)) {
+        return shapeMatchesSectionFloorSplit(s, sectionSplitPair, roomLabels, panelImgs, aiFloorSheetKeysMatch);
+      }
+      return true;
+    });
     const idx = list.findIndex((s) => s.id === shape.id);
     const shown = aiDetectShownBySheet[shape.sheet_id]
       ?? Object.entries(aiDetectShownBySheet).find(([k]) => aiFloorSheetKeysMatch(shape.sheet_id, k))?.[1]
       ?? 0;
     return idx >= 0 && idx < shown;
-  }, [shapes, aiDetectShownBySheet, isAiDetectFloorPlan]);
+  }, [shapes, aiDetectShownBySheet, isAiDetectFloorPlan, sectionSplitPair, panelImgs, symbolEpoch]);
   const aiDetectSheetRevealCount = useCallback((shapeSheetId) => (
     aiDetectShownBySheet[shapeSheetId]
       ?? Object.entries(aiDetectShownBySheet).find(([k]) => aiFloorSheetKeysMatch(shapeSheetId, k))?.[1]
@@ -1933,13 +2078,36 @@ export default function TakeoffCanvas() {
     shapeBoqHoverStickyRef.current = false;
     if (!aiDetectViewKey || !isAiDetectFloorPlan(aiDetectViewKey)) return;
     const key = aiDetectViewKey;
+    const roomLabels = roomLabelsRawRef.current;
+    const sectionSplit = sectionSplitPair && isA3101SectionSheet(key) ? sectionSplitPair : null;
+    const sectionBandList = sectionSplitPair
+      ? shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, sectionSplitPair.sectionKey)
+        && s.measure_role !== "deduct"
+        && shapeMatchesSectionFloorSplit(s, sectionSplitPair, roomLabels, panelImgs, aiFloorSheetKeysMatch))
+      : [];
     // Floor masks only — cutouts stay visible separately and must not pad the reveal count.
-    const list = shapes.filter((s) => aiFloorSheetKeysMatch(s.sheet_id, key) && s.measure_role !== "deduct");
+    const list = shapes.filter((s) => {
+      if (!aiFloorSheetKeysMatch(s.sheet_id, key) || s.measure_role === "deduct") return false;
+      if (sectionSplit) {
+        return shapeMatchesSectionFloorSplit(s, sectionSplitPair, roomLabels, panelImgs, aiFloorSheetKeysMatch);
+      }
+      return true;
+    });
     const total = list.length;
     // Click again always restarts reveal on this file from the first mask.
-    setAiDetectShownBySheet((prev) => ({ ...prev, [key]: 0 }));
+    setAiDetectShownBySheet((prev) => {
+      const next = { ...prev, [key]: 0 };
+      // Floor-plan pane in split: instantly reveal the matched section band on A3101.
+      if (sectionSplitPair && !isA3101SectionSheet(key) && sectionBandList.length) {
+        next[sectionSplitPair.sectionKey] = sectionBandList.length;
+      }
+      return next;
+    });
     setAiDetectAnimatingKey(key);
     if (total <= 0) {
+      if (sectionSplit) {
+        setCommitMsg(`No section mask matched ${sectionSplitPair.floorLabel} — check the floor-plan pane.`);
+      }
       setAiDetectAnimatingKey(null);
       return;
     }
@@ -1952,7 +2120,7 @@ export default function TakeoffCanvas() {
         setAiDetectAnimatingKey(null);
       }
     }, 120);
-  }, [aiDetectViewKey, shapes, isAiDetectFloorPlan, stopAiDetectReveal]);
+  }, [aiDetectViewKey, shapes, isAiDetectFloorPlan, stopAiDetectReveal, sectionSplitPair, panelImgs, symbolEpoch]);
   // Stop in-flight animation when switching files — keep each sheet's reveal count.
   useEffect(() => {
     stopAiDetectReveal();
@@ -2196,15 +2364,6 @@ export default function TakeoffCanvas() {
       if (!(name in m)) return m;
       const next = { ...m }; delete next[name]; return next;
     });
-    setFileDisplayNames((m) => {
-      if (!(name in m)) return m;
-      const next = { ...m }; delete next[name]; return next;
-    });
-    setFileTitles((m) => {
-      if (!(name in m)) return m;
-      const next = { ...m }; delete next[name]; return next;
-    });
-    fileTitleScanRef.current.delete(name);
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
   // UI-only gate in front of closePdf — does not change closePdf behavior.
@@ -2275,20 +2434,16 @@ export default function TakeoffCanvas() {
       setFileMenu(null);
     };
     const onKey = (e) => { if (e.key === "Escape") setFileMenu(null); };
-    // Defer so the opening right-click doesn't immediately dismiss the menu.
-    const t = window.setTimeout(() => {
-      window.addEventListener("pointerdown", onPointerDown, true);
-    }, 0);
+    window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.clearTimeout(t);
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKey);
     };
   }, [fileMenu]);
-  // Files desk closed or switched away — drop portaled menu + rename dialog.
+  // Files/Sheets desk closed or switched away — drop portaled menu + rename dialog.
   useEffect(() => {
-    if (leftTab === "files") return;
+    if (leftTab === "files" || leftTab === "sheets") return;
     setFileMenu(null);
     setFileRename(null);
   }, [leftTab]);
@@ -2301,15 +2456,6 @@ export default function TakeoffCanvas() {
       if (!(name in m)) return m;
       const next = { ...m }; delete next[name]; return next;
     });
-    setFileDisplayNames((m) => {
-      if (!(name in m)) return m;
-      const next = { ...m }; delete next[name]; return next;
-    });
-    setFileTitles((m) => {
-      if (!(name in m)) return m;
-      const next = { ...m }; delete next[name]; return next;
-    });
-    fileTitleScanRef.current.delete(name);
     reconcileAfterRemoval(name, await refreshSheets());
   }, [refreshSheets, reconcileAfterRemoval]);
   // open dropped/picked files of any kind: PDFs, images, and .zip plan sets all
@@ -2578,15 +2724,18 @@ export default function TakeoffCanvas() {
     // In group mode sheetGroup + lastGroup share ONE instance so the lastGroup-sync
     // effect below is a reference-equal no-op — otherwise its follow-up commit would
     // escape the one-shot save suppression and spuriously re-save (see normalizeLoadedGroups).
-    const { sheetGroup: grp, lastGroup: lgFinal } = normalizeLoadedGroups(a, MAX_GROUP);
-    setSheetGroup(grp);
+    const { lastGroup: lgFinal } = normalizeLoadedGroups(a, MAX_GROUP);
+    setSheetGroup([]);
     setLastGroup(lgFinal);
     // Canvas opens empty — no sheet on the plan until the user picks one.
-      setOpenTabs([]);
+    setOpenTabs([]);
     setActive("");
     setPage(1);
     setFocusKey("");
-      noTabsRef.current = true;
+    setPanelImgs({});
+    panelPaintRef.current.clear();
+    tabInitRef.current = false;
+    noTabsRef.current = true;
     if (sheetsLoadedRef.current) {
       setView("canvas");
       setStatus(hasSheetsRef.current ? "ready" : "empty");
@@ -2750,7 +2899,7 @@ export default function TakeoffCanvas() {
 
   // land on the first restored tab (the sheet-list effect defaults to sheets[0])
   useEffect(() => {
-    if (tabInitRef.current || !openTabs.length || !sheets.length) return;
+    if (tabInitRef.current || noTabsRef.current || !openTabs.length || !sheets.length) return;
     tabInitRef.current = true;
     const land = sheetGroup.length
       ? (sheetGroup.includes(openTabs[0]) ? openTabs[0] : sheetGroup[0])
@@ -2872,6 +3021,7 @@ export default function TakeoffCanvas() {
     // Tabs restored before `active` is set → groupKeys is empty and we used to
     // return while status stayed "loading" forever. Land on the first tab.
     if (!groupKeys.length) {
+      if (noTabsRef.current) return;
       const land = openTabs[0];
       if (land && !active) {
         const t = parseSheetKey(land);
@@ -3059,15 +3209,27 @@ export default function TakeoffCanvas() {
           sheetStatsRef.current.set(m.key, { segCount: 0, imageFrac: 1 });
         });
         // read the drawn scale note off this panel's page text (best-effort)
-        m.pageObj.getTextContent().then((tc) => {
+        m.pageObj.getTextContent().then(async (tc) => {
           if (stale()) return;
-          const det = detectScale(tc, m.viewport);
+          let det = detectScale(tc, m.viewport);
+          if (!det) {
+            try {
+              if (!scaleOcrRef.current) {
+                const { createSheetTitleOcr } = await import("../lib/sheetTitleOcr.js");
+                scaleOcrRef.current = await createSheetTitleOcr();
+              }
+              if (scaleOcrRef.current) {
+                const text = await scaleOcrRef.current.readPage(m.pageObj, m.viewport);
+                det = parseScaleFromOcr(text);
+              }
+            } catch { /* best-effort */ }
+          }
           if (det) setDetectedScales((d) => (d[m.key]?.label === det.label ? d : { ...d, [m.key]: det }));
           // Plan symbols (door/window/type/finish marks) from the same text layer
           try {
             const tokens = extractRegionText(tc, m.viewport, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
             planSymbolsRawRef.current = { ...planSymbolsRawRef.current, [m.key]: extractPlanSymbols(tokens) };
-            roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [m.key]: extractRoomLabels(tokens) };
+            roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [m.key]: extractSheetRoomLabels(m.key, tokens) };
             setSymbolEpoch((n) => n + 1);
           } catch { /* best-effort */ }
         }).catch(() => {});
@@ -3103,7 +3265,19 @@ export default function TakeoffCanvas() {
               const vp2 = p2.getViewport({ scale: RENDER_SCALE });
               const lbl = extractSheetNumber(tc, vp2);
               if (lbl) { found[n] = lbl; if (Object.keys(found).length % 8 === 0) setPageLabels((m) => ({ ...found, ...m })); }
-              const det = detectScale(tc, vp2);
+              let det = detectScale(tc, vp2);
+              if (!det) {
+                try {
+                  if (!scaleOcrRef.current) {
+                    const { createSheetTitleOcr } = await import("../lib/sheetTitleOcr.js");
+                    scaleOcrRef.current = await createSheetTitleOcr();
+                  }
+                  if (scaleOcrRef.current) {
+                    const text = await scaleOcrRef.current.readPage(p2, vp2);
+                    det = parseScaleFromOcr(text);
+                  }
+                } catch { /* best-effort */ }
+              }
               if (det) {
                 const key = n > 1 ? `${active}#${n}` : active;
                 setDetectedScales((d) => (d[key]?.label === det.label ? d : { ...d, [key]: det }));
@@ -3113,7 +3287,7 @@ export default function TakeoffCanvas() {
                 const key = n > 1 ? `${active}#${n}` : active;
                 const tokens = extractRegionText(tc, vp2, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
                 planSymbolsRawRef.current = { ...planSymbolsRawRef.current, [key]: extractPlanSymbols(tokens) };
-                roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [key]: extractRoomLabels(tokens) };
+                roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [key]: extractSheetRoomLabels(key, tokens) };
                 setSymbolEpoch((e) => e + 1);
               } catch { /* best-effort */ }
             } catch { /* skip */ }
@@ -3225,7 +3399,20 @@ export default function TakeoffCanvas() {
           const page = await pdf.getPage(1);
           const tc = await page.getTextContent();
           const vp = page.getViewport({ scale: RENDER_SCALE });
-          const title = extractDrawingTitle(tc, vp);
+          let title = extractDrawingTitle(tc, vp);
+          if (!title) {
+            try {
+              if (!scaleOcrRef.current) {
+                const { createSheetTitleOcr } = await import("../lib/sheetTitleOcr.js");
+                scaleOcrRef.current = await createSheetTitleOcr();
+              }
+              if (scaleOcrRef.current) {
+                const text = await scaleOcrRef.current.readPage(page, vp);
+                const { parseDrawingTitleFromOcr } = await import("../lib/sheets.ts");
+                title = parseDrawingTitleFromOcr(text);
+              }
+            } catch { /* OCR is best-effort */ }
+          }
           fileTitleScanRef.current.add(name);
           if (title) {
             setFileTitles((m) => (m[name] === title ? m : { ...m, [name]: title }));
@@ -3320,7 +3507,7 @@ export default function TakeoffCanvas() {
             if (roomLabelsRawRef.current[key]?.length) continue;
             try {
               const tokens = extractRegionText(tc, vp, { x0: -1e6, y0: -1e6, x1: 1e6, y1: 1e6 });
-              roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [key]: extractRoomLabels(tokens) };
+              roomLabelsRawRef.current = { ...roomLabelsRawRef.current, [key]: extractSheetRoomLabels(key, tokens) };
               setSymbolEpoch((e) => e + 1);
             } catch { /* best-effort */ }
           }
@@ -5468,6 +5655,27 @@ export default function TakeoffCanvas() {
     showScaleGuide(pv.key, pv.upp, STANDARD_SCALES.find((x) => Math.abs(x.upp - pv.upp) < 1e-9)?.label || pv.source);
   }
 
+  async function detectScaleForPanel(pageObj, rs) {
+    if (!pageObj || rs == null) return null;
+    try {
+      const tc = await pageObj.getTextContent();
+      const vp = pageObj.getViewport({ scale: rs });
+      let det = detectScale(tc, vp);
+      if (det) return det;
+      if (!scaleOcrRef.current) {
+        const { createSheetTitleOcr } = await import("../lib/sheetTitleOcr.js");
+        scaleOcrRef.current = await createSheetTitleOcr();
+      }
+      if (scaleOcrRef.current) {
+        const text = await scaleOcrRef.current.readPage(pageObj, vp);
+        det = parseScaleFromOcr(text);
+      }
+      return det || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function applyAutoscale(key, { force = false } = {}) {
     const mayApply = () => {
       if (force) return true;
@@ -5482,9 +5690,7 @@ export default function TakeoffCanvas() {
       const rs = renderScalesRef.current.get(key);
       if (pageObj && rs != null) {
         try {
-          const tc = await pageObj.getTextContent();
-          const vp = pageObj.getViewport({ scale: rs });
-          det = detectScale(tc, vp);
+          det = await detectScaleForPanel(pageObj, rs);
           if (det) setDetectedScales((d) => (d[key]?.label === det.label ? d : { ...d, [key]: det }));
         } catch { /* best-effort */ }
       }
@@ -5516,12 +5722,25 @@ export default function TakeoffCanvas() {
   useEffect(() => {
     if (status !== "ready" || !focusPanel?.key) return;
     const key = focusPanel.key;
-    if (scales[key] != null || autoscaleTriedRef.current.has(key)) return;
     const src = scaleSources[key];
     if (src === "standard" || src === "calibrated" || src === "detected") return;
-    autoscaleTriedRef.current.add(key);
-    void applyAutoscaleRef.current(key);
-  }, [status, focusPanel?.key, scales, scaleSources]);
+    const det = detectedScales[key];
+    const fbLabel = units === "metric" ? "1:100" : '1/8" = 1\'-0"';
+    const fb = STANDARD_SCALES.find((s) => s.label === fbLabel);
+    if (scales[key] == null) {
+      if (!autoscaleTriedRef.current.has(key)) {
+        autoscaleTriedRef.current.add(key);
+        void applyAutoscaleRef.current(key);
+      } else if (det) {
+        void applyAutoscaleRef.current(key, { force: true });
+      }
+      return;
+    }
+    if (det && src === "autoscale" && fb
+        && Math.abs(scales[key] - fb.upp) < 1e-6 && Math.abs(scales[key] - det.upp) > 1e-6) {
+      void applyAutoscaleRef.current(key, { force: true });
+    }
+  }, [status, focusPanel?.key, scales, scaleSources, detectedScales, units]);
 
   function applyCalibration() {
     const feet = calInputToFeet(parseFloat(pendingLen), units);   // metric users type meters; stored scale stays feet
@@ -10994,7 +11213,7 @@ export default function TakeoffCanvas() {
                const deskSections = [
                  { id: "summary", label: "Summary", n: boqShapes.length },
                  { id: "files", label: "Files", n: sheets.length },
-                 { id: "sheets", label: "Sheets", n: openTabs.length },
+                 { id: "sheets", label: "Sheets", n: deskSheetTabs.length },
                  { id: "markup", label: "Markups", n: markupCount },
                  { id: "stamp", label: "Stamps", n: stampLib.stamps.length },
                  { id: "rfi", label: "RFIs", n: rfis.length },
@@ -11292,7 +11511,7 @@ export default function TakeoffCanvas() {
                   hideFind
                   hideActions
                   query={sheetsSearch}
-                  openTabs={openTabs}
+                  openTabs={deskSheetTabs}
                   sheetGroup={sheetGroup}
                   sheetKey={sheetKey}
                   focusKey={focusKey}
@@ -11301,6 +11520,7 @@ export default function TakeoffCanvas() {
                   onGoToSheet={goToSheet}
                   onToggleInGroup={toggleInGroup}
                   onCloseTab={closeTab}
+                  onContextMenu={openSheetFileMenu}
                   onClose={() => setLeftTab(null)}
                 />
                </div>
@@ -12002,6 +12222,12 @@ export default function TakeoffCanvas() {
               scheduleKb={scheduleKb}
               getDoc={docFor}
               onClose={() => setSymbolSourceView(null)}
+              onOpenSplit={() => {
+                const originKey = sheetGroup.length >= 2
+                  ? ((focusKey && sheetGroup.includes(focusKey)) ? focusKey : sheetGroup[0])
+                  : sheetKey;
+                openSourceSheetSplit(symbolSourceView.sheetId, originKey);
+              }}
             />
           )}
           {/* inline on-canvas text editor — a screen-space overlay pinned to its anchor

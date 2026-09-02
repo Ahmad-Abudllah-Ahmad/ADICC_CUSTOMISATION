@@ -3,7 +3,8 @@ import { round2 } from "./totals.js";
 import { areaUnit, lenUnit } from "./units";
 import { distToSeg, pointInPoly } from "./geometry.js";
 import { shapeLabelValue } from "./shapeLabels.js";
-import { resolveSymbolFields, symbolNoteKey } from "./planSymbols";
+import { extractRoomLabels, extractSectionFloorLabels, resolveSymbolFields, symbolNoteKey } from "./planSymbols";
+import { parseSheetKey } from "./sheetKey.ts";
 import { lookupScheduleKb, lookupScheduleKbForRoom, roomMatchScore } from "./symbolScheduleKb";
 import { parseOpeningSize, openingsDeductSfLinear, openingsDeductSfFloorPerim } from "./wallOpenings.js";
 
@@ -80,6 +81,99 @@ export function floorLabelFromSheetId(sheetId) {
   if (/\b26TH\b/.test(fn)) return "26TH FLOOR";
   if (/\b27TH\b/.test(fn)) return "27TH FLOOR";
   return "";
+}
+
+/** A3101 section elevation sheets (split-view Auto-Takeoff target). */
+export function isA3101SectionSheet(sheetId) {
+  const file = parseSheetKey(String(sheetId || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
+  return file.replace(/\.pdf$/i, "").startsWith("a3101-section");
+}
+
+/** A1105–A1109 floor plans — not section sheets. */
+export function isStandardAiFloorPlanSheet(sheetId) {
+  const file = parseSheetKey(String(sheetId || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
+  if (file.replace(/\.pdf$/i, "").startsWith("a3101-section")) return false;
+  return /^a110[5-9]-/.test(file) && /floor\s*plan/.test(file);
+}
+
+/** Parse floor ordinals from a label (1ST FLOOR → [1], 5TH & 6TH FLOOR → [5,6]). */
+export function parseFloorOrdinals(label) {
+  const up = String(label || "").toUpperCase().replace(/\s+/g, " ");
+  const found = new Set();
+  for (const m of up.matchAll(/(\d+)(?:ST|ND|RD|TH)/g)) found.add(parseInt(m[1], 10));
+  if (found.size) return [...found].sort((a, b) => a - b);
+  if (/\b1ST\b/.test(up)) return [1];
+  return [];
+}
+
+/** Side-by-side A3101 section + floor plan — floor label comes from the plan pane. */
+export function resolveSectionSplitPair(groupKeys) {
+  if (!Array.isArray(groupKeys) || groupKeys.length < 2) return null;
+  const sectionKey = groupKeys.find(isA3101SectionSheet);
+  const floorPlanKey = groupKeys.find(isStandardAiFloorPlanSheet);
+  if (!sectionKey || !floorPlanKey) return null;
+  const floorLabel = floorLabelFromSheetId(floorPlanKey);
+  const floorOrdinals = parseFloorOrdinals(floorLabel);
+  if (!floorLabel || !floorOrdinals.length) return null;
+  return { sectionKey, floorPlanKey, floorLabel, floorOrdinals };
+}
+
+/** Room + section margin labels for OCR indexing. */
+export function extractSheetRoomLabels(sheetKey, tokens) {
+  const base = extractRoomLabels(tokens);
+  if (!isA3101SectionSheet(sheetKey)) return base;
+  return [...base, ...extractSectionFloorLabels(tokens)];
+}
+
+function labelsForSheet(roomLabelsBySheet, sheetKey, sheetMatch) {
+  return roomLabelsBySheet?.[sheetKey]
+    || Object.entries(roomLabelsBySheet || {}).find(([k]) => sheetMatch(k, sheetKey))?.[1]
+    || [];
+}
+
+function dimsForSheet(panelImgs, sheetKey, sheetMatch) {
+  return panelImgs?.[sheetKey]
+    || Object.entries(panelImgs || {}).find(([k]) => sheetMatch(k, sheetKey))?.[1]
+    || null;
+}
+
+/** True when a section mask spans the floor band matched to the open floor-plan pane. */
+export function shapeMatchesSectionFloorSplit(shape, splitPair, roomLabelsBySheet, panelImgs, sheetMatch) {
+  if (!shape || !splitPair?.sectionKey || !splitPair.floorOrdinals?.length) return false;
+  if (!sheetMatch(shape.sheet_id, splitPair.sectionKey)) return false;
+
+  const labels = labelsForSheet(roomLabelsBySheet, splitPair.sectionKey, sheetMatch);
+  const marginLabels = labels.filter((lbl) => /\d+(?:ST|ND|RD|TH)\s+FLOOR/.test(String(lbl.text || "").toUpperCase()));
+
+  const dims = dimsForSheet(panelImgs, splitPair.sectionKey, sheetMatch);
+  const poly = shapePolyPx(shape, dims);
+  if (poly.length < 3) return false;
+
+  const ys = poly.map((p) => p[1]);
+  const bandY = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const bandTol = Math.max(56, (dims?.h || 0) * 0.018);
+
+  if (marginLabels.length) {
+    let nearest = null;
+    for (const lbl of marginLabels) {
+      const ord = parseFloorOrdinals(lbl.text);
+      if (!ord.length) continue;
+      const d = Math.abs(lbl.y - bandY);
+      if (!nearest || d < nearest.d) nearest = { d, ord };
+    }
+    if (!nearest || nearest.d > bandTol) return false;
+    const targets = new Set(splitPair.floorOrdinals);
+    if (splitPair.floorOrdinals.length === 1) {
+      return nearest.ord.includes(splitPair.floorOrdinals[0]);
+    }
+    return nearest.ord.some((o) => targets.has(o));
+  }
+
+  const room = `${shape.room || ""} ${shape.room_detected || ""}`.toUpperCase();
+  return splitPair.floorOrdinals.some((o) => {
+    const suffix = o === 1 ? "ST" : o === 2 ? "ND" : o === 3 ? "RD" : "TH";
+    return room.includes(`${o}${suffix}`) && /FLOOR/.test(room);
+  });
 }
 
 /** Split a concatenated finish description into category sections (schedule fallback). */

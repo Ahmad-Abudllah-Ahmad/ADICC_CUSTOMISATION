@@ -9,10 +9,14 @@ import { parseSheetKey } from "../sheetKey.ts";
 
 const shapeSnapshot = new Map(); // projectId -> Map(shapeId -> snapshot)
 
-/** A1108/A1109 masks were stored with bare filenames; live sheets use folder paths. */
+/** A1108/A1109/A3101 masks may use bare filenames; live sheets use folder paths. */
 const AI_FLOOR_SHEET_FIX = new Set([
   "a1108-4th floor plan.pdf",
   "a1109-5th & 6th floor plan.pdf",
+  "a3101-section a-a.pdf",
+  "ground floor plan (reflected false ceiling).pdf",
+  "1st podium floor (floor finishing).pdf",
+  "roof floor (floor finishing).pdf",
 ]);
 
 function sheetBasename(sheetId) {

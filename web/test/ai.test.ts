@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import {
   aiConfig, isAiConfigured, aiRequestUrl, buildVisionRequest, parseVisionResponse, scaleReadPrompt,
 } from "../src/lib/ai.js";
-import { scaleFromLabel, STANDARD_SCALES } from "../src/lib/sheets.js";
+import { scaleFromLabel, parseScaleFromOcr, STANDARD_SCALES } from "../src/lib/sheets.js";
 
 const IMG = "data:image/jpeg;base64,QUJD"; // "ABC"
 
@@ -83,4 +83,12 @@ test("scaleFromLabel: exact labels, embedded text, boundaries, ambiguity", () =>
   assert.equal(scaleFromLabel(" unknown "), null);
   assert.equal(scaleFromLabel(""), null);
   assert.equal(scaleFromLabel('1/4" = 1\'-0" or 1/8" = 1\'-0"'), null);  // two hits → suggest nothing
+});
+
+test("parseScaleFromOcr: SCALE field in title-block OCR dump", () => {
+  assert.equal(parseScaleFromOcr("SCALE : 1 : 200")?.label, "1:200");
+  assert.equal(parseScaleFromOcr("SCALE:\n1 : 200")?.label, "1:200");
+  assert.equal(parseScaleFromOcr("DRAWING NO.\nA1105\nSCALE\n1:100")?.label, "1:100");
+  assert.equal(parseScaleFromOcr("SCALE : 1/8\" = 1'-0\"")?.label, '1/8" = 1\'-0"');
+  assert.equal(parseScaleFromOcr("no scale here"), null);
 });

@@ -5120,12 +5120,11 @@ textarea {
   background: color-mix(in srgb, var(--ink) 40%, transparent);
 }
 
-/* ADICC confirm modal — isolated overlay, token colors only.
-   Above the portaled Measure Rail / Files desk (z-index 10000). */
+/* ADICC confirm modal — isolated overlay, token colors only */
 .adicc-confirm-scrim {
   position: fixed;
   inset: 0;
-  z-index: 100060;
+  z-index: 200;
   display: flex;
   align-items: center;
   justify-content: center;
