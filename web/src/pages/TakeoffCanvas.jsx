@@ -1110,11 +1110,15 @@ export default function TakeoffCanvas() {
     "a1109-5th & 6th floor plan.pdf",
     "a3101-section a-a.pdf",
     "ground floor plan (reflected false ceiling).pdf",
+    "fifth floor plan (reflected false ceiling).pdf",
+    "5th floor plan (reflected false ceiling).pdf",
     "1st podium floor (floor finishing).pdf",
     "roof floor (floor finishing).pdf",
   ]), []);
   const AI_DETECT_FLOOR_TITLES = useMemo(() => new Set([
     "ground floor plan (reflected false ceiling)",
+    "fifth floor plan (reflected false ceiling)",
+    "5th floor plan (reflected false ceiling)",
     "1st podium floor (floor finishing)",
     "roof floor (floor finishing)",
   ]), []);
@@ -1127,6 +1131,8 @@ export default function TakeoffCanvas() {
     if (file.replace(/\.pdf$/i, "").startsWith("a3101-section")) return true;
     const titled = (fileDisplayNames[fullFile] || fileTitles[fullFile] || "").toLowerCase().trim();
     if (titled && AI_DETECT_FLOOR_TITLES.has(titled)) return true;
+    if (/^(?:5th|fifth) floor plan \(reflected false ceiling\)$/.test(stem)) return true;
+    if (titled && /^(?:5th|fifth) floor plan \(reflected false ceiling\)$/.test(titled)) return true;
     return false;
   }, [AI_DETECT_FLOOR_PLAN_FILES, AI_DETECT_FLOOR_TITLES, fileDisplayNames, fileTitles]);
   // Per-sheet reveal counts persist when switching files among A1105–A1109.

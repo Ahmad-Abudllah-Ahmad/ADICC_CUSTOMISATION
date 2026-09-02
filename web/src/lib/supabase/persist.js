@@ -15,6 +15,8 @@ const AI_FLOOR_SHEET_FIX = new Set([
   "a1109-5th & 6th floor plan.pdf",
   "a3101-section a-a.pdf",
   "ground floor plan (reflected false ceiling).pdf",
+  "fifth floor plan (reflected false ceiling).pdf",
+  "5th floor plan (reflected false ceiling).pdf",
   "1st podium floor (floor finishing).pdf",
   "roof floor (floor finishing).pdf",
 ]);
@@ -23,8 +25,20 @@ function sheetBasename(sheetId) {
   return parseSheetKey(String(sheetId || "")).file.replace(/^.*[/\\]/, "").toLowerCase();
 }
 
+function aiFloorSheetBasenameKey(sheetId) {
+  const base = sheetBasename(sheetId);
+  const stem = base.replace(/\.pdf$/i, "").replace(/ \(\d+\)$/i, "").trim();
+  if (/^(?:5th|fifth) floor plan \(reflected false ceiling\)$/.test(stem)) {
+    return "5th floor plan (reflected false ceiling).pdf";
+  }
+  return base;
+}
+
 function needsAiFloorSheetFix(sheetId) {
-  return AI_FLOOR_SHEET_FIX.has(sheetBasename(sheetId));
+  if (AI_FLOOR_SHEET_FIX.has(sheetBasename(sheetId))) return true;
+  return /^(?:5th|fifth) floor plan \(reflected false ceiling\)$/.test(
+    sheetBasename(sheetId).replace(/\.pdf$/i, "").replace(/ \(\d+\)$/i, "").trim(),
+  );
 }
 
 /** Resolve bare A1108/A1109 ids to the project’s canonical sheet path (file_folders keys). */
@@ -59,7 +73,7 @@ export function aiFloorSheetKeysMatch(shapeSheetId, viewKey) {
   if (!needsAiFloorSheetFix(shapeSheetId) && !needsAiFloorSheetFix(viewKey)) return false;
   const a = parseSheetKey(shapeSheetId);
   const b = parseSheetKey(viewKey);
-  return sheetBasename(shapeSheetId) === sheetBasename(viewKey) && a.page === b.page;
+  return aiFloorSheetBasenameKey(shapeSheetId) === aiFloorSheetBasenameKey(viewKey) && a.page === b.page;
 }
 
 function num(v) {
