@@ -6,6 +6,7 @@ import { round2 } from "../totals.js";
 import { pricedConditionTotals, pricedGrandTotals } from "../pricing.js";
 import { ANN_SCHEMA, emptyAnnotations } from "../store.js";
 import { parseSheetKey } from "../sheetKey.ts";
+import { mergeTakeoffPayload, computeLocalShapeDeletes } from "./mergePayload.js";
 
 const shapeSnapshot = new Map(); // projectId -> Map(shapeId -> snapshot)
 
@@ -613,33 +614,52 @@ export async function renameSupabaseProject(projectId, name) {
   if (error) throw error;
 }
 
-/** Sync full annotations payload to normalized Supabase tables. */
+/** Sync full annotations payload to normalized Supabase tables.
+ *  @returns {Promise<object|null>} merged payload written (for local cache) */
 export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}) {
-  if (!supabase || !projectId) return;
+  if (!supabase || !projectId) return null;
 
   const fileFolders = payload.file_folders || {};
-  const shapes = normalizeAiFloorShapeSheetIds(payload.shapes || [], fileFolders);
-  const annPayload = shapes === (payload.shapes || []) ? payload : { ...payload, shapes };
-  const conditions = payload.conditions || [];
-  const markups = payload.markups || [];
-  const rfis = payload.rfis || [];
-  const boqLines = payload.boq_lines || [];
-  const sheets = payload.sheets || [];
+  const localShapes = normalizeAiFloorShapeSheetIds(payload.shapes || [], fileFolders);
+  const localDeletes = computeLocalShapeDeletes(shapeSnapshot, projectId, localShapes);
 
-  const events = diffShapeEvents(projectId, shapes);
+  let mergedPayload = payload;
+  try {
+    const remote = await loadProjectFromSupabase(projectId);
+    if (remote?.payload) {
+      mergedPayload = mergeTakeoffPayload(
+        localShapes === (payload.shapes || []) ? payload : { ...payload, shapes: localShapes },
+        remote.payload,
+        localDeletes,
+      );
+    }
+  } catch (e) {
+    console.warn("[ADICC] merge remote before save", e?.message || e);
+  }
+
+  const mergedFolders = mergedPayload.file_folders || fileFolders;
+  const shapes = normalizeAiFloorShapeSheetIds(mergedPayload.shapes || [], mergedFolders);
+  const annPayload = { ...mergedPayload, shapes };
+  const conditions = mergedPayload.conditions || [];
+  const markups = mergedPayload.markups || [];
+  const rfis = mergedPayload.rfis || [];
+  const boqLines = mergedPayload.boq_lines || [];
+  const sheets = mergedPayload.sheets || [];
+
+  const events = diffShapeEvents(projectId, localShapes);
   const totals = computeTotals(conditions, shapes, boqLines, pricingOpts);
 
   const projectRow = {
     id: projectId,
-    name: payload.project_name || "Untitled Project",
-    units: payload.units === "metric" ? "metric" : "imperial",
-    currency: payload.currency || pricingOpts.projectSettings?.currency || "AED",
-    markup_pct: Number(payload.markup_pct ?? pricingOpts.projectSettings?.markup_pct) || 0,
-    overhead_pct: Number(payload.overhead_pct ?? pricingOpts.projectSettings?.overhead_pct) || 0,
-    client_info: payload.client_info || {},
-    condition_columns: payload.condition_columns || [],
-    shape_labels: payload.shape_labels || [],
-    palette: payload.palette || [],
+    name: mergedPayload.project_name || "Untitled Project",
+    units: mergedPayload.units === "metric" ? "metric" : "imperial",
+    currency: mergedPayload.currency || pricingOpts.projectSettings?.currency || "AED",
+    markup_pct: Number(mergedPayload.markup_pct ?? pricingOpts.projectSettings?.markup_pct) || 0,
+    overhead_pct: Number(mergedPayload.overhead_pct ?? pricingOpts.projectSettings?.overhead_pct) || 0,
+    client_info: mergedPayload.client_info || {},
+    condition_columns: mergedPayload.condition_columns || [],
+    shape_labels: mergedPayload.shape_labels || [],
+    palette: mergedPayload.palette || [],
     schema_version: ANN_SCHEMA,
     annotations: annPayload,
     updated_at: new Date().toISOString(),
@@ -786,4 +806,7 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     by_condition_cost: totals.by_condition_cost ?? {},
     updated_at: new Date().toISOString(),
   }, "project_id");
+
+  seedShapeSnapshot(projectId, shapes);
+  return { ...annPayload, schema: ANN_SCHEMA };
 }

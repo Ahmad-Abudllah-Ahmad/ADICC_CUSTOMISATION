@@ -29,6 +29,7 @@ import {
 } from "./supabase/projectFiles.js";
 import { touchProjectOpened, openSupabaseProject } from "./supabase/projects.js";
 import { createSupabaseRecents, browserStorage } from "./supabaseRecents.js";
+import { enqueueProjectSave } from "./supabase/saveQueue.js";
 
 let lastRemoteUpdatedAt = null;
 /** Session cache — avoids repeated manifest queries while the gallery/sidebar refreshes. */
@@ -304,12 +305,14 @@ export function createSupabaseStore(projectId = null) {
       const projectId = await ensureProjectId();
       const shapes = normalizeAiFloorShapeSheetIds(wrapped.shapes || [], wrapped.file_folders || {});
       const toSave = shapes === (wrapped.shapes || []) ? wrapped : { ...wrapped, shapes };
-      await syncProjectToSupabase(projectId, toSave);
-      lastRemoteUpdatedAt = new Date().toISOString();
-      await local.saveAnnotations(toSave);
-      createSupabaseRecents(browserStorage()).remember({
-        id: projectId,
-        name: wrapped.project_name || "ADICC Project",
+      await enqueueProjectSave(projectId, async () => {
+        const merged = await syncProjectToSupabase(projectId, toSave);
+        lastRemoteUpdatedAt = new Date().toISOString();
+        await local.saveAnnotations(merged || toSave);
+        createSupabaseRecents(browserStorage()).remember({
+          id: projectId,
+          name: (merged || toSave).project_name || "ADICC Project",
+        });
       });
     },
 
