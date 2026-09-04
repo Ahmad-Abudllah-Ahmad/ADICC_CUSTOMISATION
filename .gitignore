@@ -56,3 +56,6 @@ web/public/pdf.worker.min.mjs
 
 # Tesseract worker/core/lang — copied by web/scripts/copy-tesseract.mjs on postinstall/dev
 web/public/tesseract/
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
