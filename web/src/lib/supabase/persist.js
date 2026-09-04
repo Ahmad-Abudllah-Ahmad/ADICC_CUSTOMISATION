@@ -1,6 +1,13 @@
 // Sync OpenTakeoff annotations payload ↔ normalized Supabase tables.
 import { supabase } from "./client.js";
 import { deleteAllProjectFiles } from "./projectFiles.js";
+import { getCurrentUserId } from "./auth.js";
+import {
+  PROJECT_OWNER_KEY,
+  accessDeniedMessage,
+  canAccessProject,
+  getProjectOwnerId,
+} from "./ownership.js";
 import { conditionTotals } from "../totals.js";
 import { round2 } from "../totals.js";
 import { pricedConditionTotals, pricedGrandTotals } from "../pricing.js";
@@ -375,6 +382,11 @@ export async function loadProjectFromSupabase(projectId) {
   if (error) throw error;
   if (!proj) return null;
 
+  const userId = await getCurrentUserId();
+  if (!canAccessProject(proj, userId)) {
+    throw new Error(accessDeniedMessage(proj, userId) || "Access denied.");
+  }
+
   const ann = proj.annotations;
   if (ann && typeof ann === "object" && ann.schema === ANN_SCHEMA) {
     const payload = { ...ann, schema: ANN_SCHEMA };
@@ -544,19 +556,22 @@ export async function clearProjectDataInSupabase(projectId) {
   await syncProjectToSupabase(projectId, empty);
 }
 
-/** Create a new Supabase project row; returns UUID. */
+/** Create a new Supabase project row; returns UUID. Private to the signed-in user. */
 export async function createSupabaseProject(name = "Untitled Project") {
   if (!supabase) throw new Error("Supabase is not configured");
+  const userId = await getCurrentUserId();
+  if (!userId) throw new Error("Sign in required to create a project.");
+
+  const client_info = { [PROJECT_OWNER_KEY]: userId };
   let { data, error } = await supabase
     .from("projects")
-    .insert({ name, annotations: {}, last_opened_at: new Date().toISOString() })
+    .insert({ name, annotations: {}, client_info, last_opened_at: new Date().toISOString() })
     .select("id")
     .single();
-  // Graceful fallback when migration 002 hasn't been applied yet.
   if (error?.message?.includes("last_opened_at")) {
     ({ data, error } = await supabase
       .from("projects")
-      .insert({ name, annotations: {} })
+      .insert({ name, annotations: {}, client_info })
       .select("id")
       .single());
   }
@@ -567,6 +582,17 @@ export async function createSupabaseProject(name = "Untitled Project") {
 /** Permanently delete a project and all related rows. */
 export async function deleteSupabaseProject(projectId) {
   if (!supabase || !projectId) return;
+
+  const { data: proj, error: loadErr } = await supabase
+    .from("projects")
+    .select("client_info")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (loadErr) throw loadErr;
+  const userId = await getCurrentUserId();
+  if (proj && getProjectOwnerId(proj) && !canAccessProject(proj, userId)) {
+    throw new Error("You do not have access to delete this project.");
+  }
 
   const childTables = [
     "shape_events",
@@ -618,6 +644,17 @@ export async function renameSupabaseProject(projectId, name) {
  *  @returns {Promise<object|null>} merged payload written (for local cache) */
 export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}) {
   if (!supabase || !projectId) return null;
+
+  const { data: projMeta, error: metaErr } = await supabase
+    .from("projects")
+    .select("client_info")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (metaErr) throw metaErr;
+  const userId = await getCurrentUserId();
+  if (projMeta && !canAccessProject(projMeta, userId)) {
+    throw new Error(accessDeniedMessage(projMeta, userId) || "Access denied.");
+  }
 
   const fileFolders = payload.file_folders || {};
   const localShapes = normalizeAiFloorShapeSheetIds(payload.shapes || [], fileFolders);

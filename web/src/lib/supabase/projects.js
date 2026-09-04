@@ -1,5 +1,7 @@
 // Supabase project listing + navigation helpers for the Plan set recents UI.
 import { supabase } from "./client.js";
+import { getCurrentUserId } from "./auth.js";
+import { getProjectOwnerId, isVisibleInProjectList } from "./ownership.js";
 
 /** @typedef {{ id: string, name: string, sheetCount: number, shapeCount: number, floorSf: number, lastOpenedAt: string|null, updatedAt: string|null, createdAt: string|null }} ProjectSummary */
 
@@ -39,6 +41,7 @@ export async function listProjectSummaries({ search = "", limit = 48 } = {}) {
       updated_at,
       last_opened_at,
       annotations,
+      client_info,
       project_totals ( shape_count, floor_sf )
     `)
     .limit(limit);
@@ -58,6 +61,7 @@ export async function listProjectSummaries({ search = "", limit = 48 } = {}) {
         created_at,
         updated_at,
         annotations,
+        client_info,
         project_totals ( shape_count, floor_sf )
       `)
       .order("updated_at", { ascending: false })
@@ -66,7 +70,11 @@ export async function listProjectSummaries({ search = "", limit = 48 } = {}) {
     ({ data, error } = await query);
   }
   if (error) throw error;
-  return (data || []).map(summarizeRow).filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii"));
+  const userId = await getCurrentUserId();
+  return (data || [])
+    .filter((row) => isVisibleInProjectList(row, userId))
+    .map(summarizeRow)
+    .filter((p) => !p.name?.toLowerCase().includes("arch. drawings part ii"));
 }
 
 export { deleteSupabaseProject, renameSupabaseProject } from "./persist.js";
