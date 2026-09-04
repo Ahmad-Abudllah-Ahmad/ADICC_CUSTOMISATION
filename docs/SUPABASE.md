@@ -48,6 +48,6 @@ Project UUID is stored in `localStorage` (`adicc_supabase_project_id`) or via UR
 
 ## Security note
 
-Current RLS policies allow anon access for development. Tighten with Supabase Auth before production.
+Current RLS policies allow anon access for development. Per-user isolation for new projects uses `client_info.adicc_owner_id` (no extra migration). Tighten with Supabase Auth + RLS before public production.
 
 Never commit `.env.local` or database passwords to git.

@@ -6,7 +6,11 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 
 /** @type {import("@supabase/supabase-js").SupabaseClient | null} */
 export const supabase = url && key ? createClient(url, key, {
-  auth: { persistSession: false, autoRefreshToken: false },
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+  },
 }) : null;
 
 export function isSupabaseConfigured() {

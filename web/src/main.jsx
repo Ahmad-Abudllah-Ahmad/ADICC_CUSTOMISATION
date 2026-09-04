@@ -10,12 +10,14 @@ import { GoogleAuthProvider, useGoogleAuth } from "./lib/google/AuthContext.jsx"
 import { isSupabaseConfigured, getSupabaseProjectId, getSupabaseProjectIdFromUrl } from "./lib/supabase/client.js";
 import { projectIdFromUrl, setActiveStore } from "./lib/store.js";
 import { isGoogleConfigured, getAccessToken } from "./lib/google/auth.js";
+import { initSupabaseAuthBridge } from "./lib/supabase/auth.js";
 import { cloudSyncEnabled } from "./lib/prefs.js";
 import { projectHomeFolderId } from "./lib/projectHome.js";
 import { initTheme } from "./lib/theme.js";
 import AdiccLoadingLogo from "./components/AdiccLoadingLogo.jsx";
 
 initTheme();   // index.html set data-theme pre-paint; this keeps it live
+if (isSupabaseConfigured()) initSupabaseAuthBridge();
 
 // Client-only SPA. By default there is no backend: the canvas runs entirely in
 // the browser and persists to IndexedDB / localStorage (anonymous local mode).
