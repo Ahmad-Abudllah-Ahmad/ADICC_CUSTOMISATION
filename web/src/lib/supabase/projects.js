@@ -1,7 +1,7 @@
 // Supabase project listing + navigation helpers for the Plan set recents UI.
 import { supabase } from "./client.js";
 import { getCurrentUserId } from "./auth.js";
-import { getProjectOwnerId, isVisibleInProjectList } from "./ownership.js";
+import { getProjectOwnerId, isVisibleInProjectList, isSharedProject } from "./ownership.js";
 
 /** @typedef {{ id: string, name: string, sheetCount: number, shapeCount: number, floorSf: number, lastOpenedAt: string|null, updatedAt: string|null, createdAt: string|null }} ProjectSummary */
 
@@ -25,6 +25,7 @@ function summarizeRow(row) {
     lastOpenedAt: row.last_opened_at || null,
     updatedAt: row.updated_at || null,
     createdAt: row.created_at || null,
+    shared: isSharedProject(row),
   };
 }
 

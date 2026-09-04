@@ -473,6 +473,7 @@ export default function PastProjectsPanel({
               const highlighted = highlightId === p.id;
               const when = fmtCardDate(p.lastOpenedAt || p.updatedAt || p.createdAt);
               const takeoffs = Number(p.shapeCount) || 0;
+              const shared = p.shared !== false;
               return (
                 <BlurReveal key={p.id} delay={Math.min(i * 100, 480)} style={{ height: "100%", minWidth: 0, overflow: "visible", paddingTop: 2 }}>
                 <div
@@ -488,6 +489,9 @@ export default function PastProjectsPanel({
                   <div className="home-project-card-shell">
                     <div className="home-project-preview-wrap">
                       <ProjectPdfSlider projectId={p.id} sheetCount={p.sheetCount} />
+                      <span className={`home-project-card-scope${shared ? " is-shared" : " is-private"}`}>
+                        {shared ? "Shared" : "Private"}
+                      </span>
                       {active && <span className="home-project-card-now">Current</span>}
                     </div>
 
