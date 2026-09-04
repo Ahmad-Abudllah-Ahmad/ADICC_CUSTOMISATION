@@ -389,7 +389,7 @@ export async function loadProjectFromSupabase(projectId) {
 
   const ann = proj.annotations;
   if (ann && typeof ann === "object" && ann.schema === ANN_SCHEMA) {
-    const payload = { ...ann, schema: ANN_SCHEMA };
+    const payload = { ...ann, schema: ANN_SCHEMA, client_info: proj.client_info || {} };
     // Prefer column file_folders when the JSON blob lacks it (older saves).
     if ((!payload.file_folders || !Object.keys(payload.file_folders).length) && proj.file_folders) {
       payload.file_folders = proj.file_folders;
@@ -686,6 +686,12 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
   const events = diffShapeEvents(projectId, localShapes);
   const totals = computeTotals(conditions, shapes, boqLines, pricingOpts);
 
+  // Never drop adicc_owner_id — payload annotations rarely carry client_info.
+  const client_info = {
+    ...(projMeta?.client_info || {}),
+    ...(mergedPayload.client_info || {}),
+  };
+
   const projectRow = {
     id: projectId,
     name: mergedPayload.project_name || "Untitled Project",
@@ -693,7 +699,7 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     currency: mergedPayload.currency || pricingOpts.projectSettings?.currency || "AED",
     markup_pct: Number(mergedPayload.markup_pct ?? pricingOpts.projectSettings?.markup_pct) || 0,
     overhead_pct: Number(mergedPayload.overhead_pct ?? pricingOpts.projectSettings?.overhead_pct) || 0,
-    client_info: mergedPayload.client_info || {},
+    client_info,
     condition_columns: mergedPayload.condition_columns || [],
     shape_labels: mergedPayload.shape_labels || [],
     palette: mergedPayload.palette || [],

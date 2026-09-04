@@ -37,6 +37,11 @@ export function waitForAuthReady() {
 export async function getCurrentUserId() {
   if (!supabase) return null;
   if (!authReady) await waitForAuthReady();
+  // Embedded in alpha1: session arrives via postMessage shortly after load.
+  if (!cachedUserId && typeof window !== "undefined" && window.parent !== window) {
+    await new Promise((r) => setTimeout(r, 400));
+    await refreshCachedUser();
+  }
   return cachedUserId;
 }
 
