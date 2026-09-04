@@ -532,6 +532,17 @@ export async function loadProjectFromSupabase(projectId) {
 export async function clearProjectDataInSupabase(projectId) {
   if (!supabase || !projectId) return;
 
+  const { data: proj, error: loadErr } = await supabase
+    .from("projects")
+    .select("client_info")
+    .eq("id", projectId)
+    .maybeSingle();
+  if (loadErr) throw loadErr;
+  const userId = await getCurrentUserId();
+  if (proj && !canAccessProject(proj, userId)) {
+    throw new Error(accessDeniedMessage(proj, userId) || "Access denied.");
+  }
+
   const childTables = [
     "shape_events",
     "shape_holes",
@@ -624,10 +635,14 @@ export async function renameSupabaseProject(projectId, name) {
 
   const { data: proj, error: loadErr } = await supabase
     .from("projects")
-    .select("annotations")
+    .select("annotations, client_info")
     .eq("id", projectId)
     .maybeSingle();
   if (loadErr) throw loadErr;
+  const userId = await getCurrentUserId();
+  if (proj && !canAccessProject(proj, userId)) {
+    throw new Error(accessDeniedMessage(proj, userId) || "Access denied.");
+  }
 
   const ann = (proj?.annotations && typeof proj.annotations === "object")
     ? { ...proj.annotations, project_name: trimmed }
