@@ -1,5 +1,6 @@
 // Plan file bytes — Supabase Storage + project_files metadata (folder structure at scale).
 import { supabase } from "./client.js";
+import { assertProjectAccessById } from "./access.js";
 
 export const PLANS_BUCKET = "project-plans";
 /** Transfers split one HTTP/2 connection's bandwidth, so the right fan-out depends
@@ -180,6 +181,7 @@ async function queryAllProjectFileRows(projectId) {
  *  @returns {Promise<Array<{ file_name: string, folder_path: string, byte_size: number, content_type: string|null, storage_path: string }>>} */
 export async function listProjectFiles(projectId, { onReconciled } = {}) {
   if (!supabase || !projectId) return [];
+  await assertProjectAccessById(projectId);
   const dbRows = await queryAllProjectFileRows(projectId);
 
   const walk = async () => {
@@ -431,6 +433,7 @@ async function upsertProjectFileMetaBatch(rows) {
 
 export async function upsertProjectFile(projectId, fileName, bytes, { folderPath = "", mimeType = "application/pdf" } = {}) {
   if (!supabase || !projectId) return;
+  await assertProjectAccessById(projectId);
   const body = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const path = storageObjectPath(projectId, fileName, folderPath);
   await withRetry(async () => {
@@ -447,6 +450,7 @@ export async function upsertProjectFile(projectId, fileName, bytes, { folderPath
 
 export async function downloadProjectFile(projectId, fileName, storagePath, folderPath = "") {
   if (!supabase || !projectId) throw new Error("Supabase not configured");
+  await assertProjectAccessById(projectId);
   const candidates = downloadPathCandidates(projectId, fileName, storagePath, folderPath);
   let lastErr;
   for (const path of candidates) {
@@ -463,6 +467,7 @@ export async function downloadProjectFile(projectId, fileName, storagePath, fold
 /** @param {string} sheetName folder-relative path, as listSheets reports it */
 export async function deleteProjectFile(projectId, sheetName) {
   if (!supabase || !projectId) return;
+  await assertProjectAccessById(projectId);
   const rel = String(sheetName || "").replace(/^\/+/, "");
   // Match on the storage key so a same-named sheet in another folder is untouched;
   // the flat key covers rows written before paths carried their folder.
@@ -529,6 +534,7 @@ async function runSizeAwarePool(items, sizeOf, worker, { smallConc, largeConc, y
  *  @param {{ priority?: string[] }} [opts] Sheet names to fetch first — the plans already
  *  on screen shouldn't queue behind a thousand the user may never open. */
 export async function hydrateLocalPlansFromDb(projectId, localStore, { onProgress, rows: prefetchedRows, priority } = {}) {
+  await assertProjectAccessById(projectId);
   const rows = prefetchedRows || await listProjectFiles(projectId);
   if (!rows.length) return { rows, fileFolders: {} };
 
@@ -582,6 +588,7 @@ export async function uploadProjectFilesBatch(projectId, files, {
 } = {}) {
   const batchSize = files.length;
   if (!batchSize) return;
+  await assertProjectAccessById(projectId);
   const total = progressTotal ?? batchSize;
 
   const folderOf = (file) => normalizeFolderPath(typeof folderFor === "function" ? folderFor(file) : "");

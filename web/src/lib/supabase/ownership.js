@@ -28,7 +28,7 @@ export function canAccessProject(proj, userId) {
 export function isVisibleInProjectList(proj, userId) {
   const ownerId = getProjectOwnerId(proj);
   if (!ownerId) return true;
-  return !!userId && ownerId === ownerId;
+  return !!userId && ownerId === userId;
 }
 
 export function accessDeniedMessage(proj, userId) {

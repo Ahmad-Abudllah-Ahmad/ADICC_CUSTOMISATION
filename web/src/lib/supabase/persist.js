@@ -667,6 +667,9 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     .maybeSingle();
   if (metaErr) throw metaErr;
   const userId = await getCurrentUserId();
+  if (!projMeta && !userId) {
+    throw new Error("Sign in required to create a project.");
+  }
   if (projMeta && !canAccessProject(projMeta, userId)) {
     throw new Error(accessDeniedMessage(projMeta, userId) || "Access denied.");
   }
@@ -706,6 +709,9 @@ export async function syncProjectToSupabase(projectId, payload, pricingOpts = {}
     ...(projMeta?.client_info || {}),
     ...(mergedPayload.client_info || {}),
   };
+  if (!getProjectOwnerId({ client_info }) && userId && !projMeta) {
+    client_info[PROJECT_OWNER_KEY] = userId;
+  }
 
   const projectRow = {
     id: projectId,

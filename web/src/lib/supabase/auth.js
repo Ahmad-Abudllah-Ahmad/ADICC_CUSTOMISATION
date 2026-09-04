@@ -4,10 +4,25 @@ import { supabase } from "./client.js";
 let cachedUserId = null;
 let authReady = false;
 let authReadyPromise = null;
+/** Resolves when iframe receives session from alpha1 (or times out). */
+let parentSessionWait = null;
+let resolveParentSession = null;
+
+function beginParentSessionWait() {
+  parentSessionWait = new Promise((resolve) => {
+    resolveParentSession = resolve;
+  });
+}
+
+function finishParentSessionWait() {
+  resolveParentSession?.();
+  resolveParentSession = null;
+}
 
 function setCachedUser(user) {
   cachedUserId = user?.id ?? null;
   authReady = true;
+  if (cachedUserId) finishParentSessionWait();
 }
 
 async function refreshCachedUser() {
@@ -39,7 +54,11 @@ export async function getCurrentUserId() {
   if (!authReady) await waitForAuthReady();
   // Embedded in alpha1: session arrives via postMessage shortly after load.
   if (!cachedUserId && typeof window !== "undefined" && window.parent !== window) {
-    await new Promise((r) => setTimeout(r, 400));
+    if (!parentSessionWait) beginParentSessionWait();
+    await Promise.race([
+      parentSessionWait,
+      new Promise((r) => setTimeout(r, 5000)),
+    ]);
     await refreshCachedUser();
   }
   return cachedUserId;
@@ -61,6 +80,8 @@ export async function applySupabaseSession(session) {
 
 export function initSupabaseAuthBridge() {
   if (!supabase || typeof window === "undefined") return () => {};
+
+  beginParentSessionWait();
 
   supabase.auth.onAuthStateChange((_event, session) => {
     setCachedUser(session?.user ?? null);
